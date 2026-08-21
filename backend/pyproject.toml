@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "个人 Agent 平台后端（Loop 引擎 + 能力体系）"
 requires-python = ">=3.12"
 dependencies = [
-    # 依赖白名单见 docs/设计方案.md §7；langgraph 系列于 M2 锁版本后引入
+    # 依赖白名单见 docs/设计方案.md §7；langgraph 系列已锁版本（M2-2a 冻结）
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
@@ -16,6 +16,12 @@ dependencies = [
     "pyjwt>=2.8",
     "bcrypt>=4.1",
     "pgvector>=0.3",
+    "langgraph==1.2.11",
+    "langgraph-checkpoint-postgres==3.1.2",
+    "langchain-core==1.6.0",
+    "langchain-openai==1.6.0",
+    "psycopg[binary]>=3.3.4",
+    "cryptography>=50.0.0",
 ]
 
 [dependency-groups]
@@ -34,11 +40,13 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 # Depends/Query 是 FastAPI 惯用法（不可变调用）
+[tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
 
 [tool.ruff.lint.per-file-ignores]
-# 自动生成的迁移文件不改行宽
+# 自动生成的迁移文件与一次性验证脚本不改行宽
 "migrations/versions/*" = ["E501"]
+"scripts/*" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

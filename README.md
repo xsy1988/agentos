@@ -11,9 +11,9 @@
 | 项 | 状态 |
 |---|---|
 | 设计阶段 | ✅ 已收官（五份文档全部定稿） |
-| 开发阶段 | ✅ M1 地基完成（迁移 + auth + agents CRUD + seed）；下一步：**M2 引擎**（先 2a 接口冻结，见开发计划 §3） |
-| 已有代码 | core/db 会话层、9 张主数据表 ORM + Alembic 首次迁移、auth（init/login/me/JWT）、agents CRUD、默认 Agent seed |
-| 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· `make dev / migrate / upgrade / test / lint` |
+| 开发阶段 | ✅ M2-2a 接口冻结（LoopState/钩子/Backend + langgraph==1.2.11 锁版）；✅ M2-2b 最小闭环完成（models/conversations/runs API + inbox 队列 + SSE + 检查点）；下一步：**M2-2c 完整机制**（见开发计划 §3） |
+| 已有代码 | core/db 会话层、9 张主数据表 + 6 张业务表 ORM + 迁移、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider）、engine 最小图 + inbox worker + run 状态机 + SSE（seq 续传） |
+| 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· langgraph 1.2.11 锁版 · `make dev / migrate / upgrade / test / lint` |
 
 > 纪律：每完成一个阶段/里程碑，更新本表；偏离设计的临时决定必须补记到设计方案 §12 ADR。
 
