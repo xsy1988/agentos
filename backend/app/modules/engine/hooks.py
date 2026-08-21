@@ -24,6 +24,9 @@ class RunContext:
             "tool_calls": 0,
             "loop_strikes": {},
         }
+        # 本 run 预算上限（runs.budget 快照）：max_iterations / max_tokens_per_run /
+        # timeout_seconds 等。M2-2c 扩展字段（兼容冻结协议的增量扩展，见 ADR-10）
+        self.limits: dict[str, int] = {}
 
 
 class HookError(Exception):
@@ -51,11 +54,19 @@ class ToolCallRequest:
 class ToolResultInfo:
     """post 钩子可见的工具执行结果。"""
 
-    def __init__(self, name: str, ok: bool, content: Any, elapsed_ms: int = 0) -> None:
+    def __init__(
+        self,
+        name: str,
+        ok: bool,
+        content: Any,
+        elapsed_ms: int = 0,
+        args_snapshot: dict[str, Any] | None = None,
+    ) -> None:
         self.name = name
         self.ok = ok
         self.content = content
         self.elapsed_ms = elapsed_ms
+        self.args_snapshot = args_snapshot or {}  # 循环检测指纹用（M2-2c 扩展）
 
 
 class EngineHook(Protocol):
@@ -80,14 +91,19 @@ class EngineHook(Protocol):
 
 
 class HookChain:
-    """钩子链：按装配顺序依次调用（audit → metering → budget → loop-detect）。"""
+    """钩子链：按装配顺序依次调用（audit → metering → budget → loop-detect）。
+
+    实现方按需实现钩子位（协议缺省位可空实现），未实现的方法位直接跳过。
+    """
 
     def __init__(self, hooks: list[EngineHook]) -> None:
         self.hooks = hooks
 
     async def _run(self, method: str, *args: Any) -> None:
         for hook in self.hooks:
-            await getattr(hook, method)(*args)
+            fn = getattr(hook, method, None)
+            if fn is not None and callable(fn):
+                await fn(*args)
 
     async def on_run_start(self, ctx: RunContext) -> None:
         await self._run("on_run_start", ctx)

@@ -1,9 +1,16 @@
 """runs 请求/响应模型。"""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+
+class ConfirmIn(BaseModel):
+    """确认卡片提交：approved 继续执行 / rejected 拒绝。"""
+
+    answer: Literal["approved", "rejected"]
 
 
 class RunOut(BaseModel):

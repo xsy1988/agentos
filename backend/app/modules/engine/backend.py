@@ -46,3 +46,11 @@ class EngineBackend(Protocol):
     async def get_capability(self, name: str) -> dict[str, Any] | None:
         """按名取已启用的能力（含 payload/risk_level）。"""
         ...
+
+    async def list_enabled_tools(self) -> list[dict[str, Any]]:
+        """列出全部启用的 tool 类能力（context_assembly 装配用）。
+
+        M2-2c 增量扩展（见 ADR-10）：一期返回 builtin 全集，
+        M3 换 discovery 检索 Top-K + pinned 后此方法语义不变。
+        """
+        ...

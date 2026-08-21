@@ -117,3 +117,26 @@ class InProcessBackend:
                 "payload": cap.payload,
                 "risk_level": cap.risk_level,
             }
+
+    async def list_enabled_tools(self) -> list[dict[str, Any]]:
+        from sqlalchemy import select
+
+        from app.modules.capabilities.models import Capability
+
+        async with session_factory() as db:
+            rows = await db.scalars(
+                select(Capability).where(
+                    Capability.type == "tool",
+                    Capability.enabled.is_(True),
+                )
+            )
+            return [
+                {
+                    "id": str(c.id),
+                    "name": c.name,
+                    "description": c.description,
+                    "payload": c.payload,
+                    "risk_level": c.risk_level,
+                }
+                for c in rows
+            ]

@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
 from app.modules.runs.models import Run
-from app.modules.runs.schemas import RunEventOut, RunOut
+from app.modules.runs.schemas import ConfirmIn, RunEventOut, RunOut
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,28 @@ async def abort_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
     await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
     await db.commit()
     return {"run_id": str(run.id), "status": "aborting"}
+
+
+@router.post("/{run_id}/confirm", status_code=status.HTTP_202_ACCEPTED)
+async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(get_db)) -> dict:
+    """确认卡片提交：投 confirmation 事件，引擎从 interrupt 检查点恢复。"""
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    if run.status != "paused_awaiting_confirm":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）"
+        )
+    await db.execute(
+        text(
+            "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "
+            "VALUES ('confirmation', :rid, CAST(:p AS jsonb), 'new')"
+        ),
+        {"rid": run.id, "p": json.dumps({"answer": body.answer})},
+    )
+    await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
+    await db.commit()
+    return {"run_id": str(run.id), "status": "resuming", "answer": body.answer}
 
 
 def _sse_chunk(seq: int, event_type: str, payload: dict) -> str:

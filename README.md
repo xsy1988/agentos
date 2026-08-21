@@ -11,8 +11,8 @@
 | 项 | 状态 |
 |---|---|
 | 设计阶段 | ✅ 已收官（五份文档全部定稿） |
-| 开发阶段 | ✅ M2-2a 接口冻结（LoopState/钩子/Backend + langgraph==1.2.11 锁版）；✅ M2-2b 最小闭环完成（models/conversations/runs API + inbox 队列 + SSE + 检查点）；下一步：**M2-2c 完整机制**（见开发计划 §3） |
-| 已有代码 | core/db 会话层、9 张主数据表 + 6 张业务表 ORM + 迁移、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider）、engine 最小图 + inbox worker + run 状态机 + SSE（seq 续传） |
+| 开发阶段 | ✅ M2 引擎全部完成：2a 接口冻结、2b 最小闭环、2c 完整机制（七节点图 + 双确认点 interrupt + 钩子链 audit/metering/budget/loop-detect + builtin 占位工具 + kill 恢复）；DoD 全项验收通过（完整链路/死循环熔断/进程崩溃后恢复）；下一步：**M3 上下文装配**（见开发计划 §3） |
+| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + 真实流式）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传） |
 | 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· langgraph 1.2.11 锁版 · `make dev / migrate / upgrade / test / lint` |
 
 > 纪律：每完成一个阶段/里程碑，更新本表；偏离设计的临时决定必须补记到设计方案 §12 ADR。

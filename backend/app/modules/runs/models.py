@@ -36,7 +36,7 @@ class Run(UUIDPkMixin, TimestampMixin, Base):
         UUID, ForeignKey("agents.id", ondelete="RESTRICT"), index=True
     )
     trigger: Mapped[str] = mapped_column(String(16), default="manual")  # manual/timer/alarm
-    status: Mapped[str] = mapped_column(String(16), default="pending")
+    status: Mapped[str] = mapped_column(String(32), default="pending")
     input: Mapped[dict] = mapped_column(JSONB, default=dict)
     result: Mapped[dict | None] = mapped_column(JSONB)
     error: Mapped[dict | None] = mapped_column(JSONB)  # 结构化失败原因
