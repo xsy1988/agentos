@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-logs dev test lint fmt hooks clean
+.PHONY: db-up db-down db-logs dev migrate upgrade test lint fmt hooks clean
 
 db-up:            ## 启动 PostgreSQL（pgvector）
 	docker-compose up -d
@@ -11,6 +11,12 @@ db-logs:          ## 跟踪数据库日志
 
 dev:              ## 启动后端开发服务（热重载，:8000）
 	cd backend && uv run uvicorn app.main:app --reload --port 8000
+
+migrate:          ## 生成迁移：make migrate m="描述"
+	cd backend && uv run alembic revision --autogenerate -m "$(m)"
+
+upgrade:          ## 应用迁移到最新
+	cd backend && uv run alembic upgrade head
 
 test:             ## 运行测试
 	cd backend && uv run pytest
