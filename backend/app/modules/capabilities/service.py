@@ -53,6 +53,28 @@ BUILTIN_SEED: list[dict[str, Any]] = [
             "required": ["action"],
         },
     },
+    {
+        "name": "search_knowledge",
+        "description": "知识库语义检索：用自然语言查询平台知识库（已上传并解析完成的文档），"
+        "返回最相关的文本片段（含文档标题/目录/标题路径）。可指定目录范围。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "检索问题/关键词（自然语言）",
+                },
+                "folders": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "可选，目录范围（物化路径前缀，如 [\"/产品知识\"]）；缺省全库",
+                },
+                "k": {"type": "integer", "description": "返回条数，缺省 8"},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -65,22 +87,23 @@ async def seed_builtin_capabilities() -> None:
                 "schema": builtin_tool_schema(item["name"], item["description"], item["params"]),
             }
             if cap is None:
-                db.add(
-                    Capability(
-                        type="tool",
-                        category="builtin",
-                        name=item["name"],
-                        description=item["description"],
-                        risk_level=item["risk_level"],
-                        payload=payload,
-                        health_status="ok",
-                    )
+                cap = Capability(
+                    type="tool",
+                    category="builtin",
+                    name=item["name"],
+                    description=item["description"],
+                    risk_level=item["risk_level"],
+                    payload=payload,
+                    health_status="ok",
                 )
+                db.add(cap)
             else:
                 cap.description = item["description"]
                 cap.risk_level = item["risk_level"]
                 cap.payload = payload
                 cap.health_status = "ok"
+            # 语义向量：builtin 工具也要能被 retriever 语义命中（无 provider 时跳过）
+            await index_capability(db, cap)
         await db.commit()
 
 

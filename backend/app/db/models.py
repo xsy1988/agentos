@@ -5,7 +5,8 @@ from app.modules.auth.models import User
 from app.modules.capabilities.models import Capability, CapabilityBinding, CapabilityTool
 from app.modules.conversations.models import Conversation, Message
 from app.modules.engine.models import InboxEvent, Plan
-from app.modules.knowledge.models import KbFolder
+from app.modules.files.models import File, FileRef
+from app.modules.knowledge.models import KbChunk, KbDoc, KbFolder
 from app.modules.models_module.models import ModelProvider
 from app.modules.runs.models import Run, RunEvent
 from app.modules.scheduler.models import Alarm, Timer
@@ -17,7 +18,11 @@ __all__ = [
     "CapabilityBinding",
     "CapabilityTool",
     "Conversation",
+    "File",
+    "FileRef",
     "InboxEvent",
+    "KbChunk",
+    "KbDoc",
     "KbFolder",
     "Message",
     "ModelProvider",

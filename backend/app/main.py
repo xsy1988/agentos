@@ -19,6 +19,10 @@ from app.modules.capabilities.router import router as capabilities_router
 from app.modules.capabilities.service import seed_builtin_capabilities
 from app.modules.conversations.router import router as conversations_router
 from app.modules.engine.runtime import engine_runtime
+from app.modules.files.router import router as files_router
+from app.modules.knowledge.pipeline import reconcile_interrupted
+from app.modules.knowledge.router import router as knowledge_router
+from app.modules.knowledge.service import seed_default_folders
 from app.modules.models_module.router import router as models_router
 from app.modules.runs.router import router as runs_router
 
@@ -29,8 +33,12 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 幂等 seed：首次启动创建默认 Agent，保证零配置可用
     await seed_default_agent()
-    # 幂等 seed：builtin 占位工具（2c DoD 工具链路验证用）
+    # 幂等 seed：builtin 占位工具（2c DoD 工具链路验证用）+ search_knowledge
     await seed_builtin_capabilities()
+    # 幂等 seed：知识库三个默认根目录（产品/研发/生活）
+    await seed_default_folders()
+    # 管道中断文档 → failed（可 retry），不自动续跑
+    await reconcile_interrupted()
     # 引擎运行时：checkpointer + 图 + inbox worker（单进程纪律：只有这一份）
     await engine_runtime.start()
     # MCP 连接池：按注册表拉起 + 60s 健康检查 + capability_changed 热注册
@@ -50,6 +58,8 @@ app.include_router(conversations_router, prefix=API_PREFIX)
 app.include_router(runs_router, prefix=API_PREFIX)
 app.include_router(capabilities_router, prefix=API_PREFIX)
 app.include_router(capability_bindings_router, prefix=API_PREFIX)
+app.include_router(files_router, prefix=API_PREFIX)
+app.include_router(knowledge_router, prefix=API_PREFIX)
 
 
 @app.get("/health")

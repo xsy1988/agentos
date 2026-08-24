@@ -3,6 +3,8 @@
 env_file 同时指向 backend/.env 与仓库根 .env（make dev 的 cwd 是 backend/）。
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +21,9 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     # 上下文压缩阈值（粗估 token = chars/3）：达到即触发 assembler L1/L2 压缩
     context_compact_threshold: int = 24000
+    # 运行时数据目录（文件存储根，gitignore）；解析容器 REST 地址（docling-serve）
+    data_dir: Path = Path("data")
+    parser_url: str = "http://localhost:5001"
 
 
 settings = Settings()

@@ -17,5 +17,14 @@ services:
       timeout: 3s
       retries: 10
 
+  parser:
+    image: quay.io/docling-project/docling-serve-cpu:latest
+    container_name: agent-platform-parser
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "0"
+
 volumes:
   pgdata:

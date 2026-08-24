@@ -11,8 +11,8 @@
 | 项 | 状态 |
 |---|---|
 | 设计阶段 | ✅ 已收官（五份文档全部定稿） |
-| 开发阶段 | ✅ M3 能力体系完成：embedding 基建（bge_m3_embed 1024 维）+ capabilities 统一表 CRUD/冒烟注册/工具级开关 + MCP 连接池（stdio/http + 60s 健康检查×3 熔断 + NOTIFY 热注册）+ discovery（retriever 语义 Top-K + search_more_tools 元工具 + assembler 五区装配/L1/L2 压缩）+ engine MCP 通道集成；DoD 全项验收通过（filesystem 官方 Server 语义命中调用/工具开关生效/kill 后 2m41s unhealthy）；下一步：**M4 知识库**（见开发计划 §3） |
-| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + embedding）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传）、capabilities（CRUD/冒烟/mcp_client 池/绑定）、discovery（retriever/assembler） |
+| 开发阶段 | ✅ M4 知识库完成：files 上传（sha256 去重 + data/files 存储）+ docling-serve 解析容器（compose 服务 parser）+ 管道状态机（uploaded→parsing→chunking→embedding→ready，断点重试/中间产物落盘/重启 reconcile）+ kb_folders 目录树（path 物化路径 + 子孙前缀级联 + 三默认根 seed）+ search_knowledge 工具（余弦 Top-K + heading_path 拼装 + 目录范围过滤，注册为 builtin capability）+ reindex；DoD 全项验收通过（真实 PDF→ready→对话引用原文回答；folders=["/产品知识"] 过滤下生活内容不被检索）；下一步：**M5 记忆+自动化**（见开发计划 §3） |
+| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + embedding）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传）、capabilities（CRUD/冒烟/mcp_client 池/绑定）、discovery（retriever/assembler）、files/knowledge（上传/目录树/管道/检索/reindex） |
 | 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· langgraph 1.2.11 锁版 · `make dev / migrate / upgrade / test / lint` |
 
 > 纪律：每完成一个阶段/里程碑，更新本表；偏离设计的临时决定必须补记到设计方案 §12 ADR。
