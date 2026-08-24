@@ -71,6 +71,37 @@ class InProcessBackend:
                 ),
             }
 
+    async def get_lightweight_provider(self) -> dict[str, Any] | None:
+        """轻量模型（params.lightweight 标记的 enabled llm，取第一个）：
+        意图分类/规划/验收/闲聊回复等内部短调用用它降本，未配置返回 None。"""
+        from sqlalchemy import select
+
+        from app.modules.models_module.models import ModelProvider
+
+        async with session_factory() as db:
+            provider = await db.scalar(
+                select(ModelProvider)
+                .where(
+                    ModelProvider.kind == "llm",
+                    ModelProvider.status == "enabled",
+                    ModelProvider.params["lightweight"].as_boolean() == True,  # noqa: E712
+                )
+                .order_by(ModelProvider.created_at)
+                .limit(1)
+            )
+            if provider is None:
+                return None
+            return {
+                "id": str(provider.id),
+                "impl": provider.impl,
+                "base_url": provider.base_url,
+                "model_name": provider.model_name,
+                "params": provider.params,
+                "api_key_encrypted": (
+                    bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
+                ),
+            }
+
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         async with session_factory() as db:
             result = await db.execute(

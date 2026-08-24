@@ -29,6 +29,16 @@ class EngineBackend(Protocol):
         """读 Agent 配置（人格/模型绑定/预算）。变更对下一个 run 生效。"""
         ...
 
+    async def get_model_provider(self, provider_id: str) -> dict[str, Any] | None: ...
+
+    async def get_lightweight_provider(self) -> dict[str, Any] | None:
+        """取轻量模型（params.lightweight 标记的 enabled llm，取第一个）。
+
+        内部短调用（意图分类/规划/验收/闲聊回复）用它降本；
+        未配置返回 None，调用方回退主模型。
+        """
+        ...
+
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         """写 run_events（自动分配 run 内单调 seq）+ NOTIFY。返回 seq。"""
         ...

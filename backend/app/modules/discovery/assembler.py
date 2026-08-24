@@ -188,9 +188,29 @@ async def run_search_more_tools(
 # ---------- L1/L2 两级压缩 ----------
 
 
+def _content_text(content: Any) -> str:
+    """消息 content → 纯文本（多模态列表取 text 块，图片折叠占位）。
+
+    压缩链路专用：图片 base64 绝不能进 token 估算（否则单图即触发阈值），
+    也不能整段 str(list) 进 L2 摘要输入。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    parts.append(str(b.get("text") or ""))
+                elif b.get("type") == "image_url":
+                    parts.append("[图片]")
+        return "".join(parts)
+    return str(content or "")
+
+
 def _est_tokens(messages: list[AnyMessage]) -> int:
     """粗估 token（中文 ~1.5 字/token，取保守 chars/3）。"""
-    return sum(len(str(getattr(m, "content", "") or "")) for m in messages) // 3
+    return sum(len(_content_text(getattr(m, "content", ""))) for m in messages) // 3
 
 
 def local_view(
@@ -262,7 +282,7 @@ async def compact_messages(
                     content="把以下对话历史压缩为一段执行摘要，保留任务目标、关键事实、"
                     "已完成的动作与结论。直接输出摘要正文，不要解释。"
                 ),
-                HumanMessage(content="\n\n".join(str(m.content) for m in middle)[:12000]),
+                HumanMessage(content="\n\n".join(_content_text(m.content) for m in middle)[:12000]),
             ]
         )
         summary = str(resp.content).strip()

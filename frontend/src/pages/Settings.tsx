@@ -270,6 +270,13 @@ function ModelsTab() {
         model_name: values.model_name,
       };
       if (values.api_key) body.api_key = values.api_key;
+      // 能力标记（vision：图片附件直传或占位降级；lightweight：轻量模型，
+      // 引擎的意图分类/规划/验收/闲聊回复用它降本）；保留已有 params 其余键
+      const prevParams = (editing?.params as Record<string, unknown> | undefined) ?? {};
+      const params = { ...prevParams, vision: !!values.vision, lightweight: !!values.lightweight };
+      if (Object.keys(prevParams).length > 0 || values.vision || values.lightweight) {
+        body.params = params;
+      }
       if (editing) return modelsApi.update(editing.id, body);
       return modelsApi.create(body);
     },
@@ -305,6 +312,8 @@ function ModelsTab() {
       base_url: m.base_url,
       model_name: m.model_name,
       api_key: "",
+      vision: !!(m.params as Record<string, unknown> | undefined)?.vision,
+      lightweight: !!(m.params as Record<string, unknown> | undefined)?.lightweight,
     });
     setModalOpen(true);
   };
@@ -431,6 +440,34 @@ function ModelsTab() {
             label={editing && editing.has_api_key ? "API Key（留空则保持不变）" : "API Key"}
           >
             <Input.Password placeholder="sk-..." autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            name="vision"
+            label="支持视觉（图片输入）"
+            initialValue={false}
+            tooltip="勾选后对话中的图片附件将以多模态方式直接投喂该模型；不支持的模型会自动降级为占位文本"
+          >
+            <Select
+              style={{ width: 200 }}
+              options={[
+                { value: true, label: "支持（多模态投喂）" },
+                { value: false, label: "不支持（纯文本）" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="lightweight"
+            label="轻量模型（内部短调用）"
+            initialValue={false}
+            tooltip="勾选后引擎的意图分类/任务规划/验收与闲聊回复改用该模型（如本地小模型），降低固定 token 开销；全局只需标记一个"
+          >
+            <Select
+              style={{ width: 200 }}
+              options={[
+                { value: true, label: "是（闲聊/分类/规划用）" },
+                { value: false, label: "否" },
+              ]}
+            />
           </Form.Item>
         </Form>
       </Modal>

@@ -2,17 +2,21 @@
  * 消息流（前端设计 §3.1 主区）。
  * 历史消息 + 实时 SSE 事件 + 流式 Agent 回复。
  */
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Typography, Tag, Collapse, Tooltip, Space } from "antd";
+import { Typography, Tag, Collapse, Tooltip, Space, Image, Button } from "antd";
 import {
   BulbOutlined,
   ToolOutlined,
   ScheduleOutlined,
   RobotOutlined,
+  PaperClipOutlined,
+  ProfileOutlined,
 } from "@ant-design/icons";
 import { conversationsApi } from "@/api/conversations";
+import { filesApi } from "@/api/files";
 import { useSSEStore } from "@/store/sse";
+import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import type { RunEventOut, MessageOut } from "@/api/types";
@@ -21,7 +25,83 @@ import type { ActiveRun } from "./index";
 // 从消息 content 提取文本
 function msgText(msg: MessageOut): string {
   const c = msg.content as Record<string, unknown>;
-  return (c.text as string) ?? (c.content as string) ?? JSON.stringify(c);
+  return (c.text as string) ?? (c.content as string) ?? "";
+}
+
+// 消息附件（后端 content.attachments：[{file_id, filename, mime, size}]）
+interface MsgAttachment {
+  file_id: string;
+  filename: string;
+  mime: string;
+  size: number;
+}
+
+function msgAttachments(msg: MessageOut): MsgAttachment[] {
+  const c = msg.content as Record<string, unknown>;
+  const atts = c.attachments;
+  return Array.isArray(atts) ? (atts as MsgAttachment[]) : [];
+}
+
+function fmtSize(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)}KB`;
+  return `${size}B`;
+}
+
+/** 图片附件：blob 鉴权拉取 → objectURL 渲染（卸载时释放）。 */
+function AttachmentImage({ att }: { att: MsgAttachment }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    filesApi
+      .fetchContent(att.file_id)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => setFailed(true));
+    return () => {
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [att.file_id]);
+  if (failed) {
+    return (
+      <Tooltip title="图片加载失败">
+        <Tag color="error" style={{ fontSize: 11 }}>
+          <PaperClipOutlined /> {att.filename}
+        </Tag>
+      </Tooltip>
+    );
+  }
+  if (!url) {
+    return (
+      <div style={{ width: 96, height: 96, borderRadius: 6, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11 }}>
+        加载中…
+      </div>
+    );
+  }
+  return <Image src={url} alt={att.filename} width={96} height={96} style={{ objectFit: "cover", borderRadius: 6 }} />;
+}
+
+/** 用户消息附件区：图片缩略图（点击放大）+ 文档 chip。 */
+function AttachmentList({ atts }: { atts: MsgAttachment[] }) {
+  if (!atts.length) return null;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+      {atts.map((att) =>
+        (att.mime || "").startsWith("image/") ? (
+          <AttachmentImage key={att.file_id} att={att} />
+        ) : (
+          <Tooltip key={att.file_id} title={`${att.mime} · ${fmtSize(att.size)}`}>
+            <Tag style={{ fontSize: 11, cursor: "pointer" }}>
+              <PaperClipOutlined /> {att.filename}（{fmtSize(att.size)}）
+            </Tag>
+          </Tooltip>
+        ),
+      )}
+    </div>
+  );
 }
 
 // 从 SSE 事件流累积 message_delta → 完整文本
@@ -52,6 +132,10 @@ function extractBudgetUsed(events: RunEventOut[]): { iterations: number; max: nu
 
 function MessageItem({ msg }: { msg: MessageOut }) {
   const isUser = msg.role === "user";
+  const atts = isUser ? msgAttachments(msg) : [];
+  const text = msgText(msg);
+  const setCtxRun = useSSEStore((s) => s.setActiveRun);
+  const openContextPanel = useUIStore((s) => s.openContextPanel);
   return (
     <div
       style={{
@@ -61,6 +145,7 @@ function MessageItem({ msg }: { msg: MessageOut }) {
       }}
     >
       <div
+        className="msg-bubble"
         style={{
           maxWidth: "80%",
           padding: "8px 14px",
@@ -73,17 +158,38 @@ function MessageItem({ msg }: { msg: MessageOut }) {
             : "var(--ant-color-text)",
         }}
       >
+        {isUser && <AttachmentList atts={atts} />}
         {isUser ? (
-          <div style={{ whiteSpace: "pre-wrap", fontSize: 14 }}>{msgText(msg)}</div>
+          text ? (
+            <div style={{ whiteSpace: "pre-wrap", fontSize: 14 }}>{text}</div>
+          ) : null
         ) : (
-          <MarkdownRenderer content={msgText(msg)} />
+          <MarkdownRenderer content={text} />
+        )}
+        {/* 消息 ↔ 任务关联入口：本条回复出自哪个 run，点开右栏看执行过程 */}
+        {!isUser && msg.run_id && (
+          <div style={{ marginTop: 4 }}>
+            <Button
+              type="text"
+              size="small"
+              className="msg-run-link"
+              icon={<ProfileOutlined />}
+              onClick={() => {
+                setCtxRun(msg.run_id!);
+                openContextPanel();
+              }}
+              style={{ fontSize: 11, padding: "0 4px", height: 20 }}
+            >
+              任务详情 · {msg.run_id.slice(0, 8)}
+            </Button>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function EventItem({ event }: { event: RunEventOut }) {
+export function EventItem({ event }: { event: RunEventOut }) {
   const { event_type, payload } = event;
 
   if (event_type === "message_delta") return null; // 已累积渲染

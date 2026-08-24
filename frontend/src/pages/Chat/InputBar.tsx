@@ -2,28 +2,76 @@
  * 消息输入栏（前端设计 §3.1 底部）。
  * Markdown 编辑模式、发送、终止进行中的 run。
  * 模型选择：run 级覆盖（随消息快照固化），默认跟随 Agent 绑定模型。
+ * 附件：选择/粘贴/拖入 → 先传 /files/upload 拿 file_id → 发消息只传 id 引用。
  */
-import { useEffect, useState } from "react";
-import { Input, Button, Space, Select, Tooltip } from "antd";
-import { SendOutlined, StopOutlined } from "@ant-design/icons";
+import { useEffect, useRef, useState } from "react";
+import { Input, Button, Space, Select, Tooltip, Modal, message as antdMessage } from "antd";
+import {
+  SendOutlined,
+  StopOutlined,
+  PaperClipOutlined,
+  FileTextOutlined,
+  DeleteOutlined,
+  LoadingOutlined,
+} from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
 import { modelsApi } from "@/api/models";
+import { filesApi } from "@/api/files";
+import { ApiError } from "@/api/client";
 import type { ModelProviderOut } from "@/api/types";
 
 const MODEL_PREF_KEY = "chat.modelProviderId";
+
+// 附件限制（与后端 files/service.py 对齐）
+const MAX_ATTACHMENTS = 5;
+const IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".gif"];
+const DOC_EXTS = [".pdf", ".docx", ".md", ".txt", ".xlsx"];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+const MAX_DOC_SIZE = 10 * 1024 * 1024;
+
+interface DraftAttachment {
+  key: string;
+  filename: string;
+  size: number;
+  isImage: boolean;
+  previewUrl?: string; // 图片本地预览（objectURL）
+  fileId?: string; // 上传完成才有
+  status: "uploading" | "done" | "error";
+}
+
+function checkFile(file: File): string | null {
+  const name = file.name.toLowerCase();
+  const isImage = IMAGE_EXTS.some((e) => name.endsWith(e));
+  const isDoc = DOC_EXTS.some((e) => name.endsWith(e));
+  if (!isImage && !isDoc) return `不支持的类型：${file.name}`;
+  const limit = isImage ? MAX_IMAGE_SIZE : MAX_DOC_SIZE;
+  if (file.size > limit) {
+    return `${file.name} 超出大小限制（${limit / 1024 / 1024}MB）`;
+  }
+  return null;
+}
 
 export default function InputBar({
   onSend,
   disabled,
   runId,
 }: {
-  onSend: (text: string, modelProviderId?: string) => Promise<void>;
+  onSend: (
+    text: string,
+    modelProviderId?: string,
+    attachmentIds?: string[],
+    confirmUpload?: boolean,
+  ) => Promise<void>;
   disabled: boolean;
   runId?: string;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
+  // 拖拽高亮：文件拖入时输入容器边框点亮
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   // 选择持久化：切换会话/刷新后保留（localStorage）
   const [modelId, setModelId] = useState<string | undefined>(() =>
     localStorage.getItem(MODEL_PREF_KEY) || undefined,
@@ -46,12 +94,94 @@ export default function InputBar({
     if (modelId && !llms.some((m) => m.id === modelId)) setModelId(undefined);
   }, [llms, modelId]);
 
+  const uploading = attachments.some((a) => a.status === "uploading");
+
+  const addFiles = (files: FileList | File[]) => {
+    const room = MAX_ATTACHMENTS - attachments.length;
+    if (room <= 0) {
+      antdMessage.warning(`最多 ${MAX_ATTACHMENTS} 个附件`);
+      return;
+    }
+    const list = Array.from(files).slice(0, room);
+    for (const f of list) {
+      const err = checkFile(f);
+      if (err) {
+        antdMessage.error(err);
+        continue;
+      }
+      const key = `${f.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const isImage = f.type.startsWith("image/");
+      const draft: DraftAttachment = {
+        key,
+        filename: f.name,
+        size: f.size,
+        isImage,
+        previewUrl: isImage ? URL.createObjectURL(f) : undefined,
+        status: "uploading",
+      };
+      setAttachments((prev) => [...prev, draft]);
+      filesApi
+        .upload(f)
+        .then((out) => {
+          setAttachments((prev) =>
+            prev.map((a) => (a.key === key ? { ...a, fileId: out.id, status: "done" } : a)),
+          );
+        })
+        .catch((e: Error) => {
+          antdMessage.error(`上传失败：${e.message}`);
+          setAttachments((prev) => prev.filter((a) => a.key !== key));
+          if (draft.previewUrl) URL.revokeObjectURL(draft.previewUrl);
+        });
+    }
+  };
+
+  const removeAttachment = (key: string) => {
+    setAttachments((prev) => {
+      const a = prev.find((x) => x.key === key);
+      if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      return prev.filter((x) => x.key !== key);
+    });
+  };
+
+  const clearAttachments = () => {
+    attachments.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
+    setAttachments([]);
+  };
+
+  const canSend =
+    !disabled && !sending && !uploading && (text.trim().length > 0 || attachments.some((a) => a.status === "done"));
+
   const handleSend = async () => {
-    if (!text.trim() || disabled || sending) return;
+    if (!canSend) return;
     setSending(true);
+    const ids = attachments.filter((a) => a.status === "done").map((a) => a.fileId!);
+    const payload = [text.trim(), modelId, ids] as const;
     try {
-      await onSend(text.trim(), modelId);
+      let confirmUpload = false;
+      try {
+        await onSend(...payload, confirmUpload);
+      } catch (e) {
+        // 图片外发确认门：带图且生效模型支持视觉 → 428，弹窗确认后携 confirm_upload 重发
+        if (!(e instanceof ApiError) || e.status !== 428) throw e;
+        const ok = await new Promise<boolean>((resolve) => {
+          Modal.confirm({
+            title: "图片外发确认",
+            content: `${e.detail}。确认后图片将由模型服务商处理，请确保不包含涉密/敏感内容。`,
+            okText: "不涉密，上传",
+            okType: "primary",
+            cancelText: "取消发送",
+            onOk: () => resolve(true),
+            onCancel: () => resolve(false),
+          });
+        });
+        if (!ok) return; // 取消：保留输入内容
+        confirmUpload = true;
+        await onSend(...payload, confirmUpload);
+      }
       setText("");
+      clearAttachments();
+    } catch {
+      // 发送失败：保留输入内容，可修改后重试
     } finally {
       setSending(false);
     }
@@ -65,72 +195,181 @@ export default function InputBar({
   return (
     <div
       style={{
-        padding: "8px 16px",
+        padding: "12px 16px 6px",
         borderTop: "1px solid rgba(128,128,128,0.2)",
       }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!disabled) setDragActive(true);
+      }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragActive(false);
+        if (!disabled && e.dataTransfer.files.length > 0) addFiles(e.dataTransfer.files);
+      }}
     >
-      <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+      {/* 统一输入容器：附件区 + 输入框 + 底部工具栏（ChatGPT 式一体式布局） */}
+      <div className={`input-shell${dragActive ? " drag-over" : ""}`}>
+        {/* 附件 chip 列表（容器内顶部） */}
+        {attachments.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              padding: "8px 10px 0",
+            }}
+          >
+            {attachments.map((a) => (
+              <div
+                key={a.key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 8px",
+                  borderRadius: 6,
+                  background: "rgba(128,128,128,0.12)",
+                  maxWidth: 280,
+                }}
+              >
+                {a.isImage && a.previewUrl ? (
+                  <img
+                    src={a.previewUrl}
+                    alt={a.filename}
+                    style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }}
+                  />
+                ) : (
+                  <FileTextOutlined />
+                )}
+                <span
+                  style={{
+                    fontSize: 12,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {a.filename}
+                </span>
+                {a.status === "uploading" ? (
+                  <LoadingOutlined style={{ fontSize: 12 }} />
+                ) : (
+                  <DeleteOutlined
+                    style={{ fontSize: 12, cursor: "pointer", color: "rgba(128,128,128,0.8)" }}
+                    onClick={() => removeAttachment(a.key)}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={[...IMAGE_EXTS, ...DOC_EXTS].join(",")}
+          style={{ display: "none" }}
+          onChange={(e) => {
+            if (e.target.files?.length) addFiles(e.target.files);
+            e.target.value = ""; // 同名文件可重复选择
+          }}
+        />
+
+        {/* 输入框：无边框透明，融入容器 */}
         <Input.TextArea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="输入消息…（Shift+Enter 换行，Enter 发送）"
-          autoSize={{ minRows: 1, maxRows: 6 }}
+          onPaste={(e) => {
+            const files = e.clipboardData?.files;
+            if (files?.length) {
+              e.preventDefault();
+              addFiles(files);
+            }
+          }}
+          placeholder="输入消息…"
+          autoSize={{ minRows: 1, maxRows: 8 }}
           disabled={disabled}
+          variant="borderless"
           onPressEnter={(e) => {
             if (!e.shiftKey) {
               e.preventDefault();
               handleSend();
             }
           }}
-          style={{ flex: 1, resize: "none" }}
+          style={{
+            resize: "none",
+            padding: "8px 12px 4px",
+            fontSize: 14,
+            background: "transparent",
+          }}
         />
-        <Space direction="vertical" size={0}>
+
+        {/* 底部工具栏：左侧附件+模型，右侧发送/终止 */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            padding: "0 6px 6px 4px",
+          }}
+        >
+          <Space size={0}>
+            <Tooltip title="添加图片或文件（也可直接粘贴/拖入）">
+              <Button
+                type="text"
+                icon={<PaperClipOutlined />}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={disabled}
+                style={{ color: "rgba(128,128,128,0.9)" }}
+              />
+            </Tooltip>
+            <Tooltip title="本次对话使用的模型；「跟随 Agent」即使用 Agent 管理中绑定的模型">
+              <Select
+                size="small"
+                variant="borderless"
+                style={{ minWidth: 170, color: "rgba(128,128,128,0.9)" }}
+                value={modelId ?? "follow-agent"}
+                onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
+                options={[
+                  { value: "follow-agent", label: "跟随 Agent 默认" },
+                  ...llms.map((m) => ({ value: m.id, label: m.name })),
+                ]}
+              />
+            </Tooltip>
+          </Space>
+
           {disabled && runId ? (
-            <Button
-              danger
-              icon={<StopOutlined />}
-              onClick={handleAbort}
-              size="large"
-            >
-              终止
-            </Button>
+            <Tooltip title="终止当前任务">
+              <Button danger shape="circle" icon={<StopOutlined />} onClick={handleAbort} />
+            </Tooltip>
           ) : (
-            <Button
-              type="primary"
-              icon={<SendOutlined />}
-              onClick={handleSend}
-              loading={sending}
-              disabled={disabled || !text.trim()}
-              size="large"
-            >
-              发送
-            </Button>
+            <Tooltip title={canSend ? "发送（Enter）" : "输入内容后发送"}>
+              <Button
+                type="primary"
+                shape="circle"
+                icon={<SendOutlined />}
+                onClick={handleSend}
+                loading={sending}
+                disabled={!canSend}
+              />
+            </Tooltip>
           )}
-        </Space>
+        </div>
       </div>
+
+      {/* 快捷键提示：容器外一行小字，不抢输入区视觉 */}
       <div
         style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          alignItems: "center",
-          marginTop: 4,
-          fontSize: 12,
-          color: "rgba(128,128,128,0.8)",
+          textAlign: "center",
+          fontSize: 11,
+          color: "rgba(128,128,128,0.55)",
+          marginTop: 6,
         }}
       >
-        <Tooltip title="本次对话使用的模型；「跟随 Agent」即使用 Agent 管理中绑定的模型">
-          <span style={{ marginRight: 8 }}>模型</span>
-        </Tooltip>
-        <Select
-          size="small"
-          style={{ minWidth: 200 }}
-          value={modelId ?? "follow-agent"}
-          onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
-          options={[
-            { value: "follow-agent", label: "跟随 Agent 默认" },
-            ...llms.map((m) => ({ value: m.id, label: m.name })),
-          ]}
-        />
+        Enter 发送 · Shift+Enter 换行 · 支持粘贴 / 拖入图片与文件
       </div>
     </div>
   );

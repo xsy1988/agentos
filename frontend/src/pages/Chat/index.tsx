@@ -64,10 +64,22 @@ export default function ChatPage() {
   // SSE 连接（当有 activeRun 时）
   useSSE(activeRun?.runId ?? null, { onEvent: handleSSEEvent });
 
-  // 发送消息（modelProviderId：对话内临时换模型，可选）
-  const handleSend = async (text: string, modelProviderId?: string) => {
+  // 发送消息（modelProviderId：对话内临时换模型；attachmentIds：附件；
+  // confirmUpload：图片外发涉密确认，由 InputBar 的确认弹窗触发，均可选）
+  const handleSend = async (
+    text: string,
+    modelProviderId?: string,
+    attachmentIds?: string[],
+    confirmUpload?: boolean,
+  ) => {
     if (!activeConvId) return;
-    const result = await conversationsApi.sendMessage(activeConvId, text, modelProviderId);
+    const result = await conversationsApi.sendMessage(
+      activeConvId,
+      text,
+      modelProviderId,
+      attachmentIds,
+      confirmUpload,
+    );
     setActiveRun({ runId: result.run_id, status: "running" });
     setCtxRun(result.run_id);
     // 用户消息立即上屏：不等 run 终态（run 可能停在等待确认，届时才刷新就太晚）
@@ -108,6 +120,19 @@ export default function ChatPage() {
     [setCtxRun],
   );
 
+  // 会话被删除：若删的是当前会话，清空选中与运行态，回到空态
+  const handleConversationDeleted = useCallback(
+    (id: string) => {
+      if (id === activeConvId) {
+        setActiveConvId(null);
+        setActiveRun(null);
+        setConfirming(null);
+        setCtxRun(null);
+      }
+    },
+    [activeConvId, setCtxRun],
+  );
+
   return (
     <Layout style={{ height: "100%", background: "transparent" }}>
       <Sider
@@ -122,6 +147,7 @@ export default function ChatPage() {
         <ConversationList
           activeId={activeConvId}
           onSelect={handleSelectConversation}
+          onDeleted={handleConversationDeleted}
         />
       </Sider>
       <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>

@@ -12,8 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.modules.files.models import File, FileRef
 
-# 允许上传的扩展名 → source_type（知识库管道只处理这些）
-ALLOWED_EXTS = {".pdf": "pdf", ".docx": "word", ".md": "md", ".txt": "txt", ".xlsx": "excel"}
+# 允许上传的扩展名（知识库管道 / 对话附件共用上传入口）：
+# 文档 → source_type（知识库管道只处理这些）；图片仅供对话附件（多模态投喂）
+DOC_EXTS = {".pdf": "pdf", ".docx": "word", ".md": "md", ".txt": "txt", ".xlsx": "excel"}
+IMAGE_EXTS = {".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".gif": "image"}
+ALLOWED_EXTS = DOC_EXTS | IMAGE_EXTS
+
+# 对话附件限制（方案拍板：图片 5MB / 文档 10MB；单条消息 ≤5 个由 MessageIn 校验）
+MAX_IMAGE_SIZE = 5 * 1024 * 1024
+MAX_DOC_SIZE = 10 * 1024 * 1024
 
 
 def _storage_path(ext: str) -> Path:
@@ -37,6 +44,12 @@ async def save_upload(db: AsyncSession, filename: str, content: bytes) -> tuple[
         raise HTTPException(
             status_code=415,
             detail=f"不支持的文件类型 {ext}，允许：{', '.join(sorted(ALLOWED_EXTS))}",
+        )
+    limit = MAX_IMAGE_SIZE if ext in IMAGE_EXTS else MAX_DOC_SIZE
+    if len(content) > limit:
+        raise HTTPException(
+            status_code=413,
+            detail=f"文件超出大小限制（{limit // 1024 // 1024}MB）：{filename}",
         )
 
     rel = _storage_path(ext)
@@ -85,4 +98,9 @@ def _guess_mime(ext: str) -> str:
         ".md": "text/markdown",
         ".txt": "text/plain",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
     }.get(ext, "application/octet-stream")

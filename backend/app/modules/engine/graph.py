@@ -1,13 +1,16 @@
 """完整图（M2-2c）—— 模块详细设计 §1.1.1。
 
 START → intent_router →(chitchat)→ agent → END（闲聊快速通道：跳过全部装配）
-                      →(task)→ context_assembly → planner → confirm_plan
+                      →(task·simple)→ context_assembly → agent（简单任务直通：
+                          跳过 planner/confirm_plan/verify——识别图片、问答等单步任务
+                          不需要任务清单与验收，agent 自身可调工具补台）
+                      →(task·complex)→ context_assembly → planner → confirm_plan
 confirm_plan →(approved)→ agent
              →(rejected)→ END
-agent ⇄ tools（ReAct 回环，钩子全程计量/审计/熔断）
-agent →(无 tool_calls)→ verify →(achieved | 回环限 3 次)→ END
+agent ⇄ tools（ReAct 回环，钩子全程计量/审计/熔断；高危工具确认点仍生效）
+agent →(无 tool_calls)→ verify（仅 complex；闲聊/简单任务直达 END）→(achieved | 回环限 3 次)→ END
 
-确认点两处（interrupt）：任务单提交前（confirm_plan）+ 高危工具调用前（tools）。
+确认点两处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）。
 节点是薄壳，逻辑经 runtime 依赖注入（backend/emit/hooks/run_ctx）。
 
 interrupt 重放纪律：恢复时节点从头重放——
@@ -55,6 +58,72 @@ def build_system_prompt(agent_cfg: dict[str, Any]) -> str:
         agent_cfg.get("system_prompt") or "",
     ]
     return "\n\n".join(p for p in parts if p.strip())
+
+
+def _human_text(content: Any) -> str:
+    """从消息 content 提取纯文本（兼容多模态列表：取 text 块，图片折叠占位）。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    parts.append(str(b.get("text") or ""))
+                elif b.get("type") == "image_url":
+                    parts.append("[图片]")
+        return "".join(parts)
+    return str(content or "")
+
+
+def _adapt_multimodal(
+    msgs: list[AnyMessage], supports_vision: bool, keep_recent: int = 2
+) -> list[AnyMessage]:
+    """发送视图适配（只改内存视图，不动 checkpoint）：图片块按当前 LLM 能力取舍。
+
+    - 模型不支持视觉（provider params.vision 未开）：image_url 块替换为说明性占位，
+      否则 OpenAI 兼容端点直接拒收；占位必须写明原因，让 Agent 告知用户换
+      vision 模型而不是去翻找 OCR 工具（实测教训：含糊占位会诱发工具自救）；
+    - 支持：仅保留最近 keep_recent 张（图片 token 昂贵，历史图片无价值折叠）。
+    消息对象与 checkpoint 共享，替换时必须构造副本（model_copy）。
+    """
+    if not any(isinstance(getattr(m, "content", None), list) for m in msgs):
+        return msgs
+    budget = keep_recent if supports_vision else 0
+    out: list[AnyMessage] = []
+    for m in reversed(msgs):
+        content = getattr(m, "content", None)
+        if isinstance(content, list):
+            new_blocks: list[Any] = []
+            changed = False
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "image_url":
+                    changed = True
+                    if budget > 0:
+                        budget -= 1
+                        new_blocks.append(b)
+                    elif supports_vision:
+                        new_blocks.append(
+                            {"type": "text", "text": "[图片：较早的历史图片已折叠省略]"}
+                        )
+                    else:
+                        new_blocks.append(
+                            {
+                                "type": "text",
+                                "text": (
+                                    "[图片附件：当前对话使用的模型不支持视觉输入，图片内容不可见。"
+                                    "请直接告知用户换用支持视觉的模型后重新发送图片，"
+                                    "不要尝试用文件工具读取或检索 OCR 工具。]"
+                                ),
+                            }
+                        )
+                else:
+                    new_blocks.append(b)
+            if changed:
+                m = m.model_copy(update={"content": new_blocks})
+        out.append(m)
+    out.reverse()
+    return out
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -129,8 +198,33 @@ async def _get_llm(
             provider = override
     if provider is None or provider.get("id") is None:
         return None
+    # 视觉能力标记（params.vision，设置页勾选）：agent 节点发送视图据此适配图片块
+    agent_cfg = dict(agent_cfg)
+    agent_cfg["vision"] = bool((provider.get("params") or {}).get("vision"))
     api_key = decrypt_secret(provider["api_key_encrypted"])
     return get_chat_model(provider, api_key), agent_cfg
+
+
+async def _get_lightweight_llm(runtime: Any) -> Any | None:
+    """轻量模型（params.lightweight 标记，设置页勾选）：未配置返回 None，
+    调用方回退主模型。闲聊回复与内部短调用（分类/规划/验收）用它降本。"""
+    from app.modules.models_module.provider import decrypt_secret, get_chat_model
+
+    provider = await runtime.backend.get_lightweight_provider()
+    if provider is None:
+        return None
+    return get_chat_model(provider, decrypt_secret(provider["api_key_encrypted"]))
+
+
+async def _get_internal_llm(
+    runtime: Any, agent_id: str, model_provider_id: str | None = None
+) -> Any | None:
+    """内部短调用（意图分类/规划/验收）取 LLM：轻量模型优先，未配置回退主模型。"""
+    light = await _get_lightweight_llm(runtime)
+    if light is not None:
+        return light
+    pack = await _get_llm(runtime, agent_id, model_provider_id)
+    return pack[0] if pack else None
 
 
 def build_graph(runtime: Any) -> CompiledStateGraph:
@@ -142,42 +236,59 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     # ---------- 节点 ----------
 
     async def intent_router(state: LoopState, config: RunnableConfig) -> dict:
-        """规则优先 + 小模型兜底分类（设计 §1.1.1：闲聊走快速通道）。"""
+        """规则优先 + 轻量模型兕底三分类（设计 §1.1.1：闲聊走快速通道；
+        简单任务跳过规划/确认/验收，复杂任务走完整链路）。"""
         msgs = state.get("messages") or []
         text = ""
+        has_image = False
         for m in reversed(msgs):
             if getattr(m, "type", "") == "human":
-                text = str(m.content)
+                content = getattr(m, "content", None)
+                has_image = isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "image_url" for b in content
+                )
+                text = _human_text(content)
                 break
         intent = "task"
+        complexity = "simple"
         if CHITCHAT_RE.match(text.strip()):
             intent = "chitchat"
         else:
-            # 小模型兜底分类（规则未命中才调，控制成本）
-            llm_pack = await _get_llm(
+            # 轻量模型兕底分类（规则未命中才调，控制成本）；分类失败默认
+            # simple——风险不对称时选轻路径（simple 路径 agent 仍可调工具补台）
+            llm = await _get_internal_llm(
                 runtime,
                 config["configurable"]["agent_id"],
                 config["configurable"].get("model_provider_id"),
             )
-            if llm_pack is not None:
-                llm, _ = llm_pack
+            if llm is not None:
                 try:
+                    hint = "（消息附带图片）" if has_image else ""
                     resp = await llm.ainvoke(
                         [
                             SystemMessage(
-                                content="你是意图分类器。判断用户输入是闲聊问候"
-                                "（chitchat）还是需要执行的任务（task）。"
-                                '只输出 JSON：{"intent": "task"} 或 {"intent": "chitchat"}'
+                                content="你是意图分类器。判断用户输入属于哪类：\n"
+                                "chitchat：问候寒暀、无实质诉求\n"
+                                "simple：单步可完成的任务——问答/翻译/总结/改写/图片"
+                                "识别描述/单次查询；无需多工具编排\n"
+                                "complex：多步骤拆解、跨工具编排、含写操作或"
+                                "外部副作用的任务\n"
+                                '只输出 JSON：{"intent": "chitchat" 或 "task", '
+                                '"complexity": "simple" 或 "complex"}'
+                                "（chitchat 时 complexity 填 simple）"
                             ),
-                            HumanMessage(content=text[:500]),
+                            HumanMessage(content=f"{text[:500]}{hint}"),
                         ]
                     )
                     obj = _extract_json(str(resp.content))
-                    if obj and obj.get("intent") in ("task", "chitchat"):
-                        intent = str(obj["intent"])
-                except Exception:  # noqa: BLE001 —— 分类失败按任务处理，不阻断主链路
-                    intent = "task"
-        return {"protected_context": {"intent": intent}}
+                    if obj:
+                        if obj.get("intent") in ("task", "chitchat"):
+                            intent = str(obj["intent"])
+                        if obj.get("complexity") in ("simple", "complex"):
+                            complexity = str(obj["complexity"])
+                except Exception:  # noqa: BLE001 —— 分类失败按简单任务处理，不阻断主链路
+                    intent, complexity = "task", "simple"
+        return {"protected_context": {"intent": intent, "complexity": complexity}}
 
     async def context_assembly(state: LoopState, config: RunnableConfig) -> dict:
         """五区装配之工具描述区（M3，设计 §1.2.3）：
@@ -194,7 +305,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         query = ""
         for m in reversed(msgs):
             if getattr(m, "type", "") == "human":
-                query = str(m.content)
+                query = _human_text(m.content)
                 break
         tool_budget = int(agent_cfg.get("tool_budget") or 8)
         cache = await assemble_tools(query, conf["agent_id"], tool_budget)
@@ -218,6 +329,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         return {
             "protected_context": {
                 "intent": "task",
+                # 复杂度判定结果穿透装配节点（simple 分流在 assembly 之后）
+                "complexity": (state.get("protected_context") or {}).get("complexity", "simple"),
                 "system_prompt": system_prompt,
             },
             "capability_cache": cache,
@@ -227,12 +340,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。"""
         conf = config["configurable"]
         run_id: str = conf["run_id"]
-        llm_pack = await _get_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
-        if llm_pack is None:
+        # 规划是内部短调用：轻量模型优先，未配置回退主模型
+        llm = await _get_internal_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
+        if llm is None:
             return {"plan_ref": None}
-        llm, _ = llm_pack
         msgs = state.get("messages") or []
-        task_text = str(msgs[-1].content) if msgs else ""
+        task_text = _human_text(msgs[-1].content) if msgs else ""
         usage: dict[str, int] = {}
         try:
             resp = await llm.ainvoke(
@@ -298,6 +411,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         llm, agent_cfg = llm_pack
 
         intent = (state.get("protected_context") or {}).get("intent", "task")
+        # 闲聊回复走轻量模型（未配置回退主模型，行为不变）
+        if intent == "chitchat":
+            light = await _get_lightweight_llm(runtime)
+            if light is not None:
+                llm = light
         state_msgs = list(state.get("messages") or [])
         # L1/L2 压缩（估算用量 ≥ 阈值触发；保护名单不在消息区，天然安全）
         from app.modules.discovery.assembler import compact_messages, local_view
@@ -310,6 +428,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 悬空 tool_calls 防御（见 _normalize_tool_responses 文档）：
         # 发送视图规范化 + 补丁写回 checkpoint
         state_msgs, aborted_patches = _normalize_tool_responses(state_msgs)
+        # 多模态适配：图片块按当前模型视觉能力取舍（非 vision 替换占位，vision 保留最近 2 张）
+        state_msgs = _adapt_multimodal(state_msgs, bool(agent_cfg.get("vision")))
 
         messages: list[AnyMessage] = []
         sys_prompt = (state.get("protected_context") or {}).get("system_prompt") or ""
@@ -498,6 +618,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         if llm_pack is None:
             return {}
         llm, _ = llm_pack
+        # 验收是内部短调用：轻量模型优先，未配置用主模型
+        light = await _get_lightweight_llm(runtime)
+        if light is not None:
+            llm = light
 
         msgs = state.get("messages") or []
         task_text = ""
@@ -558,6 +682,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             return "chitchat"
         return "task"
 
+    def route_after_assembly(state: LoopState) -> str:
+        # 简单任务直通执行：跳过 planner/confirm_plan（高危工具确认点 2 仍生效）
+        if (state.get("protected_context") or {}).get("complexity") != "complex":
+            return "agent"
+        return "planner"
+
     def route_confirm(state: LoopState) -> str:
         conf = state.get("confirmation")
         if conf and conf.get("answer") == "rejected":
@@ -569,7 +699,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         last = msgs[-1] if msgs else None
         if getattr(last, "tool_calls", None):
             return "tools"
-        if (state.get("protected_context") or {}).get("intent") == "chitchat":
+        protected = state.get("protected_context") or {}
+        # 闲聊与简单任务直达 END：verify 只为复杂任务把关
+        # （对"识别图片"这类单步任务，验收是一次纯浪费的 LLM 调用）
+        if protected.get("intent") == "chitchat" or protected.get("complexity") != "complex":
             return END
         return "verify"
 
@@ -593,7 +726,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g.add_conditional_edges(
         "intent_router", route_intent, {"chitchat": "agent", "task": "context_assembly"}
     )
-    g.add_edge("context_assembly", "planner")
+    g.add_conditional_edges(
+        "context_assembly",
+        route_after_assembly,
+        {"planner": "planner", "agent": "agent"},
+    )
     g.add_edge("planner", "confirm_plan")
     g.add_conditional_edges("confirm_plan", route_confirm, {END: END, "agent": "agent"})
     g.add_conditional_edges("agent", route_agent, {"tools": "tools", "verify": "verify", END: END})

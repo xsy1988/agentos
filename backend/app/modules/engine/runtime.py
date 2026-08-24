@@ -15,10 +15,12 @@
 """
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -40,6 +42,11 @@ from app.modules.runs.models import Run
 logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = ("done", "failed", "cancelled")
+
+# 附件注入限制（方案拍板）：小文本直读阈值、单附件提取截断、docling 超时
+ATTACHMENT_INLINE_LIMIT = 100 * 1024
+ATTACHMENT_TEXT_LIMIT = 30_000
+ATTACHMENT_PARSE_TIMEOUT = 60.0
 
 
 def _pg_dsn() -> str:
@@ -238,6 +245,84 @@ class EngineRuntime:
         async with session_factory() as db:
             return await db.get(Run, UUID(run_id))
 
+    # ---------- 附件消费（对话附件方案：文档提文本注入，图片多模态投喂） ----------
+
+    async def _build_user_message(self, run: Run) -> HumanMessage:
+        """run.input 附件 → HumanMessage。
+
+        图片：多模态 image_url 块（base64 data URL）；模型是否支持视觉由
+        graph 侧发送视图按 provider params.vision 适配（此处无条件携带）。
+        文档：小文本直读，其余 docling 提取（sha256 缓存）；任何一步失败
+        降级为占位文本，不阻断 run。
+        """
+        inp = run.input or {}
+        text = str(inp.get("text") or "")
+        att_ids = inp.get("attachment_ids") or []
+        if not att_ids:
+            return HumanMessage(content=text)
+
+        from app.modules.files.models import File
+
+        doc_parts: list[str] = [text] if text else []
+        image_blocks: list[dict[str, Any]] = []
+        async with session_factory() as db:
+            for fid in att_ids:
+                file = await db.get(File, UUID(str(fid)))
+                if file is None:
+                    doc_parts.append(f"[附件记录缺失：{fid}]")
+                    continue
+                try:
+                    raw = (settings.data_dir / file.path).read_bytes()
+                except OSError:
+                    doc_parts.append(f"[附件读取失败：{file.filename}]")
+                    continue
+                if (file.mime or "").startswith("image/"):
+                    b64 = base64.b64encode(raw).decode()
+                    image_blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{file.mime};base64,{b64}"},
+                        }
+                    )
+                else:
+                    doc_parts.append(
+                        f"【附件：{file.filename}】\n{await self._extract_doc_text(file, raw)}"
+                    )
+
+        full_text = "\n\n".join(p for p in doc_parts if p)
+        if image_blocks:
+            blocks: list[Any] = [
+                {"type": "text", "text": full_text or "（无文本，仅图片）"}
+            ] + image_blocks
+            return HumanMessage(content=blocks)
+        return HumanMessage(content=full_text)
+
+    async def _extract_doc_text(self, file: Any, raw: bytes) -> str:
+        """文档附件 → 注入文本：txt/md 小文件直读，其余 docling 提取（缓存）。"""
+        ext = Path(str(file.path)).suffix.lower()
+        if ext in (".txt", ".md") and len(raw) <= ATTACHMENT_INLINE_LIMIT:
+            return raw.decode("utf-8", errors="replace")[:ATTACHMENT_TEXT_LIMIT]
+
+        # docling 提取，sha256 键缓存（同一文件重复发送不重解析）
+        cache = settings.data_dir / "parse" / f"att-{str(file.sha256 or file.id)[:16]}.md"
+        if cache.is_file():
+            md = cache.read_text(encoding="utf-8")
+        else:
+            from app.modules.knowledge.parser import parse_document
+
+            try:
+                md = await asyncio.wait_for(
+                    parse_document(str(file.filename), raw),
+                    timeout=ATTACHMENT_PARSE_TIMEOUT,
+                )
+            except Exception as e:  # noqa: BLE001 —— 解析失败降级占位，不阻断对话
+                return f"[附件解析失败：{file.filename}（{type(e).__name__}）]"
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(md, encoding="utf-8")
+        if len(md) > ATTACHMENT_TEXT_LIMIT:
+            md = md[:ATTACHMENT_TEXT_LIMIT] + "\n…（内容过长已截断）"
+        return md
+
     async def _process_run(self, run_id: str) -> None:
         """user_input 入口：pending → running → 图执行 → 终态。"""
         try:
@@ -253,9 +338,7 @@ class EngineRuntime:
                 run_id,
                 str(run.conversation_id) if run.conversation_id else run_id,
                 str(run.agent_id),
-                input_payload={
-                    "messages": [HumanMessage(content=(run.input or {}).get("text", ""))]
-                },
+                input_payload={"messages": [await self._build_user_message(run)]},
             )
         except asyncio.CancelledError:
             await self._finalize_cancelled(run_id)

@@ -53,3 +53,39 @@ body {
 .markdown-body pre code {
   padding: 0;
 }
+
+/* 会话列表项 hover 时显示重命名/删除操作（默认隐藏；不能用内联 style 隐藏——
+   内联样式优先级高于任何选择器，hover 规则永远盖不过） */
+.conv-item-actions {
+  visibility: hidden;
+}
+.ant-list-item:hover .conv-item-actions {
+  visibility: visible;
+}
+/* 任务详情入口：hover 才显示，不抢消息视觉 */
+.msg-run-link {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.ant-list-item:hover .msg-run-link,
+.msg-bubble:hover .msg-run-link {
+  opacity: 1;
+}
+
+/* 输入栏统一容器（ChatGPT 式一体式布局）：
+   附件 chip 区 + 无边框输入框 + 底部工具栏都在同一个圆角壳内 */
+.input-shell {
+  border-radius: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  background: var(--ant-color-bg-container);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input-shell:focus-within {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
+}
+/* 文件拖入高亮 */
+.input-shell.drag-over {
+  border-color: var(--ant-color-primary);
+  background: rgba(22, 119, 255, 0.04);
+}

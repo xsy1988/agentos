@@ -1,9 +1,9 @@
 /**
  * 会话列表（前端设计 §3.1 左栏）。
- * 按日期分组、新建会话。
+ * 按日期分组、新建会话、重命名/删除（hover 操作）。
  */
-import { Button, List, Typography, Input } from "antd";
-import { PlusOutlined, SearchOutlined } from "@ant-design/icons";
+import { Button, List, Typography, Input, Space, Popconfirm, Modal, message as antdMessage } from "antd";
+import { PlusOutlined, SearchOutlined, EditOutlined, DeleteOutlined } from "@ant-design/icons";
 import { useState, useMemo } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { conversationsApi } from "@/api/conversations";
@@ -23,12 +23,17 @@ function formatDateGroup(date: string | null): string {
 export default function ConversationList({
   activeId,
   onSelect,
+  onDeleted,
 }: {
   activeId: string | null;
   onSelect: (id: string) => void;
+  /** 删除的是当前会话时通知父页清空选中状态 */
+  onDeleted?: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
+  // 重命名弹窗状态
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
 
   const { data: conversations = [] } = useQuery({
     queryKey: ["conversations"],
@@ -42,6 +47,27 @@ export default function ConversationList({
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
       onSelect(conv.id);
     },
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      conversationsApi.update(id, { title }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      setRenaming(null);
+    },
+    onError: () => antdMessage.error("重命名失败"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => conversationsApi.del(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      // 当前会话被删：清空选中；否则仅列表刷新
+      if (id === activeId) onDeleted?.(id);
+      antdMessage.success("会话已删除");
+    },
+    onError: () => antdMessage.error("删除失败（含运行中任务的会话请稍后重试）"),
   });
 
   const filtered = useMemo(() => {
@@ -116,13 +142,45 @@ export default function ConversationList({
                   onClick={() => onSelect(conv.id)}
                 >
                   <div style={{ width: "100%", overflow: "hidden" }}>
-                    <Typography.Text
-                      ellipsis
-                      style={{ fontSize: 13 }}
-                      strong={conv.id === activeId}
-                    >
-                      {conv.title}
-                    </Typography.Text>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 4 }}>
+                      <Typography.Text
+                        ellipsis
+                        style={{ fontSize: 13, flex: 1, minWidth: 0 }}
+                        strong={conv.id === activeId}
+                      >
+                        {conv.title}
+                      </Typography.Text>
+                      <Space
+                        size={0}
+                        className="conv-item-actions"
+                        style={{ flex: "none" }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<EditOutlined />}
+                          aria-label="重命名会话"
+                          onClick={() => setRenaming({ id: conv.id, title: conv.title })}
+                        />
+                        <Popconfirm
+                          title="删除此会话？"
+                          description="消息、任务记录与计划将一并删除，不可恢复。"
+                          okText="删除"
+                          okButtonProps={{ danger: true }}
+                          cancelText="取消"
+                          onConfirm={() => deleteMutation.mutate(conv.id)}
+                        >
+                          <Button
+                            type="text"
+                            size="small"
+                            danger
+                            icon={<DeleteOutlined />}
+                            aria-label="删除会话"
+                          />
+                        </Popconfirm>
+                      </Space>
+                    </div>
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <Typography.Text
                         type="secondary"
@@ -158,6 +216,34 @@ export default function ConversationList({
           </div>
         )}
       </div>
+
+      {/* 重命名弹窗 */}
+      <Modal
+        title="重命名会话"
+        open={!!renaming}
+        onCancel={() => setRenaming(null)}
+        onOk={() =>
+          renaming && renaming.title.trim() && renameMutation.mutate(renaming)
+        }
+        confirmLoading={renameMutation.isPending}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Input
+          value={renaming?.title ?? ""}
+          maxLength={255}
+          onChange={(e) =>
+            setRenaming((prev) =>
+              prev ? { ...prev, title: e.target.value } : prev,
+            )
+          }
+          onPressEnter={() =>
+            renaming && renaming.title.trim() && renameMutation.mutate(renaming)
+          }
+          placeholder="会话名称"
+        />
+      </Modal>
     </div>
   );
 }
