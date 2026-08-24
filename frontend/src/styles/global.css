@@ -1,0 +1,55 @@
+/*
+ * 全局样式：Tailwind v3 指令 + highlight.js 主题 + KaTeX + 工作台调整。
+ * preflight 已在 tailwind.config.js 中关闭以避免与 Antd 冲突。
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* highlight.js 深色主题 */
+@import "highlight.js/styles/github-dark.css";
+/* KaTeX 数学公式 */
+@import "katex/dist/katex.min.css";
+
+/* ---- 工作台风格全局调整 ---- */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+}
+
+/* 滚动条：细+深色友好 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.55);
+}
+
+/* 等宽字体辅助类 */
+.font-mono-tight {
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas,
+    monospace;
+  font-size: 0.85em;
+}
+
+/* Markdown 内代码高亮 */
+.markdown-body pre {
+  border-radius: 6px;
+  margin: 0.5em 0;
+}
+.markdown-body code {
+  border-radius: 3px;
+  padding: 0.1em 0.3em;
+}
+.markdown-body pre code {
+  padding: 0;
+}
