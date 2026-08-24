@@ -24,9 +24,7 @@ async def get_provider_or_404(db: AsyncSession, provider_id: UUID) -> ModelProvi
     return provider
 
 
-async def create_provider(
-    db: AsyncSession, body: ModelProviderCreateIn
-) -> ModelProvider:
+async def create_provider(db: AsyncSession, body: ModelProviderCreateIn) -> ModelProvider:
     from app.modules.models_module.provider import encrypt_secret
 
     provider = ModelProvider(

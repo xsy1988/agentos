@@ -25,6 +25,7 @@ from langchain_core.messages import (
     AIMessageChunk,
     AnyMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -66,6 +67,47 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return obj if isinstance(obj, dict) else None
+
+
+def _normalize_tool_responses(
+    msgs: list[AnyMessage],
+) -> tuple[list[AnyMessage], list[ToolMessage]]:
+    """规范化 tool_calls 响应：悬空补齐 + 响应吸附到对应 AIMessage 之后。
+
+    触发场景：run 在 tools 节点 interrupt 处被 abort / kill 后，thread 里遗留
+    无响应的 tool_calls；而 add_messages 归约只能 append 到末尾，补丁在
+    checkpoint 里位置可能不紧贴原 AIMessage（OpenAI 端点会拒收）。发送前
+    统一规范化（幂等）：每个 tool_call 的响应紧跟其 AIMessage，缺失则补
+    一条 [aborted] 空响应；补丁同时写回 checkpoint（末尾位置下轮再吸附）。
+    """
+    resp_idx: dict[str, int] = {}
+    for i, m in enumerate(msgs):
+        if m.type == "tool":
+            resp_idx.setdefault(str(getattr(m, "tool_call_id", "")), i)
+    consumed: set[int] = set()
+    new_msgs: list[AnyMessage] = []
+    patches: list[ToolMessage] = []
+    for i, m in enumerate(msgs):
+        calls = getattr(m, "tool_calls", None) or []
+        if calls:
+            new_msgs.append(m)
+            for tc in calls:
+                tid = str(tc.get("id") or "")
+                j = resp_idx.get(tid) if tid else None
+                if j is not None and j > i:
+                    new_msgs.append(msgs[j])
+                    consumed.add(j)
+                elif tid and j is None:
+                    patch = ToolMessage(
+                        content="[aborted] 该工具调用未执行（任务被中止），请基于现状继续。",
+                        tool_call_id=tid,
+                    )
+                    patches.append(patch)
+                    new_msgs.append(patch)
+                # j < i：响应已在更早位置（乱序 checkpoint，罕见），不重复吸附
+        elif i not in consumed:
+            new_msgs.append(m)
+    return new_msgs, patches
 
 
 async def _get_llm(runtime: Any, agent_id: str) -> tuple[Any, dict[str, Any]] | None:
@@ -123,19 +165,29 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         return {"protected_context": {"intent": intent}}
 
     async def context_assembly(state: LoopState, config: RunnableConfig) -> dict:
-        """确定性装配（2c 占位版）：系统提示词 + builtin 工具全集。
+        """五区装配之工具描述区（M3，设计 §1.2.3）：
 
-        M3 替换为 discovery 检索 Top-K + pinned 并入五区装配（设计 §1.2.3）。
+        pinned 常驻 + 语义 Top-K（受 tool_budget 封顶）+ 元工具，经 discovery
+        装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
         """
+        from app.modules.discovery.assembler import assemble_tools
+
         conf = config["configurable"]
         agent_cfg = await runtime.backend.get_agent_config(conf["agent_id"])
-        tools = await runtime.backend.list_enabled_tools()
+        msgs = state.get("messages") or []
+        query = ""
+        for m in reversed(msgs):
+            if getattr(m, "type", "") == "human":
+                query = str(m.content)
+                break
+        tool_budget = int(agent_cfg.get("tool_budget") or 8)
+        cache = await assemble_tools(query, conf["agent_id"], tool_budget)
         return {
             "protected_context": {
                 "intent": "task",
                 "system_prompt": build_system_prompt(agent_cfg),
             },
-            "capability_cache": {"tools": tools},
+            "capability_cache": cache,
         }
 
     async def planner(state: LoopState, config: RunnableConfig) -> dict:
@@ -170,22 +222,17 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             _ctx(run_id), _ctx(run_id).budget.get("iterations") or 0, usage
         )
         items = [
-            {"seq": i + 1, "text": str(s), "status": "pending"}
-            for i, s in enumerate(steps or [])
+            {"seq": i + 1, "text": str(s), "status": "pending"} for i, s in enumerate(steps or [])
         ] or [{"seq": 1, "text": f"直接处理：{task_text[:100]}", "status": "pending"}]
         plan_ref = await runtime.backend.save_plan(run_id, items)
-        await runtime.emit_event(
-            run_id, "plan_updated", {"plan_ref": plan_ref, "items": items}
-        )
+        await runtime.emit_event(run_id, "plan_updated", {"plan_ref": plan_ref, "items": items})
         return {"plan_ref": plan_ref}
 
     async def confirm_plan(state: LoopState, config: RunnableConfig) -> dict:
         """确认点 1：任务单提交前人审（设计 §1.1.1）。"""
         conf = config["configurable"]
         items = await runtime.backend.load_plan(conf["run_id"]) or []
-        answer = interrupt(
-            {"reason": "plan_review", "payload": {"plan": items}}
-        )
+        answer = interrupt({"reason": "plan_review", "payload": {"plan": items}})
         if answer == "approved":
             return {"confirmation": None}
         return {
@@ -214,6 +261,19 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         llm, agent_cfg = llm_pack
 
         intent = (state.get("protected_context") or {}).get("intent", "task")
+        state_msgs = list(state.get("messages") or [])
+        # L1/L2 压缩（估算用量 ≥ 阈值触发；保护名单不在消息区，天然安全）
+        from app.modules.discovery.assembler import compact_messages, local_view
+
+        compact_ops = await compact_messages(
+            llm, state_msgs, lambda et, p: runtime.emit_event(run_id, et, p)
+        )
+        if compact_ops is not None:
+            state_msgs = local_view(state_msgs, compact_ops)
+        # 悬空 tool_calls 防御（见 _normalize_tool_responses 文档）：
+        # 发送视图规范化 + 补丁写回 checkpoint
+        state_msgs, aborted_patches = _normalize_tool_responses(state_msgs)
+
         messages: list[AnyMessage] = []
         sys_prompt = (state.get("protected_context") or {}).get("system_prompt") or ""
         if sys_prompt:
@@ -222,29 +282,19 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         if state.get("plan_ref") and intent == "task":
             items = await runtime.backend.load_plan(run_id) or []
             if items:
-                todo = "; ".join(
-                    f"[{it['status']}] {it['text']}" for it in items
-                )
+                todo = "; ".join(f"[{it['status']}] {it['text']}" for it in items)
                 messages.append(SystemMessage(content=f"当前执行计划：{todo}"))
-        messages.extend(state.get("messages") or [])
+        messages.extend(state_msgs)
 
         iteration = (ctx.budget.get("iterations") or 0) + 1
         await hooks.on_turn_start(ctx, iteration)
 
         tools_meta = (state.get("capability_cache") or {}).get("tools") or []
-        schemas = [
-            t["payload"].get("schema")
-            for t in tools_meta
-            if t.get("payload", {}).get("schema")
-        ]
+        schemas = [t["schema"] for t in tools_meta if t.get("schema")]
 
         async def _stream_once() -> tuple[AIMessageChunk, list[str], dict[str, int]]:
             """单次流式调用：返回 (完整消息, 可见文本片段, usage)。"""
-            bound = (
-                llm.bind_tools(schemas)
-                if intent == "task" and schemas
-                else llm
-            )
+            bound = llm.bind_tools(schemas) if intent == "task" and schemas else llm
             acc: AIMessageChunk | None = None
             visible: list[str] = []
             turn_usage: dict[str, int] = {}
@@ -252,9 +302,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 acc = chunk if acc is None else acc + chunk
                 if chunk.content:
                     visible.append(str(chunk.content))
-                    await runtime.emit_event(
-                        run_id, "message_delta", {"text": str(chunk.content)}
-                    )
+                    await runtime.emit_event(run_id, "message_delta", {"text": str(chunk.content)})
                 if getattr(chunk, "usage_metadata", None):
                     turn_usage = dict(chunk.usage_metadata)  # type: ignore[arg-type]
             assert acc is not None
@@ -285,14 +333,25 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 无 tool_calls 的终答才落库（工具轮的中间 AIMessage 不单独落消息表）
         if not final.tool_calls:
             await runtime.persist_assistant_message(thread_id, run_id, final_text)
-        return {"messages": [final], "budget_state": dict(ctx.budget)}
+        # 压缩/补齐操作（若有）与终答消息一起归约进 checkpoint
+        out_msgs: list[AnyMessage | RemoveMessage] = (
+            (compact_ops or []) + aborted_patches + [final]
+        )
+        return {"messages": out_msgs, "budget_state": dict(ctx.budget)}
 
     async def tools(state: LoopState, config: RunnableConfig) -> dict:
-        """执行节点：经 capabilities 通道执行工具调用（2c 为 builtin 占位实现）。
+        """执行节点：按 capability_cache 条目的 kind 分派执行通道（M3）。
+
+        - tool（builtin 占位）：本进程内 BUILTIN_TOOLS
+        - mcp/plugin：mcp_pool.call_tool(capability_id, tool_name)
+        - meta：search_more_tools 检索元工具（命中工具并入 capability_cache）
 
         重放纪律：先查全部调用风险 → 高危 interrupt 一次 → 恢复后才逐个执行，
-        副作用只发生在 interrupt 之后。
+        副作用只发生在 interrupt 之后。风险/元数据从 state.capability_cache 取
+        （checkpoint 持久，比 DB 读更强的重放一致性）。
         """
+        from uuid import UUID
+
         from app.modules.engine.tools_builtin import BUILTIN_TOOLS
 
         conf = config["configurable"]
@@ -302,19 +361,17 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
         last = state["messages"][-1]
         calls = list(getattr(last, "tool_calls", None) or [])
+        cache_tools = (state.get("capability_cache") or {}).get("tools") or []
+        meta_by_name = {t["name"]: t for t in cache_tools}
 
-        # 1) 先取能力与风险（幂等 DB 读，重放安全）
-        cap_by_name: dict[str, dict[str, Any] | None] = {}
-        for c in calls:
-            if c["name"] not in cap_by_name:
-                cap_by_name[c["name"]] = await runtime.backend.get_capability(c["name"])
-
-        # 2) 高危确认点（设计 §1.1.1 确认点 2）
+        # 1) 风险预查（幂等读 state，重放安全）
         risky = [
             {"name": c["name"], "args": c["args"]}
             for c in calls
-            if (cap_by_name[c["name"]] or {}).get("risk_level") in ("write", "dangerous")
+            if (meta_by_name.get(c["name"]) or {}).get("risk_level") in ("write", "dangerous")
         ]
+
+        # 2) 高危确认点（设计 §1.1.1 确认点 2）
         approved = True
         if risky:
             answer = interrupt(
@@ -323,7 +380,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     "payload": {
                         "calls": risky,
                         "risk_levels": {
-                            r["name"]: (cap_by_name[r["name"]] or {}).get("risk_level")
+                            r["name"]: (meta_by_name.get(r["name"]) or {}).get("risk_level")
                             for r in risky
                         },
                     },
@@ -333,39 +390,65 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
+        updated_cache: dict[str, Any] | None = None
         for c in calls:
-            cap = cap_by_name.get(c["name"])
-            risk = (cap or {}).get("risk_level", "read")
+            meta = meta_by_name.get(c["name"])
+            risk = (meta or {}).get("risk_level", "read")
             req = ToolCallRequest(name=c["name"], args=dict(c["args"]), risk_level=risk)
             await hooks.on_tool_call(ctx, req)
 
             t0 = time.monotonic()
-            if cap is None:
+            if meta is None:
                 content, ok = f"未知工具：{c['name']}", False
             elif not approved and risk in ("write", "dangerous"):
                 content, ok = "用户拒绝执行该高危操作。", False
             else:
-                builtin_key = (cap.get("payload") or {}).get("builtin")
-                fn = BUILTIN_TOOLS.get(str(builtin_key)) if builtin_key else None
-                if fn is None:
-                    content = "该工具的执行通道在 M3 提供（当前仅 builtin 占位工具可执行）"
-                    ok = False
-                else:
-                    try:
-                        content, ok = await fn(dict(c["args"])), True
-                    except Exception as e:  # noqa: BLE001 —— 工具错误包装为观察结果
-                        content, ok = f"工具执行异常: {type(e).__name__}: {e}", False
+                try:
+                    if meta["kind"] == "meta":
+                        if meta["name"] == "search_more_tools":
+                            from app.modules.discovery.assembler import (
+                                run_search_more_tools,
+                            )
+
+                            content, updated_cache = await run_search_more_tools(
+                                dict(c["args"]),
+                                conf["agent_id"],
+                                state.get("capability_cache") or {},
+                            )
+                            ok = True
+                        else:
+                            content, ok = f"未知元工具：{c['name']}", False
+                    elif meta["kind"] == "mcp":
+                        from app.modules.capabilities.mcp_client import mcp_pool
+
+                        content = await mcp_pool.call_tool(
+                            UUID(meta["capability_id"]), meta["tool_name"], dict(c["args"])
+                        )
+                        ok = True
+                    else:  # builtin 占位工具（本进程内执行）
+                        fn = BUILTIN_TOOLS.get(str(meta.get("builtin") or ""))
+                        if fn is None:
+                            content = f"工具执行通道缺失：{c['name']}"
+                            ok = False
+                        else:
+                            content, ok = await fn(dict(c["args"])), True
+                except Exception as e:  # noqa: BLE001 —— 工具错误包装为观察结果
+                    content, ok = f"工具执行异常: {type(e).__name__}: {e}", False
             elapsed = int((time.monotonic() - t0) * 1000)
 
             info = ToolResultInfo(
-                name=c["name"], ok=ok, content=content,
-                elapsed_ms=elapsed, args_snapshot=dict(c["args"]),
+                name=c["name"],
+                ok=ok,
+                content=content,
+                elapsed_ms=elapsed,
+                args_snapshot=dict(c["args"]),
             )
             await hooks.on_tool_result(ctx, info)
-            results.append(
-                ToolMessage(content=str(content), tool_call_id=str(c["id"]))
-            )
-        return {"messages": results, "budget_state": dict(ctx.budget)}
+            results.append(ToolMessage(content=str(content), tool_call_id=str(c["id"])))
+        out: dict[str, Any] = {"messages": results, "budget_state": dict(ctx.budget)}
+        if updated_cache is not None:
+            out["capability_cache"] = updated_cache
+        return out
 
     async def verify(state: LoopState, config: RunnableConfig) -> dict:
         """独立验证 LLM：评估任务是否达成；不达标带反馈回环（限 3 次）。"""
@@ -476,9 +559,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g.add_edge("context_assembly", "planner")
     g.add_edge("planner", "confirm_plan")
     g.add_conditional_edges("confirm_plan", route_confirm, {END: END, "agent": "agent"})
-    g.add_conditional_edges(
-        "agent", route_agent, {"tools": "tools", "verify": "verify", END: END}
-    )
+    g.add_conditional_edges("agent", route_agent, {"tools": "tools", "verify": "verify", END: END})
     g.add_edge("tools", "agent")
     g.add_conditional_edges("verify", route_verify, {END: END, "agent": "agent"})
     return g.compile(checkpointer=runtime.saver)

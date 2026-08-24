@@ -11,8 +11,9 @@ import hashlib
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models import BaseChatModel
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import SecretStr
 
 from app.core.config import settings
@@ -67,4 +68,36 @@ def get_chat_model(
         case _:
             raise ValueError(
                 f"暂不支持的模型实现类型: {provider['impl']}（M2 仅 openai_compatible）"
+            )
+
+
+def get_embeddings(
+    provider: "ModelProvider | dict[str, Any]", api_key: str | None = None
+) -> Embeddings:
+    """按 impl 构造 embedding 客户端（kind=embedding 的 provider）。
+
+    与 get_chat_model 同构：接受 ORM 或 dict，密钥显式传入。
+    Kimi 端点实测：POST /embeddings 自动路由 bge_m3_embed（1024 维）。
+    """
+    if not isinstance(provider, dict):
+        provider = {
+            "impl": provider.impl,
+            "base_url": provider.base_url,
+            "model_name": provider.model_name,
+            "params": provider.params,
+        }
+    params: dict = provider.get("params") or {}
+    match provider["impl"]:
+        case "openai_compatible":
+            return OpenAIEmbeddings(
+                model=provider["model_name"],
+                base_url=provider["base_url"],
+                api_key=SecretStr(api_key or "not-set"),
+                timeout=params.get("timeout", 30),
+                # 端点不支持 tiktoken 分词计数，统一按条目切批（防超长请求报错）
+                check_embedding_ctx_length=False,  # type: ignore[call-arg]
+            )
+        case _:
+            raise ValueError(
+                f"暂不支持的 embedding 实现类型: {provider['impl']}（M3 仅 openai_compatible）"
             )

@@ -94,9 +94,7 @@ async def send_message(
         raise HTTPException(status.HTTP_409_CONFLICT, "会话绑定的 Agent 不可用")
 
     # 1) 落用户消息
-    db.add(
-        Message(conversation_id=conv.id, role="user", content={"text": body.text})
-    )
+    db.add(Message(conversation_id=conv.id, role="user", content={"text": body.text}))
     conv.message_count = (conv.message_count or 0) + 1
     conv.last_message_at = datetime.now(UTC)
 
@@ -124,8 +122,6 @@ async def send_message(
         ),
         {"rid": run.id, "p": json.dumps({"run_id": str(run.id)}, ensure_ascii=False)},
     )
-    await db.execute(
-        text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)}
-    )
+    await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
     await db.commit()
     return SendMessageOut(conversation_id=conv.id, run_id=run.id)

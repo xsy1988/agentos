@@ -81,12 +81,15 @@ class EngineHook(Protocol):
     async def on_turn_end(self, ctx: RunContext, iteration: int, usage: dict[str, int]) -> None: ...
 
     async def on_tool_call(self, ctx: RunContext, call: ToolCallRequest) -> None: ...
+
     """pre：审计、高危确认拦截、循环检测。拒绝时抛 HookError。"""
 
     async def on_tool_result(self, ctx: RunContext, result: ToolResultInfo) -> None: ...
+
     """post：审计、结构化错误包装、计量。"""
 
     async def on_context_pressure(self, ctx: RunContext, ratio: float) -> None: ...
+
     """上下文使用率 ≥ 0.8 时触发，驱动 assembler 压缩。"""
 
 

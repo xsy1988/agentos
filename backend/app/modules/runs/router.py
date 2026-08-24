@@ -108,9 +108,7 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     if run.status != "paused_awaiting_confirm":
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）"
-        )
+        raise HTTPException(status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）")
     await db.execute(
         text(
             "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "
@@ -160,9 +158,10 @@ async def stream_run_events(
                     if isinstance(payload, str):
                         payload = json.loads(payload)
                     yield _sse_chunk(r["seq"], r["event_type"], payload)
-                    if r["event_type"] == "run_status" and payload.get(
-                        "status"
-                    ) in TERMINAL_STATUSES:
+                    if (
+                        r["event_type"] == "run_status"
+                        and payload.get("status") in TERMINAL_STATUSES
+                    ):
                         terminal = True
                 if terminal:
                     return

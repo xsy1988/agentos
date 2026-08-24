@@ -132,9 +132,7 @@ class EngineRuntime:
             await db.commit()
             return seq
 
-    async def persist_assistant_message(
-        self, conversation_id: str, run_id: str, text: str
-    ) -> None:
+    async def persist_assistant_message(self, conversation_id: str, run_id: str, text: str) -> None:
         from app.modules.conversations.models import Conversation, Message
 
         async with session_factory() as db:
@@ -389,9 +387,7 @@ class EngineRuntime:
                 run.status = "paused_awaiting_confirm"
                 run.budget_used = budget_used
                 await db.commit()
-        await self.emit_event(
-            run_id, "confirmation_request", payload
-        )
+        await self.emit_event(run_id, "confirmation_request", payload)
         await self.emit_event(
             run_id,
             "run_status",
@@ -400,9 +396,7 @@ class EngineRuntime:
 
     async def _finalize(self, run_id: str, status: str, result: dict[str, Any]) -> None:
         ctx = self.get_run_ctx(run_id)
-        budget_used = {
-            k: v for k, v in ctx.budget.items() if k != "loop_strikes"
-        }
+        budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
@@ -432,9 +426,7 @@ class EngineRuntime:
         await self.emit_event(run_id, "run_status", {"status": "failed"})
         self._run_ctx.pop(run_id, None)
 
-    async def _set_run_status(
-        self, run_id: str, status: str, error: dict | None = None
-    ) -> None:
+    async def _set_run_status(self, run_id: str, status: str, error: dict | None = None) -> None:
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:

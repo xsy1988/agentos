@@ -52,9 +52,7 @@ class InProcessBackend:
                 ),
             }
 
-    async def emit_event(
-        self, run_id: str, event_type: str, payload: dict[str, Any]
-    ) -> int:
+    async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         async with session_factory() as db:
             result = await db.execute(
                 text(
@@ -92,9 +90,7 @@ class InProcessBackend:
         from app.modules.engine.models import Plan
 
         async with session_factory() as db:
-            plan = await db.scalar(
-                select(Plan).where(Plan.run_id == uuid.UUID(run_id))
-            )
+            plan = await db.scalar(select(Plan).where(Plan.run_id == uuid.UUID(run_id)))
             return list(plan.items) if plan else None
 
     async def get_capability(self, name: str) -> dict[str, Any] | None:
@@ -104,9 +100,7 @@ class InProcessBackend:
 
         async with session_factory() as db:
             cap = await db.scalar(
-                select(Capability).where(
-                    Capability.name == name, Capability.enabled.is_(True)
-                )
+                select(Capability).where(Capability.name == name, Capability.enabled.is_(True))
             )
             if cap is None:
                 return None

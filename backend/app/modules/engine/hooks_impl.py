@@ -85,8 +85,12 @@ class MeteringHook:
         provider_id = await self._provider_id(ctx)
         if provider_id is None:
             return
-        await self._upsert_usage(provider_id, ctx, input_delta=usage.get("input_tokens") or 0,
-                                 output_delta=usage.get("output_tokens") or 0)
+        await self._upsert_usage(
+            provider_id,
+            ctx,
+            input_delta=usage.get("input_tokens") or 0,
+            output_delta=usage.get("output_tokens") or 0,
+        )
 
     async def on_run_end(self, ctx: RunContext, status: str, result: Any) -> None:
         if status != "done":
@@ -139,8 +143,12 @@ class BudgetHook:
         await self._emit(
             ctx.run_id,
             "budget_warning",
-            {"gate": gate, "detail": detail,
-             "budget_used": dict(ctx.budget), "limits": dict(ctx.limits)},
+            {
+                "gate": gate,
+                "detail": detail,
+                "budget_used": dict(ctx.budget),
+                "limits": dict(ctx.limits),
+            },
         )
         raise BudgetExceededError(gate, detail)
 

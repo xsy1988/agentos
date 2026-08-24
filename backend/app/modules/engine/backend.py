@@ -29,9 +29,7 @@ class EngineBackend(Protocol):
         """读 Agent 配置（人格/模型绑定/预算）。变更对下一个 run 生效。"""
         ...
 
-    async def emit_event(
-        self, run_id: str, event_type: str, payload: dict[str, Any]
-    ) -> int:
+    async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         """写 run_events（自动分配 run 内单调 seq）+ NOTIFY。返回 seq。"""
         ...
 

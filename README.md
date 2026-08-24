@@ -11,8 +11,8 @@
 | 项 | 状态 |
 |---|---|
 | 设计阶段 | ✅ 已收官（五份文档全部定稿） |
-| 开发阶段 | ✅ M2 引擎全部完成：2a 接口冻结、2b 最小闭环、2c 完整机制（七节点图 + 双确认点 interrupt + 钩子链 audit/metering/budget/loop-detect + builtin 占位工具 + kill 恢复）；DoD 全项验收通过（完整链路/死循环熔断/进程崩溃后恢复）；下一步：**M3 上下文装配**（见开发计划 §3） |
-| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + 真实流式）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传） |
+| 开发阶段 | ✅ M3 能力体系完成：embedding 基建（bge_m3_embed 1024 维）+ capabilities 统一表 CRUD/冒烟注册/工具级开关 + MCP 连接池（stdio/http + 60s 健康检查×3 熔断 + NOTIFY 热注册）+ discovery（retriever 语义 Top-K + search_more_tools 元工具 + assembler 五区装配/L1/L2 压缩）+ engine MCP 通道集成；DoD 全项验收通过（filesystem 官方 Server 语义命中调用/工具开关生效/kill 后 2m41s unhealthy）；下一步：**M4 知识库**（见开发计划 §3） |
+| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + embedding）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传）、capabilities（CRUD/冒烟/mcp_client 池/绑定）、discovery（retriever/assembler） |
 | 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· langgraph 1.2.11 锁版 · `make dev / migrate / upgrade / test / lint` |
 
 > 纪律：每完成一个阶段/里程碑，更新本表；偏离设计的临时决定必须补记到设计方案 §12 ADR。

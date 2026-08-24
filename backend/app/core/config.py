@@ -15,7 +15,10 @@ class Settings(BaseSettings):
     )
     secret_key: str = "change-me-in-production"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
-    embedding_dim: int = 1536
+    # bge_m3_embed（Kimi 端点实测）：1024 维；换 embedding 模型需统一重建向量索引
+    embedding_dim: int = 1024
+    # 上下文压缩阈值（粗估 token = chars/3）：达到即触发 assembler L1/L2 压缩
+    context_compact_threshold: int = 24000
 
 
 settings = Settings()
