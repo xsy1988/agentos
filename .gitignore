@@ -25,3 +25,6 @@ backend/data/
 
 # Node（前端阶段启用）
 node_modules/
+
+# 本地运行日志（bin/agentos 产生）
+logs/

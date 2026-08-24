@@ -36,6 +36,5 @@ clean:            ## 清理缓存
 web:              ## 启动前端开发服务（热重载，:5173）
 	cd frontend && npx vite --port 5173
 
-dev-web:           ## 同时启动前后端（需两个终端）
-	@echo "终端1: make dev  (后端 :8000)"
-	@echo "终端2: make web  (前端 :5173)"
+dev-web:          ## 一键启动全部服务（容器+后端+前端）
+	./bin/agentos start

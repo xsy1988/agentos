@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Agent 平台统一启动 CLI
+#
+# 用法:
+#   agentos start     一键启动全部服务（数据库 → 后端 → 前端，含就绪等待）
+#   agentos stop      停止前后端与容器（数据保留在 volume）
+#   agentos restart   等价于 stop + start
+#   agentos status    查看各服务运行状态
+#   agentos logs      跟踪前后端日志（Ctrl-C 退出，不影响服务）
+#
+# 说明:
+#   - 后端 :8000（uvicorn --reload 热重载），前端 :5173（vite HMR）
+#   - 容器: agent-platform-db（pgvector）/ agent-platform-parser（docling）
+#   - 日志与 pid 写到项目 logs/ 目录
+
+set -euo pipefail
+
+# 解析软链（全局命令 agentos 是指向本文件的符号链接，BASH_SOURCE 拿到的是链路
+# 而非真实路径，必须逐层 readlink 否则 ROOT 会算成软链所在目录）
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [ "${SOURCE#/*}" = "$SOURCE" ] && SOURCE="$DIR/$SOURCE"
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+LOG_DIR="$ROOT/logs"
+mkdir -p "$LOG_DIR"
+cd "$ROOT"
+
+# 非交互 shell 里 uv / docker / node 可能不在 PATH，补上常见安装路径
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# 从 .env 读数据库连接参数（与 docker-compose 默认值一致）
+DB_USER="agent"; DB_NAME="agent_platform"
+if [ -f .env ]; then
+  # shellcheck disable=SC1091
+  set -a; . ./.env; set +a
+  DB_USER="${POSTGRES_USER:-agent}"
+  DB_NAME="${POSTGRES_DB:-agent_platform}"
+fi
+
+BACKEND_PID_FILE="$LOG_DIR/backend.pid"
+FRONTEND_PID_FILE="$LOG_DIR/frontend.pid"
+
+# ---------------------------------------------------------------- helpers
+
+port_in_use() { lsof -i tcp:"$1" -sTCP:LISTEN -P -n >/dev/null 2>&1; }
+
+wait_http() { # wait_http <url> <秒数> <名称>
+  local i=0
+  until curl -sf -o /dev/null "$1"; do
+    i=$((i+1))
+    if [ "$i" -ge "$2" ]; then
+      echo "  ✗ $3 就绪超时（$2 秒），查看日志: agentos logs"; return 1
+    fi
+    sleep 1
+  done
+}
+
+stop_pid_file() { # stop_pid_file <pid 文件> <名称>
+  local f="$1" name="$2"
+  if [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; then
+    kill "$(cat "$f")" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      kill -0 "$(cat "$f")" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$(cat "$f")" 2>/dev/null || true
+    echo "  ✓ $name 已停止"
+  fi
+  rm -f "$f"
+}
+
+stop_port() { # stop_port <端口> <名称>（兜底：pid 文件丢失时按端口清）
+  local pids
+  pids="$(lsof -ti tcp:"$1" -sTCP:LISTEN 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    echo "  ✓ $2（端口 $1）已停止"
+  fi
+}
+
+# ---------------------------------------------------------------- start
+
+cmd_start() {
+  echo "── 1/3 基础容器（pgvector + docling）"
+  docker compose up -d
+  echo "  等待数据库就绪..."
+  local i=0
+  until docker exec agent-platform-db pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1; do
+    i=$((i+1))
+    if [ "$i" -ge 30 ]; then echo "  ✗ 数据库 30 秒未就绪"; exit 1; fi
+    sleep 1
+  done
+  echo "  ✓ 数据库就绪"
+
+  echo "── 2/3 后端 :8000"
+  if port_in_use 8000; then
+    echo "  · 端口已被占用，跳过（如需重启先执行 agentos stop）"
+  else
+    ( cd backend && nohup uv run uvicorn app.main:app --reload --port 8000 \
+        >"$LOG_DIR/backend.log" 2>&1 & echo $! >"$BACKEND_PID_FILE" )
+    wait_http "http://localhost:8000/health" 60 "后端"
+    echo "  ✓ 后端就绪 → http://localhost:8000"
+  fi
+
+  echo "── 3/3 前端 :5173"
+  if port_in_use 5173; then
+    echo "  · 端口已被占用，跳过（如需重启先执行 agentos stop）"
+  else
+    ( cd frontend && nohup npx vite --port 5173 \
+        >"$LOG_DIR/frontend.log" 2>&1 & echo $! >"$FRONTEND_PID_FILE" )
+    wait_http "http://localhost:5173" 60 "前端"
+    echo "  ✓ 前端就绪"
+  fi
+
+  echo ""
+  echo "全部就绪："
+  echo "  前端    http://localhost:5173"
+  echo "  后端    http://localhost:8000/docs"
+  echo "  日志    agentos logs   停止   agentos stop"
+}
+
+# ---------------------------------------------------------------- stop
+
+cmd_stop() {
+  stop_pid_file "$BACKEND_PID_FILE" "后端"
+  stop_pid_file "$FRONTEND_PID_FILE" "前端"
+  stop_port 8000 "后端"
+  stop_port 5173 "前端"
+  docker compose stop >/dev/null 2>&1 && echo "  ✓ 容器已停止（数据保留）"
+}
+
+# ---------------------------------------------------------------- status
+
+cmd_status() {
+  check() { # check <端口> <名称>
+    if port_in_use "$1"; then echo "  ✓ $2  运行中 (:$1)"; else echo "  ✗ $2  未运行"; fi
+  }
+  check 8000 "后端"
+  check 5173 "前端"
+  for c in agent-platform-db agent-platform-parser; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = "true" ]; then
+      echo "  ✓ 容器  $c 运行中"
+    else
+      echo "  ✗ 容器  $c 未运行"
+    fi
+  done
+}
+
+# ---------------------------------------------------------------- logs
+
+cmd_logs() {
+  tail -f "$LOG_DIR/backend.log" "$LOG_DIR/frontend.log"
+}
+
+# ---------------------------------------------------------------- main
+
+case "${1:-help}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_stop; echo ""; cmd_start ;;
+  status)  cmd_status ;;
+  logs)    cmd_logs ;;
+  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+esac
