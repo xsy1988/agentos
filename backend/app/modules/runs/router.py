@@ -118,6 +118,14 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
     )
     await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
     await db.commit()
+    # 纠错沉淀（M6，模块详细设计 §1.4）：驳回计划的 run 异步触发复盘——
+    # 把"别这么做"写进草稿的注意事项区。fire-and-forget，不阻塞确认响应。
+    if body.answer == "rejected":
+        import asyncio
+
+        from app.modules.skills_forge.service import review_run
+
+        asyncio.create_task(review_run(str(run.id), trigger="correction"))
     return {"run_id": str(run.id), "status": "resuming", "answer": body.answer}
 
 

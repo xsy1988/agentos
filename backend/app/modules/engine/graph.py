@@ -191,6 +191,15 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             system_prompt = (
                 f"{system_prompt}\n\n# 长期记忆（平台记忆与近期日记忆，供参考）\n{memories}"
             )
+        # 技能注入（M6，模块详细设计 §1.4）：语义命中的 SKILL.md 拼进
+        # system_prompt 的「可用技能」区，Agent 可参照其步骤执行
+        skill_mds = cache.get("skills") or []
+        if skill_mds:
+            system_prompt = (
+                f"{system_prompt}\n\n# 可用技能（以下技能与当前任务高度相关，"
+                "请参照其步骤与注意事项执行）\n"
+                + "\n\n---\n\n".join(skill_mds)
+            )
         return {
             "protected_context": {
                 "intent": "task",

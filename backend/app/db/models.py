@@ -12,6 +12,7 @@ from app.modules.models_module.models import ModelProvider
 from app.modules.notifications.models import Notification
 from app.modules.runs.models import Run, RunEvent
 from app.modules.scheduler.models import Alarm, Timer
+from app.modules.skills_forge.models import SkillProposal
 
 __all__ = [
     "Agent",
@@ -33,6 +34,7 @@ __all__ = [
     "Plan",
     "Run",
     "RunEvent",
+    "SkillProposal",
     "Timer",
     "User",
 ]

@@ -72,7 +72,7 @@ async def retrieve_capabilities(
             rows = await db.scalars(
                 select(Capability)
                 .where(
-                    Capability.type.in_(("tool", "mcp", "plugin")),  # type: ignore[attr-defined]
+                    Capability.type.in_(["tool", "mcp", "plugin", "skill"]),  # noqa: E712
                     Capability.enabled.is_(True),  # noqa: E712
                     Capability.embedding.isnot(None),
                 )

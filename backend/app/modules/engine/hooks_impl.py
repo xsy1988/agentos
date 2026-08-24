@@ -199,8 +199,13 @@ class LoopDetectHook:
 
 
 def build_default_chain(emit: EmitFn) -> Any:
-    """默认钩子链：audit → metering → budget → loop-detect（设计 §1.1.4）。"""
+    """默认钩子链：audit → metering → budget → loop-detect → skills_forge（设计 §1.1.4）。
+
+    skills_forge 挂链尾：复盘是事后异步动作，必须在记账/审计之后，
+    且自身 fire-and-forget 永不阻断其他钩子。
+    """
     from app.modules.engine.hooks import HookChain
+    from app.modules.skills_forge.hook import SkillsForgeHook
 
     return HookChain(
         [
@@ -208,5 +213,6 @@ def build_default_chain(emit: EmitFn) -> Any:
             MeteringHook(),  # type: ignore[list-item]
             BudgetHook(emit),  # type: ignore[list-item]
             LoopDetectHook(emit),  # type: ignore[list-item]
+            SkillsForgeHook(),  # type: ignore[list-item]
         ]
     )

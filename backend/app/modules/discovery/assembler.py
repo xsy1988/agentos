@@ -122,13 +122,15 @@ async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, 
 async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[str, Any]:
     """工具描述区装配：pinned 常驻 + 语义 Top-K（tool_budget 封顶）+ 元工具。
 
-    返回 capability_cache（{"tools": [...]}），条目含 name/schema/kind/
+    返回 capability_cache（{"tools": [...], "skills": [...]}），条目含 name/schema/kind/
     capability_id/risk_level/source——tools 节点按 kind 分派执行通道。
+    skills 为语义命中的 SKILL.md 全文列表，供 context_assembly 注入参考。
     """
     from app.modules.discovery.retriever import retrieve_capabilities
 
     res = await retrieve_capabilities(query, agent_id)
     tools: list[dict[str, Any]] = []
+    skills: list[str] = []  # 命中 skill 的 SKILL.md 全文
     seen_caps: set[str] = set()
     seen_names: set[str] = set()
 
@@ -137,6 +139,12 @@ async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[st
             if cap["id"] in seen_caps:
                 continue
             seen_caps.add(cap["id"])
+            # skill 不展开为工具，直接收集 SKILL.md 全文供注入
+            if cap.get("type") == "skill":
+                md = str((cap.get("payload") or {}).get("skill_md") or "")
+                if md.strip():
+                    skills.append(md)
+                continue
             for item in await expand_capability(cap, source):
                 if item["name"] not in seen_names:
                     seen_names.add(item["name"])
@@ -144,7 +152,7 @@ async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[st
 
     await _add(res["pinned"], "pinned")
     await _add(res["semantic"], "semantic")
-    return {"tools": tools[:tool_budget] + _meta_tools()}
+    return {"tools": tools[:tool_budget] + _meta_tools(), "skills": skills}
 
 
 async def run_search_more_tools(

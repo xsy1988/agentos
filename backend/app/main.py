@@ -29,6 +29,7 @@ from app.modules.notifications.router import router as notifications_router
 from app.modules.runs.router import router as runs_router
 from app.modules.scheduler.router import router as scheduler_router
 from app.modules.scheduler.runtime import scheduler_runtime
+from app.modules.skills_forge.router import router as skills_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -70,6 +71,7 @@ app.include_router(knowledge_router, prefix=API_PREFIX)
 app.include_router(memory_router, prefix=API_PREFIX)
 app.include_router(scheduler_router, prefix=API_PREFIX)
 app.include_router(notifications_router, prefix=API_PREFIX)
+app.include_router(skills_router, prefix=API_PREFIX)
 
 
 @app.get("/health")
