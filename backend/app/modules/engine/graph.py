@@ -171,6 +171,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
         """
         from app.modules.discovery.assembler import assemble_tools
+        from app.modules.memory.service import get_protected_memories
 
         conf = config["configurable"]
         agent_cfg = await runtime.backend.get_agent_config(conf["agent_id"])
@@ -182,10 +183,18 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 break
         tool_budget = int(agent_cfg.get("tool_budget") or 8)
         cache = await assemble_tools(query, conf["agent_id"], tool_budget)
+        # 记忆注入（M5，模块详细设计 §2.6）：platform 全文 + 最近 2 天 daily
+        # 每个 run 自动携带“我是谁 + 最近发生了什么”
+        memories = await get_protected_memories()
+        system_prompt = build_system_prompt(agent_cfg)
+        if memories:
+            system_prompt = (
+                f"{system_prompt}\n\n# 长期记忆（平台记忆与近期日记忆，供参考）\n{memories}"
+            )
         return {
             "protected_context": {
                 "intent": "task",
-                "system_prompt": build_system_prompt(agent_cfg),
+                "system_prompt": system_prompt,
             },
             "capability_cache": cache,
         }
@@ -231,6 +240,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     async def confirm_plan(state: LoopState, config: RunnableConfig) -> dict:
         """确认点 1：任务单提交前人审（设计 §1.1.1）。"""
         conf = config["configurable"]
+        # timer 触发的 run 无人值守，等确认即死锁：计划自动批准（ADR-16）。
+        # 高危工具确认（确认点 2）仍保留 interrupt，暂停后由用户回来处理。
+        if conf.get("trigger") == "timer":
+            return {"confirmation": None}
         items = await runtime.backend.load_plan(conf["run_id"]) or []
         answer = interrupt({"reason": "plan_review", "payload": {"plan": items}})
         if answer == "approved":

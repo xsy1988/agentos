@@ -136,18 +136,21 @@ class EngineRuntime:
         from app.modules.conversations.models import Conversation, Message
 
         async with session_factory() as db:
+            conv = await db.get(Conversation, UUID(conversation_id))
+            # 无会话 run（timer 触发）thread_id 是 run_id 兜底，无 Conversation 行：
+            # 消息不入 messages 表（run_events + runs.result 已留痕）
+            if conv is None:
+                return
             db.add(
                 Message(
-                    conversation_id=UUID(conversation_id),
+                    conversation_id=conv.id,
                     run_id=UUID(run_id),
                     role="assistant",
                     content={"text": text},
                 )
             )
-            conv = await db.get(Conversation, UUID(conversation_id))
-            if conv:
-                conv.message_count = (conv.message_count or 0) + 1
-                conv.last_message_at = datetime.now(UTC)
+            conv.message_count = (conv.message_count or 0) + 1
+            conv.last_message_at = datetime.now(UTC)
             await db.commit()
 
     # ---------- inbox：监听与消费 ----------
@@ -344,7 +347,13 @@ class EngineRuntime:
         run = await self._load_run(run_id)
         timeout = (run.budget or {}).get("timeout_seconds") or 600 if run else 600
         config: RunnableConfig = {
-            "configurable": {"thread_id": thread_id, "run_id": run_id, "agent_id": agent_id}
+            "configurable": {
+                "thread_id": thread_id,
+                "run_id": run_id,
+                "agent_id": agent_id,
+                # trigger 供确认门区分人审场景（timer 无人值守，计划确认自动通过）
+                "trigger": run.trigger if run else None,
+            }
         }
         final_state = await asyncio.wait_for(
             self.graph.ainvoke(input_payload, config), timeout=timeout
@@ -405,6 +414,20 @@ class EngineRuntime:
                 run.budget_used = budget_used
                 run.finished_at = datetime.now(UTC)
                 await db.commit()
+                # 通知路由（M5，模块详细设计 §3）：无会话归属的 run（定时任务）
+                # 没有实时推送面 → 进通知中心；有会话的靠 SSE 实时推送
+                if run.conversation_id is None and status in ("done", "failed"):
+                    from app.modules.notifications.models import Notification
+
+                    db.add(
+                        Notification(
+                            run_id=run.id,
+                            kind="run_done" if status == "done" else "run_failed",
+                            title=f"定时任务{ '完成' if status == 'done' else '失败' }",
+                            content=(result.get("text") or "")[:2000],
+                        )
+                    )
+                    await db.commit()
         await self.hooks.on_run_end(ctx, status, result)
         await self.emit_event(run_id, "run_status", {"status": status})
         self._run_ctx.pop(run_id, None)

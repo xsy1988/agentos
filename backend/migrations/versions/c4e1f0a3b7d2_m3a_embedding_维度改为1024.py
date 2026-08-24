@@ -4,7 +4,6 @@
 见设计方案 §4（数据库设计：三处向量列统一维度）。
 """
 
-import sqlalchemy as sa
 from alembic import op
 from pgvector.sqlalchemy import Vector
 

@@ -23,8 +23,12 @@ from app.modules.files.router import router as files_router
 from app.modules.knowledge.pipeline import reconcile_interrupted
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.knowledge.service import seed_default_folders
+from app.modules.memory.router import router as memory_router
 from app.modules.models_module.router import router as models_router
+from app.modules.notifications.router import router as notifications_router
 from app.modules.runs.router import router as runs_router
+from app.modules.scheduler.router import router as scheduler_router
+from app.modules.scheduler.runtime import scheduler_runtime
 
 logging.basicConfig(level=logging.INFO)
 
@@ -43,7 +47,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await engine_runtime.start()
     # MCP 连接池：按注册表拉起 + 60s 健康检查 + capability_changed 热注册
     await mcp_pool.start()
+    # 调度器：timers/alarms 表全量重载 + 每日 03:00 记忆整理
+    await scheduler_runtime.start()
     yield
+    await scheduler_runtime.stop()
     await mcp_pool.stop()
     await engine_runtime.stop()
 
@@ -60,6 +67,9 @@ app.include_router(capabilities_router, prefix=API_PREFIX)
 app.include_router(capability_bindings_router, prefix=API_PREFIX)
 app.include_router(files_router, prefix=API_PREFIX)
 app.include_router(knowledge_router, prefix=API_PREFIX)
+app.include_router(memory_router, prefix=API_PREFIX)
+app.include_router(scheduler_router, prefix=API_PREFIX)
+app.include_router(notifications_router, prefix=API_PREFIX)
 
 
 @app.get("/health")

@@ -11,8 +11,8 @@
 | 项 | 状态 |
 |---|---|
 | 设计阶段 | ✅ 已收官（五份文档全部定稿） |
-| 开发阶段 | ✅ M4 知识库完成：files 上传（sha256 去重 + data/files 存储）+ docling-serve 解析容器（compose 服务 parser）+ 管道状态机（uploaded→parsing→chunking→embedding→ready，断点重试/中间产物落盘/重启 reconcile）+ kb_folders 目录树（path 物化路径 + 子孙前缀级联 + 三默认根 seed）+ search_knowledge 工具（余弦 Top-K + heading_path 拼装 + 目录范围过滤，注册为 builtin capability）+ reindex；DoD 全项验收通过（真实 PDF→ready→对话引用原文回答；folders=["/产品知识"] 过滤下生活内容不被检索）；下一步：**M5 记忆+自动化**（见开发计划 §3） |
-| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + embedding）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复 + 预算四闸熔断 + 重启 reconcile + SSE（seq 续传）、capabilities（CRUD/冒烟/mcp_client 池/绑定）、discovery（retriever/assembler）、files/knowledge（上传/目录树/管道/检索/reindex） |
+| 开发阶段 | ✅ M5 记忆+自动化完成：memory_files 双类记忆（platform 平台记忆按日段落追加 / daily 日记忆 upsert）+ 每日 03:00 整理 Job（读当日 runs/messages → LLM 提炼双产物 + embedding + 会话切割，API 可手动触发/手改）+ 记忆注入（context_assembly 拼 system_prompt，platform 全文 + 近 2 天 daily）+ scheduler（APScheduler，timers cron→自动 run + alarms→通知中心，表为唯一事实源重启全量重载）+ 通知中心（run 完成非会话 run/闹钟落库，未读/全部已读）；DoD 全项验收通过（每分钟 timer 自动产生 run 走到 done+通知；整理 Job 产出双记忆；下个 run 凭注入记忆直接回答 Shield-Plus 399 元）；下一步：**M6 沉淀**（经验自动沉淀为 Skill 并再利用，见开发计划 §3） |
+| 已有代码 | core/db 会话层、主数据表 + 业务表 ORM + 迁移（含 model_usage_daily 记账）、auth、agents CRUD、models 模块（Fernet 加密 + OpenAI 兼容 Provider + embedding）、engine 七节点图（intent_router/context_assembly/planner/confirm_plan/agent/tools/verify）+ inbox worker + interrupt 确认/恢复（timer run 计划自动批准）+ 预算四闸熔断 + 重启 reconcile + SSE（seq 续传）+ 记忆注入、capabilities（CRUD/冒烟/mcp_client 池/绑定）、discovery（retriever/assembler）、files/knowledge（上传/目录树/管道/检索/reindex）、memory（整理 Job/手改/注入）、scheduler（timers/alarms/每日整理）、notifications（通知中心） |
 | 技术环境 | uv 0.12.5 · Python 3.12.14 · PG17+pgvector（agent-platform-db）· langgraph 1.2.11 锁版 · `make dev / migrate / upgrade / test / lint` |
 
 > 纪律：每完成一个阶段/里程碑，更新本表；偏离设计的临时决定必须补记到设计方案 §12 ADR。
