@@ -1,11 +1,20 @@
-"""markdown 结构化切分：块 512±128 token（粗估 token = chars/2，中文为主），带标题路径。"""
+"""markdown 结构化切分（langchain-text-splitters）：标题分节 + 节内按尺寸二切。
 
-import re
+官方推荐组合：MarkdownHeaderTextSplitter 按标题层级分节（标题路径进 metadata），
+RecursiveCharacterTextSplitter 节内递归切分（separators 支持中文句读，带 overlap）。
+首切与重切（文档详情页 rechunk）走同一条代码路径，target_tokens/overlap_tokens
+ 可调；字符→token 粗估沿用 chars/2（中文为主）。
+"""
 
-TARGET_TOKENS = 512  # 目标块大小
-MIN_TOKENS = 384  # 512 - 128
-MAX_TOKENS = 640  # 512 + 128
-_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+from langchain_text_splitters import (
+    MarkdownHeaderTextSplitter,
+    RecursiveCharacterTextSplitter,
+)
+
+TARGET_TOKENS = 512  # 默认目标块大小（token）
+OVERLAP_TOKENS = 64  # 默认相邻块重叠（token）
+
+_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3"), ("####", "h4")]
 
 
 def est_tokens(text: str) -> int:
@@ -13,92 +22,53 @@ def est_tokens(text: str) -> int:
     return max(1, len(text) // 2)
 
 
-def _is_heading(line: str) -> tuple[int, str] | None:
-    m = _HEADING.match(line.strip())
-    if m is None:
-        return None
-    return len(m.group(1)), m.group(2).strip()
-
-
-def chunk_markdown(md: str) -> list[dict]:
-    """按标题分节 → 节内段落累积切块。
+def chunk_markdown(
+    md: str, target_tokens: int = TARGET_TOKENS, overlap_tokens: int = OVERLAP_TOKENS
+) -> list[dict]:
+    """markdown → 块列表。
 
     返回 [{"content", "heading_path", "token_count"}]，heading_path 形如
-    "第一章 > 1.1 概述"（文档结构元数据，检索结果上下文化用）。
+    "第一章 > 1.1 概述"（文档结构元数据，检索结果上下文化用）。标题行保留在
+    块内（strip_headers=False，检索命中自带章节上下文）；仅标题无正文的空节
+    过滤（与旧手写切分器行为一致）。
     """
-    headings: list[tuple[int, str]] = []  # (level, title) 栈
-    sections: list[tuple[str, str]] = []  # (heading_path, body lines)
-    cur_path = ""
-    cur_lines: list[str] = []
+    if target_tokens < 64:
+        target_tokens = 64
+    if not 0 <= overlap_tokens < target_tokens // 2:
+        overlap_tokens = target_tokens // 8
 
-    def flush() -> None:
-        if cur_lines:
-            sections.append((cur_path, "\n".join(cur_lines).strip()))
-
-    for line in md.splitlines():
-        h = _is_heading(line)
-        if h is not None:
-            flush()
-            level, title = h
-            while headings and headings[-1][0] >= level:
-                headings.pop()
-            headings.append((level, title))
-            cur_path = " > ".join(t for _, t in headings)
-            cur_lines = []
-        else:
-            cur_lines.append(line)
-    flush()
+    header_splitter = MarkdownHeaderTextSplitter(_HEADERS, strip_headers=False)
+    size_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=target_tokens * 2,  # token 粗估 chars/2
+        chunk_overlap=overlap_tokens * 2,
+        separators=["\n\n", "\n", "。", "，", " ", ""],
+    )
+    sections = header_splitter.split_text(md)
+    pieces = size_splitter.split_documents(sections)
 
     chunks: list[dict] = []
-    for heading_path, body in sections:
-        if not body:
+    for p in pieces:
+        heading_path = " > ".join(str(v) for v in p.metadata.values() if v)
+        content = p.page_content.strip()
+        if not _has_body(content, heading_path):
             continue
-        if est_tokens(body) <= MAX_TOKENS:
-            chunks.append(_mk(body, heading_path))
-            continue
-        # 超长节：段落（空行分隔）累积，攒到目标附近切；单段超限强切
-        para_buf: list[str] = []
-        buf_tokens = 0
-        for para in re.split(r"\n\s*\n", body):
-            pt = est_tokens(para)
-            if pt > MAX_TOKENS:  # 单段超限：先冲刷缓冲，再硬切该段
-                if para_buf:
-                    chunks.append(_mk("\n\n".join(para_buf), heading_path))
-                    para_buf, buf_tokens = [], 0
-                chunks.extend(_hard_split(para, heading_path))
-                continue
-            if buf_tokens + pt > TARGET_TOKENS and para_buf:
-                chunks.append(_mk("\n\n".join(para_buf), heading_path))
-                para_buf, buf_tokens = [], 0
-            para_buf.append(para)
-            buf_tokens += pt
-        if para_buf:
-            chunks.append(_mk("\n\n".join(para_buf), heading_path))
+        chunks.append(
+            {
+                "content": content,
+                "heading_path": heading_path or None,
+                "token_count": est_tokens(content),
+            }
+        )
     return chunks
 
 
-def _hard_split(para: str, heading_path: str) -> list[dict]:
-    """单段超长：按句号/换行边界硬切到目标大小。"""
-    out: list[dict] = []
-    sentences = re.split(r"(?<=[。！？；.!?;])\s*", para)
-    buf: list[str] = []
-    buf_tokens = 0
-    for s in sentences:
-        st = est_tokens(s)
-        if buf and buf_tokens + st > TARGET_TOKENS:
-            out.append(_mk("".join(buf), heading_path))
-            buf, buf_tokens = [], 0
-        buf.append(s)
-        buf_tokens += st
-    if buf:
-        out.append(_mk("".join(buf), heading_path))
-    return out
-
-
-def _mk(content: str, heading_path: str) -> dict:
-    content = content.strip()
-    return {
-        "content": content,
-        "heading_path": heading_path or None,
-        "token_count": est_tokens(content),
-    }
+def _has_body(content: str, heading_path: str) -> bool:
+    """仅标题无正文的空节过滤：内容去掉标题行后无剩余即空节。"""
+    headings = {h.strip() for h in heading_path.split(">") if h.strip()}
+    lines = [ln.strip() for ln in content.splitlines()]
+    body = [
+        ln
+        for ln in lines
+        if ln and not (ln.startswith("#") and ln.lstrip("#").strip() in headings)
+    ]
+    return bool(body)

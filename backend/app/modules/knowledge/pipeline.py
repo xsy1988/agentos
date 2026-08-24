@@ -10,6 +10,7 @@ import asyncio
 import logging
 import uuid
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,19 +64,23 @@ async def create_doc(
     return doc
 
 
-def start_pipeline(doc_id: str) -> None:
-    """启动（或复用）后台管道任务。"""
+def start_pipeline(
+    doc_id: str, target_tokens: int | None = None, overlap_tokens: int | None = None
+) -> None:
+    """启动（或复用）后台管道任务；target/overlap 仅 rechunk 传（自定义切分参数）。"""
     task = _running.get(doc_id)
     if task is not None and not task.done():
         return
-    _running[doc_id] = asyncio.create_task(_process(doc_id))
+    _running[doc_id] = asyncio.create_task(_process(doc_id, target_tokens, overlap_tokens))
 
 
-async def _process(doc_id: str) -> None:
-    """管道主体：parsing → chunking → embedding → ready。"""
+async def _process(
+    doc_id: str, target_tokens: int | None = None, overlap_tokens: int | None = None
+) -> None:
+    """管道主体：parsing → chunking（可带自定义参数）→ embedding → ready。"""
     try:
         await _step_parsing(doc_id)
-        await _step_chunking(doc_id)
+        await _step_chunking(doc_id, target_tokens, overlap_tokens)
         await _step_embedding(doc_id)
     except Exception as exc:  # noqa: BLE001 管道任何一步失败都要落库可读原因
         logger.exception("kb 管道失败 doc=%s", doc_id)
@@ -116,17 +121,25 @@ async def _step_parsing(doc_id: str) -> None:
     p.write_text(md, encoding="utf-8")
 
 
-async def _step_chunking(doc_id: str) -> None:
-    """切分：markdown → 512±128 token 块（heading_path 元数据）→ kb_chunks（无向量）。
+async def _step_chunking(
+    doc_id: str,
+    target_tokens: int | None = None,
+    overlap_tokens: int | None = None,
+) -> None:
+    """切分：markdown → 块（heading_path 元数据）→ kb_chunks（无向量）。
 
-    幂等：先删旧 chunks 再写（重试/reindex 安全）。
+    幂等：先删旧 chunks 再写（重试/reindex 安全）；target_tokens=None 用
+    默认 512/64（首切与断点重试），rechunk 传自定义参数。
     """
     did = uuid.UUID(doc_id)
     p = _parse_path(doc_id)
     if not p.exists():
         raise RuntimeError("解析中间产物缺失，应先完成 parsing")
     md = p.read_text(encoding="utf-8")
-    pieces = chunk_markdown(md)
+    if target_tokens is None:
+        pieces = chunk_markdown(md)
+    else:
+        pieces = chunk_markdown(md, target_tokens, overlap_tokens or 64)
     if not pieces:
         raise RuntimeError("切分结果为空：文档无有效文本内容")
 
@@ -148,14 +161,29 @@ async def _step_chunking(doc_id: str) -> None:
         await db.commit()
 
 
-async def _step_embedding(doc_id: str) -> None:
-    """embedding：chunks 批量向量化补齐 → ready。
-
-    幂等：重算全部向量（reindex 换模型 = 对全部 ready 文档重跑本步骤）。
-    """
+async def get_enabled_embeddings() -> tuple[Any, str] | None:
+    """取可用 embedding provider → (embeddings 客户端, model_name)；无则 None。"""
     from app.modules.models_module.models import ModelProvider
     from app.modules.models_module.provider import decrypt_secret, get_embeddings
 
+    async with session_factory() as db:
+        prov = await db.scalar(
+            select(ModelProvider).where(
+                ModelProvider.kind == "embedding",
+                ModelProvider.status == "enabled",
+            )
+        )
+    if prov is None:
+        return None
+    api_key = decrypt_secret(prov.api_key_encrypted) if prov.api_key_encrypted else None
+    return get_embeddings(prov, api_key), prov.model_name
+
+
+async def _step_embedding(doc_id: str) -> None:
+    """embedding：chunks 批量向量化补齐 → ready。
+
+    幂等：重算全部向量（reindex/reembed 换模型 = 重跑本步骤）。
+    """
     did = uuid.UUID(doc_id)
     async with session_factory() as db:
         await db.execute(
@@ -163,16 +191,10 @@ async def _step_embedding(doc_id: str) -> None:
         )
         await db.commit()
 
-        prov = await db.scalar(
-            select(ModelProvider).where(
-                ModelProvider.kind == "embedding",
-                ModelProvider.status == "enabled",
-            )
-        )
-        if prov is None:
+        r = await get_enabled_embeddings()
+        if r is None:
             raise RuntimeError("无可用 embedding provider（kind=embedding 且 enabled）")
-        api_key = decrypt_secret(prov.api_key_encrypted) if prov.api_key_encrypted else None
-        embeddings = get_embeddings(prov, api_key)
+        embeddings, model_name = r
 
         chunks = (
             (await db.execute(select(KbChunk).where(KbChunk.doc_id == did).order_by(KbChunk.seq)))
@@ -186,7 +208,7 @@ async def _step_embedding(doc_id: str) -> None:
             vectors = await embeddings.aembed_documents([c.content for c in batch])
             for chunk, vec in zip(batch, vectors, strict=True):
                 chunk.embedding = vec
-                chunk.embedding_model = prov.model_name
+                chunk.embedding_model = model_name
                 chunk.dim = len(vec)
         await db.execute(
             update(KbDoc)
@@ -195,7 +217,7 @@ async def _step_embedding(doc_id: str) -> None:
                 status="ready",
                 error=None,
                 chunk_count=len(chunks),
-                embedding_model=prov.model_name,
+                embedding_model=model_name,
             )
         )
         await db.commit()
@@ -234,6 +256,69 @@ async def retry_doc(db: AsyncSession, doc_id: uuid.UUID) -> KbDoc:
     await db.refresh(doc)
     start_pipeline(str(doc_id))
     return doc
+
+
+async def rechunk_doc(
+    db: AsyncSession, doc_id: uuid.UUID, target_tokens: int | None, overlap_tokens: int | None
+) -> KbDoc:
+    """按自定义参数重新切分（文档详情页触发）：chunking → embedding → ready。
+
+    基于既有解析产物重切（不重跑 docling）；仅 ready/failed 可触发。
+    """
+    doc = (await db.execute(select(KbDoc).where(KbDoc.id == doc_id))).scalar_one_or_none()
+    if doc is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="文档不存在")
+    if doc.status not in ("ready", "failed"):
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=409, detail=f"当前状态 {doc.status} 不可重切（仅 ready/failed）"
+        )
+    if not _parse_path(str(doc_id)).exists():
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=409, detail="解析中间产物缺失，无法重切（可先重试完整管道）"
+        )
+    doc.status = "chunking"
+    doc.error = None
+    await db.commit()
+    await db.refresh(doc)
+    start_pipeline(str(doc_id), target_tokens, overlap_tokens)
+    return doc
+
+
+async def reembed_doc(db: AsyncSession, doc_id: uuid.UUID) -> KbDoc:
+    """单文档重嵌入（reindex 的单文档版）：chunks 文本不变，重算全部向量。"""
+    doc = (await db.execute(select(KbDoc).where(KbDoc.id == doc_id))).scalar_one_or_none()
+    if doc is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404, detail="文档不存在")
+    if doc.status != "ready":
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail=f"当前状态 {doc.status} 不可重嵌（仅 ready）")
+    doc.status = "embedding"
+    doc.error = None
+    await db.commit()
+    await db.refresh(doc)
+    start_pipeline(str(doc_id))
+    return doc
+
+
+async def embed_single_chunk(chunk: KbChunk) -> None:
+    """编辑切片后同步重算该块向量；无可用 provider 时抛 RuntimeError（router 转 409）。"""
+    r = await get_enabled_embeddings()
+    if r is None:
+        raise RuntimeError("无可用 embedding provider（kind=embedding 且 enabled）")
+    embeddings, model_name = r
+    vec = (await embeddings.aembed_documents([chunk.content]))[0]
+    chunk.embedding = vec
+    chunk.embedding_model = model_name
+    chunk.dim = len(vec)
 
 
 async def reindex_all() -> int:

@@ -143,6 +143,19 @@ export interface DocOut {
   chunk_count: number;
   embedding_model: string | null;
 }
+export interface DocDetailOut extends DocOut {
+  embedded_count: number;
+  parse_exists: boolean;
+}
+export interface ChunkOut {
+  id: string;
+  doc_id: string;
+  seq: number;
+  content: string;
+  heading_path: string | null;
+  token_count: number;
+  embedded: boolean;
+}
 export interface SearchHit {
   chunk_id: string;
   doc_id: string;

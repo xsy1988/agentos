@@ -48,6 +48,40 @@ class DocOut(BaseModel):
     embedding_model: str | None
 
 
+class DocDetailOut(DocOut):
+    """文档详情（管道可视化）：加已向量化块数与解析产物存在性。"""
+
+    embedded_count: int = 0
+    parse_exists: bool = False
+
+
+class RechunkIn(BaseModel):
+    """重切入参：块大小/重叠 token，缺省 512/64（与首切默认一致）。"""
+
+    target_tokens: int | None = Field(default=None, ge=64, le=2048)
+    overlap_tokens: int | None = Field(default=None, ge=0, le=512)
+
+
+class ChunkOut(BaseModel):
+    id: str
+    doc_id: str
+    seq: int
+    content: str
+    heading_path: str | None
+    token_count: int
+    embedded: bool  # embedding 非空 = 已向量化
+
+
+class ChunkUpdateIn(BaseModel):
+    content: str = Field(min_length=1, max_length=32000)
+
+
+class ParsePreviewOut(BaseModel):
+    """解析产物 markdown 预览。"""
+
+    markdown: str
+
+
 class SearchIn(BaseModel):
     """检索测试器入参（与 search_knowledge 工具同构）。"""
 

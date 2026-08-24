@@ -41,6 +41,33 @@ def test_est_tokens():
     assert est_tokens("a" * 100) == 50
 
 
+def test_chunk_custom_params_smaller_blocks():
+    """rechunk 自定义参数：target_tokens 缩小后块数变多、块上限收紧。"""
+    para = "这是一段用于测试重切参数的中文文本，每段大约五十字左右。" * 3  # ~150 chars
+    md = "# 长文\n\n" + "\n\n".join(para for _ in range(20))
+    default = chunk_markdown(md)
+    small = chunk_markdown(md, target_tokens=128, overlap_tokens=16)
+    assert len(small) > len(default)
+    assert all(c["token_count"] <= 128 * 2 for c in small)  # 粗估 chars/2 换算的硬上限
+
+
+def test_chunk_heading_only_section_filtered():
+    """仅标题无正文的空节过滤（与旧手写切分器行为一致）。"""
+    md = "# 目录\n\n# 正文\n\n实际内容。"
+    chunks = chunk_markdown(md)
+    assert len(chunks) == 1
+    assert chunks[0]["heading_path"] == "正文"
+    assert "实际内容" in chunks[0]["content"]
+
+
+def test_chunk_headers_kept_in_content():
+    """strip_headers=False：标题行保留在块内，检索命中自带章节上下文。"""
+    md = "# 规格\n\n星链助手 X1 功耗 15W。\n\n## 充电\n\nUSB-C 65W 快充。"
+    chunks = chunk_markdown(md)
+    assert "# 规格" in chunks[0]["content"]
+    assert "## 充电" in chunks[1]["content"]
+
+
 def test_format_hits_empty_and_hit():
     assert "无结果" in format_hits([])
     hits = [

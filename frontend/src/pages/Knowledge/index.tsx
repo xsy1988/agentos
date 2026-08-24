@@ -36,6 +36,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { knowledgeApi } from "@/api/knowledge";
 import { filesApi } from "@/api/files";
 import type { DocOut, SearchHit } from "@/api/types";
+import DocDetailDrawer from "./DocDetailDrawer";
 
 // 文档状态 → 颜色/标签
 const DOC_STATUS: Record<string, { color: string; label: string }> = {
@@ -270,6 +271,8 @@ function FolderDetail({ folderId }: { folderId: string }) {
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  // 详情 Drawer：点文档行打开（管道状态 + 切片管理）
+  const [detailDocId, setDetailDocId] = useState<string | null>(null);
 
   const { data: folders = [] } = useQuery({
     queryKey: ["kb-folders"],
@@ -434,12 +437,17 @@ function FolderDetail({ folderId }: { folderId: string }) {
           };
           return (
             <List.Item
+              style={{ cursor: "pointer" }}
+              onClick={() => setDetailDocId(doc.id)}
               actions={[
                 doc.status === "failed" && (
                   <Button
                     size="small"
                     icon={<ReloadOutlined />}
-                    onClick={() => retryMutation.mutate(doc.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      retryMutation.mutate(doc.id);
+                    }}
                   >
                     重试
                   </Button>
@@ -448,7 +456,10 @@ function FolderDetail({ folderId }: { folderId: string }) {
                   size="small"
                   type="text"
                   danger
-                  onClick={() => delDocMutation.mutate(doc.id)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    delDocMutation.mutate(doc.id);
+                  }}
                 >
                   删除
                 </Button>,
@@ -479,6 +490,9 @@ function FolderDetail({ folderId }: { folderId: string }) {
           );
         }}
       />
+
+      {/* 文档详情 Drawer（管道状态 + 切片管理） */}
+      <DocDetailDrawer docId={detailDocId} onClose={() => setDetailDocId(null)} />
 
       {/* 上传侧边栏 */}
       <Drawer

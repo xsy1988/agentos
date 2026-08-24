@@ -1,6 +1,6 @@
 /** 知识库 API */
 import { api } from "./client";
-import type { FolderOut, DocOut, SearchHit } from "./types";
+import type { ChunkOut, DocDetailOut, DocOut, FolderOut, SearchHit } from "./types";
 
 export const knowledgeApi = {
   folders: () => api.get<FolderOut[]>("/kb/folders"),
@@ -11,6 +11,16 @@ export const knowledgeApi = {
   delFolder: (id: string) => api.del(`/kb/folders/${id}`),
   docs: (folderId?: string) =>
     api.get<DocOut[]>("/kb/docs", { folder_id: folderId }),
+  docDetail: (id: string) => api.get<DocDetailOut>(`/kb/docs/${id}`),
+  parsePreview: (id: string) => api.get<{ markdown: string }>(`/kb/docs/${id}/parse`),
+  chunks: (id: string, offset = 0, limit = 50) =>
+    api.get<ChunkOut[]>(`/kb/docs/${id}/chunks`, { offset, limit }),
+  updateChunk: (id: string, content: string) =>
+    api.patch<ChunkOut>(`/kb/chunks/${id}`, { content }),
+  delChunk: (id: string) => api.del(`/kb/chunks/${id}`),
+  rechunk: (id: string, body: { target_tokens?: number; overlap_tokens?: number }) =>
+    api.post<DocOut>(`/kb/docs/${id}/rechunk`, body),
+  reembed: (id: string) => api.post<DocOut>(`/kb/docs/${id}/reembed`, {}),
   createDoc: (body: { file_id: string; folder_id: string; title: string }) =>
     api.post<DocOut>("/kb/docs", body),
   retryDoc: (id: string) => api.post<DocOut>(`/kb/docs/${id}/retry`),
