@@ -55,6 +55,13 @@ def get_chat_model(
     params: dict = provider.get("params") or {}
     match provider["impl"]:
         case "openai_compatible":
+            # params 可选透传：extra_body（如 vLLM/SGLang 的 chat_template_kwargs）、
+            # reasoning_effort（Qwen 系列思考深度 xhigh/medium/low），均仅在配置时才传
+            extra_kwargs: dict[str, Any] = {}
+            if params.get("extra_body") is not None:
+                extra_kwargs["extra_body"] = params["extra_body"]
+            if params.get("reasoning_effort") is not None:
+                extra_kwargs["reasoning_effort"] = params["reasoning_effort"]
             return ChatOpenAI(
                 model=provider["model_name"],
                 base_url=provider["base_url"],
@@ -64,6 +71,7 @@ def get_chat_model(
                 timeout=params.get("timeout", 120),
                 # 流式末帧携带 usage_metadata，供 budget_state 记账（不支持的端点会忽略）
                 stream_usage=True,  # type: ignore[call-arg]
+                **extra_kwargs,
             )
         case _:
             raise ValueError(

@@ -8,6 +8,9 @@ export const conversationsApi = {
     api.post<ConversationOut>("/conversations", { title, agent_id: agentId }),
   messages: (convId: string) =>
     api.get<MessageOut[]>(`/conversations/${convId}/messages`),
-  sendMessage: (convId: string, text: string) =>
-    api.post<SendMessageOut>(`/conversations/${convId}/messages`, { text }),
+  sendMessage: (convId: string, text: string, modelProviderId?: string) =>
+    api.post<SendMessageOut>(`/conversations/${convId}/messages`, {
+      text,
+      model_provider_id: modelProviderId ?? null,
+    }),
 };

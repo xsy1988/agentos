@@ -52,6 +52,25 @@ class InProcessBackend:
                 ),
             }
 
+    async def get_model_provider(self, provider_id: str) -> dict[str, Any] | None:
+        """run 级模型覆盖用：按 id 取单个可用 provider（结构同 agent_config.provider）。"""
+        from app.modules.models_module.models import ModelProvider
+
+        async with session_factory() as db:
+            provider = await db.get(ModelProvider, uuid.UUID(provider_id))
+            if provider is None or provider.status != "enabled":
+                return None
+            return {
+                "id": str(provider.id),
+                "impl": provider.impl,
+                "base_url": provider.base_url,
+                "model_name": provider.model_name,
+                "params": provider.params,
+                "api_key_encrypted": (
+                    bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
+                ),
+            }
+
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         async with session_factory() as db:
             result = await db.execute(

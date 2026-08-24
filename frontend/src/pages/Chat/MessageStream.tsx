@@ -118,7 +118,14 @@ function EventItem({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "plan_updated") {
-    const tasks = (payload.tasks ?? []) as { task: string; done: boolean }[];
+    // 后端 payload：{plan_ref, items: [{seq, text, status}]}
+    const tasks = (payload.items ?? payload.tasks ?? []) as {
+      seq?: number;
+      task?: string;
+      text?: string;
+      done?: boolean;
+      status?: string;
+    }[];
     return (
       <div
         style={{
@@ -131,19 +138,23 @@ function EventItem({ event }: { event: RunEventOut }) {
       >
         <Space size={6} style={{ marginBottom: 4 }}>
           <ScheduleOutlined />
-          <Typography.Text strong style={{ fontSize: 13 }}>计划进度</Typography.Text>
+          <Typography.Text strong style={{ fontSize: 13 }}>执行计划</Typography.Text>
         </Space>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {tasks.map((t, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-              <span style={{ color: t.done ? "var(--ant-color-success)" : "rgba(128,128,128,0.5)" }}>
-                {t.done ? "☑" : "○"}
-              </span>
-              <span style={{ textDecoration: t.done ? "line-through" : "none" }}>
-                {t.task}
-              </span>
-            </div>
-          ))}
+          {tasks.map((t, i) => {
+            const done = t.done ?? t.status === "done";
+            const text = t.text ?? t.task ?? "";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                <span style={{ color: done ? "var(--ant-color-success)" : "rgba(128,128,128,0.5)" }}>
+                  {done ? "☑" : "○"}
+                </span>
+                <span style={{ textDecoration: done ? "line-through" : "none" }}>
+                  {t.seq ? `${t.seq}. ` : ""}{text}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -234,8 +245,26 @@ function EventItem({ event }: { event: RunEventOut }) {
     );
   }
 
+  if (event_type === "confirmation_request") {
+    const reason = payload.reason as string;
+    return (
+      <Tooltip title="Agent 已暂停，等待你在下方确认">
+        <Tag color={reason === "high_risk_tool" ? "error" : "warning"} style={{ marginBottom: 4, fontSize: 11 }}>
+          {reason === "high_risk_tool" ? "高危操作待确认" : "计划待确认"}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
   if (event_type === "run_status") {
     const status = payload.status as string;
+    if (status === "paused_awaiting_confirm") {
+      return (
+        <Tag color="warning" style={{ marginBottom: 4, fontSize: 11 }}>
+          等待确认
+        </Tag>
+      );
+    }
     const color =
       status === "done" ? "success" :
       status === "failed" || status === "aborted" || status === "timeout" ? "error" :

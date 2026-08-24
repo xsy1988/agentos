@@ -19,6 +19,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialized: true,
 
   fetchMe: async () => {
+    // 无 token 时直接结束，不发请求（否则 401 触发整页重定向循环）
+    if (!localStorage.getItem("token")) {
+      set({ user: null, loading: false });
+      return;
+    }
     try {
       const user = await api.get<UserOut>("/auth/me");
       set({ user, loading: false });

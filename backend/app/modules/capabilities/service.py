@@ -75,6 +75,36 @@ BUILTIN_SEED: list[dict[str, Any]] = [
             "required": ["query"],
         },
     },
+    {
+        "name": "run_legal_crawl",
+        "description": "触发法规爬取管道（后台异步执行，立即返回）：爬取 EU TRIS/德国联邦议院/"
+        "英国议会/GOV.UK/legislation.gov.uk 的法规动态，LLM 提取生成独立报告与当日汇总。"
+        "耗时数分钟到几十分钟，完成后可用 legal_crawl_status 查询产出。",
+        "risk_level": "write",
+        "params": {
+            "type": "object",
+            "properties": {
+                "skip_llm": {
+                    "type": "boolean",
+                    "description": "true 则只爬取不做 LLM 提取（更快，默认 false）",
+                },
+            },
+        },
+    },
+    {
+        "name": "legal_crawl_status",
+        "description": "查询法规爬虫的最近产出概况：最近几个爬取日的新增条数/文件数/运行状态。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "查看最近几天（默认 3，最大 10）",
+                },
+            },
+        },
+    },
 ]
 
 

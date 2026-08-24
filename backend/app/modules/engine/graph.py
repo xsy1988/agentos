@@ -110,12 +110,23 @@ def _normalize_tool_responses(
     return new_msgs, patches
 
 
-async def _get_llm(runtime: Any, agent_id: str) -> tuple[Any, dict[str, Any]] | None:
-    """取 (chat_model, agent_cfg)。未绑定模型返回 None。"""
+async def _get_llm(
+    runtime: Any, agent_id: str, model_provider_id: str | None = None
+) -> tuple[Any, dict[str, Any]] | None:
+    """取 (chat_model, agent_cfg)。未绑定模型返回 None。
+
+    model_provider_id：对话内临时换模型（run 级覆盖，随 run.input 快照固化），
+    仅替换 LLM，Agent 人设/预算/工具不变。
+    """
     from app.modules.models_module.provider import decrypt_secret, get_chat_model
 
     agent_cfg = await runtime.backend.get_agent_config(agent_id)
     provider = agent_cfg.get("provider")
+    if model_provider_id:
+        override = await runtime.backend.get_model_provider(model_provider_id)
+        # 覆盖目标不可用时回退 Agent 绑定模型，不让整次 run 失败
+        if override is not None:
+            provider = override
     if provider is None or provider.get("id") is None:
         return None
     api_key = decrypt_secret(provider["api_key_encrypted"])
@@ -143,7 +154,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             intent = "chitchat"
         else:
             # 小模型兜底分类（规则未命中才调，控制成本）
-            llm_pack = await _get_llm(runtime, config["configurable"]["agent_id"])
+            llm_pack = await _get_llm(
+                runtime,
+                config["configurable"]["agent_id"],
+                config["configurable"].get("model_provider_id"),
+            )
             if llm_pack is not None:
                 llm, _ = llm_pack
                 try:
@@ -212,7 +227,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。"""
         conf = config["configurable"]
         run_id: str = conf["run_id"]
-        llm_pack = await _get_llm(runtime, conf["agent_id"])
+        llm_pack = await _get_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
         if llm_pack is None:
             return {"plan_ref": None}
         llm, _ = llm_pack
@@ -274,7 +289,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         ctx = _ctx(run_id)
         hooks = runtime.hooks
 
-        llm_pack = await _get_llm(runtime, conf["agent_id"])
+        llm_pack = await _get_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
         if llm_pack is None:
             text = "当前 Agent 未绑定模型，请在设置中为 Agent 指定 model_provider 后重试。"
             await runtime.emit_event(run_id, "error", {"code": "no_model", "detail": text})
@@ -479,7 +494,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         ctx = _ctx(run_id)
         hooks = runtime.hooks
 
-        llm_pack = await _get_llm(runtime, conf["agent_id"])
+        llm_pack = await _get_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
         if llm_pack is None:
             return {}
         llm, _ = llm_pack

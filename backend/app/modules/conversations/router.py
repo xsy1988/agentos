@@ -23,6 +23,7 @@ from app.modules.conversations.schemas import (
     MessageOut,
     SendMessageOut,
 )
+from app.modules.models_module.models import ModelProvider
 from app.modules.runs.models import Run
 
 router = APIRouter(
@@ -93,6 +94,14 @@ async def send_message(
     if agent is None or agent.status != "enabled":
         raise HTTPException(status.HTTP_409_CONFLICT, "会话绑定的 Agent 不可用")
 
+    # 对话内临时换模型：校验可用性，随 run.input 快照固化（数据库设计 §2.3）
+    model_override: str | None = None
+    if body.model_provider_id is not None:
+        provider = await db.get(ModelProvider, body.model_provider_id)
+        if provider is None or provider.status != "enabled" or provider.kind != "llm":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "模型不存在或不可用")
+        model_override = str(provider.id)
+
     # 1) 落用户消息
     db.add(Message(conversation_id=conv.id, role="user", content={"text": body.text}))
     conv.message_count = (conv.message_count or 0) + 1
@@ -103,7 +112,7 @@ async def send_message(
         conversation_id=conv.id,
         agent_id=conv.agent_id,
         trigger="manual",
-        input={"text": body.text},
+        input={"text": body.text, "model_provider_id": model_override},
         budget={
             "tool_budget": agent.tool_budget,
             "max_iterations": agent.max_iterations,

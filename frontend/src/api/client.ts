@@ -63,8 +63,13 @@ async function request<T>(
   });
 
   if (res.status === 401) {
-    clearToken();
-    window.location.href = "/login";
+    // 仅带 token 的请求 401 才需清 token；且已在 /login 时不再跳转，避免同页重定向死循环
+    if (token) {
+      clearToken();
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+    }
     throw new ApiError(401, "认证过期，请重新登录");
   }
 

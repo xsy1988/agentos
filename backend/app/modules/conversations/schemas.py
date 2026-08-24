@@ -13,6 +13,8 @@ class ConversationCreateIn(BaseModel):
 
 class MessageIn(BaseModel):
     text: str = Field(min_length=1, max_length=32000)
+    # 对话内临时换模型（run 级覆盖）：空则用 Agent 绑定的模型
+    model_provider_id: UUID | None = None
 
 
 class MessageOut(BaseModel):

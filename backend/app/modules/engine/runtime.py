@@ -353,6 +353,10 @@ class EngineRuntime:
                 "agent_id": agent_id,
                 # trigger 供确认门区分人审场景（timer 无人值守，计划确认自动通过）
                 "trigger": run.trigger if run else None,
+                # 对话内临时换模型（run 级覆盖，随 run.input 快照固化）
+                "model_provider_id": (run.input or {}).get("model_provider_id")
+                if run
+                else None,
             }
         }
         final_state = await asyncio.wait_for(

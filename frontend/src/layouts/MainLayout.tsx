@@ -15,7 +15,7 @@ export default function MainLayout() {
   const { sidebarCollapsed, contextPanelOpen } = useUIStore();
 
   return (
-    <Layout style={{ minHeight: "100vh" }}>
+    <Layout style={{ height: "100vh", overflow: "hidden" }}>
       <Sider
         collapsible
         collapsed={sidebarCollapsed}
@@ -26,23 +26,29 @@ export default function MainLayout() {
       >
         <AppSidebar />
       </Sider>
-      <Layout style={{ marginLeft: sidebarCollapsed ? 48 : 200, transition: "margin-left 0.2s" }}>
+      <Layout
+        style={{
+          marginLeft: sidebarCollapsed ? 48 : 200,
+          transition: "margin-left 0.2s",
+          height: "100%",
+          overflow: "hidden",
+        }}
+      >
         <Header
           style={{
             padding: "0 16px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            position: "sticky",
-            top: 0,
             zIndex: 9,
             height: 48,
+            flex: "none",
           }}
         >
           <TopBar />
         </Header>
-        <Content style={{ display: "flex", overflow: "hidden" }}>
-          <div style={{ flex: 1, overflow: "auto", padding: "16px" }}>
+        <Content style={{ display: "flex", overflow: "hidden", flex: 1, minHeight: 0 }}>
+          <div style={{ flex: 1, overflow: "auto", padding: "16px", minWidth: 0, height: "100%" }}>
             <Outlet />
           </div>
           {contextPanelOpen && (
@@ -51,6 +57,7 @@ export default function MainLayout() {
                 width: 360,
                 borderLeft: "1px solid rgba(128,128,128,0.2)",
                 overflow: "auto",
+                flex: "none",
               }}
             >
               <ContextPanel />
