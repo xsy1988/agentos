@@ -474,18 +474,78 @@ export default function MessageStream({
   activeRun: ActiveRun | null;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // 与后端 list_messages 默认 limit 一致：首次拉满一页才可能还有更早历史
+  const PAGE_LIMIT = 200;
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", convId],
     queryFn: () => conversationsApi.messages(convId),
   });
+  // 向前翻页的更早消息（本地叠加，不进 react-query 缓存：切会话即弃）
+  const [older, setOlder] = useState<MessageOut[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  // 加载更早后的滚动位置恢复（避免 prepend 导致视口跳底）
+  const scrollRestore = useRef<{ top: number; height: number } | null>(null);
+
+  useEffect(() => {
+    setOlder([]);
+    setHasMore(false);
+  }, [convId]);
+
+  useEffect(() => {
+    setHasMore(messages.length >= PAGE_LIMIT);
+  }, [messages]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, activeRun]);
 
+  // prepend 后保持视口停在原内容处（滚动容器是父级 overflow:auto 的 div）
+  useEffect(() => {
+    if (!scrollRestore.current) return;
+    const container = rootRef.current?.parentElement;
+    if (container) {
+      container.scrollTop =
+        container.scrollHeight - scrollRestore.current.height + scrollRestore.current.top;
+    }
+    scrollRestore.current = null;
+  }, [older]);
+
+  const loadOlder = async () => {
+    const first = older[0] ?? messages[0];
+    if (!first || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const container = rootRef.current?.parentElement;
+      if (container) {
+        scrollRestore.current = { top: container.scrollTop, height: container.scrollHeight };
+      }
+      const prev = await conversationsApi.messages(convId, first.id);
+      setOlder((cur) => [...prev, ...cur]);
+      setHasMore(prev.length >= PAGE_LIMIT);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  // older 与 messages 可能在窗口滑动后重叠（新消息到达使最新一页前移），按 id 去重
+  const all = (() => {
+    const byId = new Map<string, MessageOut>();
+    for (const m of [...older, ...messages]) byId.set(m.id, m);
+    return Array.from(byId.values());
+  })();
+
   return (
-    <div style={{ padding: "0 16px" }}>
-      {messages.map((msg) => (
+    <div style={{ padding: "0 16px" }} ref={rootRef}>
+      {hasMore && all.length > 0 && (
+        <div style={{ textAlign: "center", padding: "8px 0" }}>
+          <Button size="small" loading={loadingOlder} onClick={loadOlder}>
+            加载更早的消息
+          </Button>
+        </div>
+      )}
+      {all.map((msg) => (
         <MessageItem key={msg.id} msg={msg} />
       ))}
 

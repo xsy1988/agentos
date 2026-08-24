@@ -89,3 +89,63 @@ body {
   border-color: var(--ant-color-primary);
   background: rgba(22, 119, 255, 0.04);
 }
+
+/* 知识库第一级：文件夹卡片网格（正常每行 4 个，窄屏自动降列） */
+.kb-folder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+.kb-folder-card {
+  border-radius: 10px;
+  transition: transform 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.kb-folder-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.kb-folder-card .ant-card-body {
+  padding: 16px;
+}
+.kb-folder-icon {
+  font-size: 32px;
+  color: var(--ant-color-primary);
+}
+.kb-folder-name {
+  margin-top: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kb-folder-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ant-color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 知识库第二级：子文件夹行 */
+.kb-subfolder-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.kb-subfolder-card {
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.kb-subfolder-count {
+  font-size: 11px;
+  color: var(--ant-color-text-secondary);
+  margin-left: 4px;
+}

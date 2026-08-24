@@ -75,18 +75,26 @@ class MeteringHook:
             self._provider_cache[ctx.agent_id] = provider.get("id")
         return self._provider_cache[ctx.agent_id]
 
-    async def on_turn_end(self, ctx: RunContext, iteration: int, usage: dict[str, int]) -> None:
+    async def on_turn_end(
+        self,
+        ctx: RunContext,
+        iteration: int,
+        usage: dict[str, int],
+        provider_id: str | None = None,
+    ) -> None:
         ctx.budget["input_tokens"] = (ctx.budget.get("input_tokens") or 0) + (
             usage.get("input_tokens") or 0
         )
         ctx.budget["output_tokens"] = (ctx.budget.get("output_tokens") or 0) + (
             usage.get("output_tokens") or 0
         )
-        provider_id = await self._provider_id(ctx)
-        if provider_id is None:
+        # 归属修正（优化阶段）：token 记到本轮实际调用的 provider 账上
+        # （轻量模型/对话内覆盖模型）；未传则保持原行为——Agent 绑定主模型
+        pid = provider_id or await self._provider_id(ctx)
+        if pid is None:
             return
         await self._upsert_usage(
-            provider_id,
+            pid,
             ctx,
             input_delta=usage.get("input_tokens") or 0,
             output_delta=usage.get("output_tokens") or 0,
@@ -152,7 +160,10 @@ class BudgetHook:
         )
         raise BudgetExceededError(gate, detail)
 
-    async def on_turn_end(self, ctx: RunContext, iteration: int, usage: dict[str, int]) -> None:
+    async def on_turn_end(
+        self, ctx: RunContext, iteration: int, usage: dict[str, int], provider_id: str | None = None
+    ) -> None:
+        # provider_id 仅计量钩子关心，预算熔断不使用（协议要求接受）
         ctx.budget["iterations"] = iteration
         max_iter = ctx.limits.get("max_iterations") or 25
         if iteration >= max_iter:

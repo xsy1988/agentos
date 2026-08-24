@@ -28,3 +28,11 @@ node_modules/
 
 # 本地运行日志（bin/agentos 产生）
 logs/
+
+# 数据库备份产物（scripts/backup_db.sh 产生）
+backups/
+
+# 前端 tsc 构建产物（类型检查时生成）
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts

@@ -81,6 +81,7 @@ export default function App() {
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="runs" element={<RunsPage />} />
                 <Route path="knowledge" element={<KnowledgePage />} />
+                <Route path="knowledge/:folderId" element={<KnowledgePage />} />
                 <Route path="capabilities/mcp" element={<McpServicesPage />} />
                 <Route path="capabilities/tools" element={<ToolsPage />} />
                 <Route path="capabilities/plugins" element={<PluginsPage />} />

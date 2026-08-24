@@ -19,9 +19,12 @@ interrupt 重放纪律：恢复时节点从头重放——
    副作用（工具执行/审计事件/循环计数）只发生在 interrupt 之后，恰好一次。
 """
 
+import asyncio
+import contextlib
 import json
 import re
 import time
+from collections import OrderedDict
 from typing import Any
 
 from langchain_core.messages import (
@@ -47,6 +50,11 @@ CHITCHAT_RE = re.compile(
     r"^(你好|您好|hi|hello|嗨|哈喽|在吗|在么|早上好|中午好|下午好|晚上好|晚安|再见|拜拜|谢谢|多谢|ok|okay|好的|嗯+|哈+)[!！。.~\s]*$",
     re.IGNORECASE,
 )
+
+# 意图分类结果缓存（归一化文本+是否带图 → 分类）：重复指令常见（「重试」「继续」），
+# 命中则零延迟直达。LRU 上限防膨胀；asyncio 单事件循环内访问，无需加锁。
+_INTENT_CACHE: OrderedDict[str, tuple[str, str]] = OrderedDict()
+_INTENT_CACHE_MAX = 256
 
 
 def build_system_prompt(agent_cfg: dict[str, Any]) -> str:
@@ -201,30 +209,42 @@ async def _get_llm(
     # 视觉能力标记（params.vision，设置页勾选）：agent 节点发送视图据此适配图片块
     agent_cfg = dict(agent_cfg)
     agent_cfg["vision"] = bool((provider.get("params") or {}).get("vision"))
+    # 实际生效 provider id（含对话内覆盖情形）：计量归属用
+    agent_cfg["provider_id"] = provider.get("id")
     api_key = decrypt_secret(provider["api_key_encrypted"])
     return get_chat_model(provider, api_key), agent_cfg
 
 
-async def _get_lightweight_llm(runtime: Any) -> Any | None:
-    """轻量模型（params.lightweight 标记，设置页勾选）：未配置返回 None，
-    调用方回退主模型。闲聊回复与内部短调用（分类/规划/验收）用它降本。"""
+async def _get_lightweight_llm(runtime: Any) -> tuple[Any, str] | None:
+    """轻量模型（params.lightweight 标记，设置页勾选）：返回 (chat_model,
+    provider_id)；未配置返回 None，调用方回退主模型。闲聊回复与内部短调用
+    （分类/规划/验收）用它降本。provider_id 供计量归属（token 记轻量账）。"""
     from app.modules.models_module.provider import decrypt_secret, get_chat_model
 
     provider = await runtime.backend.get_lightweight_provider()
     if provider is None:
         return None
-    return get_chat_model(provider, decrypt_secret(provider["api_key_encrypted"]))
+    return (
+        get_chat_model(provider, decrypt_secret(provider["api_key_encrypted"])),
+        str(provider["id"]),
+    )
 
 
 async def _get_internal_llm(
     runtime: Any, agent_id: str, model_provider_id: str | None = None
-) -> Any | None:
-    """内部短调用（意图分类/规划/验收）取 LLM：轻量模型优先，未配置回退主模型。"""
+) -> tuple[Any, str | None] | None:
+    """内部短调用（意图分类/规划/验收）取 LLM：轻量模型优先，未配置回退主模型。
+
+    返回 (chat_model, provider_id)；provider_id 供计量归属，None = 未解析出
+    （记账回退 Agent 主模型归属）。"""
     light = await _get_lightweight_llm(runtime)
     if light is not None:
         return light
     pack = await _get_llm(runtime, agent_id, model_provider_id)
-    return pack[0] if pack else None
+    if pack is None:
+        return None
+    llm, agent_cfg = pack
+    return llm, agent_cfg.get("provider_id")
 
 
 def build_graph(runtime: Any) -> CompiledStateGraph:
@@ -251,44 +271,89 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 break
         intent = "task"
         complexity = "simple"
+        # 预装配产物：分类与装配并行时在此就绪，供 context_assembly 直接复用
+        pre_cache: dict[str, Any] | None = None
+        # 缓存 key：归一化文本 + 是否带图（带图/不带图分类可能不同）
+        cache_key = f"{int(has_image)}|{text.strip()[:200].lower()}"
         if CHITCHAT_RE.match(text.strip()):
             intent = "chitchat"
+        elif cache_key in _INTENT_CACHE:
+            intent, complexity = _INTENT_CACHE[cache_key]
+            _INTENT_CACHE.move_to_end(cache_key)
         else:
-            # 轻量模型兕底分类（规则未命中才调，控制成本）；分类失败默认
-            # simple——风险不对称时选轻路径（simple 路径 agent 仍可调工具补台）
-            llm = await _get_internal_llm(
-                runtime,
-                config["configurable"]["agent_id"],
-                config["configurable"].get("model_provider_id"),
-            )
-            if llm is not None:
+            conf = config["configurable"]
+
+            async def _classify() -> tuple[str, str, dict[str, int], str | None]:
+                # 轻量模型兕底分类；只输出一个词——非流式调用延迟大头是
+                # 输出 token，单词输出比 JSON 快好几倍。失败默认 simple
+                # ——风险不对称时选轻路径（simple 路径 agent 仍可调工具补台）。
+                # 返回 (intent, complexity, usage, provider_id)：usage 供记账
+                r = await _get_internal_llm(
+                    runtime, conf["agent_id"], conf.get("model_provider_id")
+                )
+                if r is None:
+                    return "task", "simple", {}, None
+                llm, pid = r
+                usage: dict[str, int] = {}
                 try:
                     hint = "（消息附带图片）" if has_image else ""
                     resp = await llm.ainvoke(
                         [
                             SystemMessage(
-                                content="你是意图分类器。判断用户输入属于哪类：\n"
-                                "chitchat：问候寒暀、无实质诉求\n"
-                                "simple：单步可完成的任务——问答/翻译/总结/改写/图片"
-                                "识别描述/单次查询；无需多工具编排\n"
-                                "complex：多步骤拆解、跨工具编排、含写操作或"
-                                "外部副作用的任务\n"
-                                '只输出 JSON：{"intent": "chitchat" 或 "task", '
-                                '"complexity": "simple" 或 "complex"}'
-                                "（chitchat 时 complexity 填 simple）"
+                                content="把用户输入分为三类，只输出一个词，不要解释：\n"
+                                "chitchat=问候寒暄，无实质诉求\n"
+                                "simple=单步可完成的任务：问答/翻译/总结/改写/"
+                                "图片识别/单次查询\n"
+                                "complex=多步骤拆解、跨工具编排或含写操作副作用"
                             ),
                             HumanMessage(content=f"{text[:500]}{hint}"),
                         ]
                     )
-                    obj = _extract_json(str(resp.content))
-                    if obj:
-                        if obj.get("intent") in ("task", "chitchat"):
-                            intent = str(obj["intent"])
-                        if obj.get("complexity") in ("simple", "complex"):
-                            complexity = str(obj["complexity"])
+                    if getattr(resp, "usage_metadata", None):
+                        usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
+                    word = str(resp.content).strip().lower()
+                    # 匹配顺序 chitchat→complex→simple：输出偶带前缀/多余词时
+                    # 按最特异的目标词优先（防 “不是 complex，是 simple” 误判 complex）
+                    for w in ("chitchat", "complex", "simple"):
+                        if w in word:
+                            if w == "chitchat":
+                                return "chitchat", "simple", usage, pid
+                            return "task", w, usage, pid
                 except Exception:  # noqa: BLE001 —— 分类失败按简单任务处理，不阻断主链路
-                    intent, complexity = "task", "simple"
-        return {"protected_context": {"intent": intent, "complexity": complexity}}
+                    pass
+                return "task", "simple", usage, pid
+
+            async def _pre_assemble() -> dict[str, Any] | None:
+                # 语义装配与分类互不依赖（输入同为用户文本），并行执行把
+                # embedding+检索延迟藏进分类等待里；失败返回 None，
+                # context_assembly 兑底现场装配
+                from app.modules.discovery.assembler import assemble_tools
+
+                try:
+                    agent_cfg = await runtime.backend.get_agent_config(conf["agent_id"])
+                    tb = int(agent_cfg.get("tool_budget") or 8)
+                    return await assemble_tools(text, conf["agent_id"], tb)
+                except Exception:  # noqa: BLE001
+                    return None
+
+            (cls, pre_cache) = await asyncio.gather(_classify(), _pre_assemble())
+            intent, complexity, cls_usage, cls_pid = cls
+            _INTENT_CACHE[cache_key] = (intent, complexity)
+            while len(_INTENT_CACHE) > _INTENT_CACHE_MAX:
+                _INTENT_CACHE.popitem(last=False)
+            # 分类调用的 token 也记账（之前漏记）：归属实际使用的 provider；
+            # 记账失败不阻断分类结果
+            if cls_usage:
+                with contextlib.suppress(Exception):  # noqa: BLE001
+                    await runtime.hooks.on_turn_end(
+                        _ctx(conf["run_id"]), 0, cls_usage, provider_id=cls_pid
+                    )
+        # capability_cache 总是覆盖：预装配结果就绪则传下去（assembly 直接复用），
+        # 否则传空 dict 清掉上个 run 的过期装配（assembly 会现场重装）
+        return {
+            "protected_context": {"intent": intent, "complexity": complexity},
+            "capability_cache": pre_cache or {},
+        }
 
     async def context_assembly(state: LoopState, config: RunnableConfig) -> dict:
         """五区装配之工具描述区（M3，设计 §1.2.3）：
@@ -308,7 +373,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 query = _human_text(m.content)
                 break
         tool_budget = int(agent_cfg.get("tool_budget") or 8)
-        cache = await assemble_tools(query, conf["agent_id"], tool_budget)
+        # 预装配复用（优化阶段）：intent_router 已在分类等待期间并行完成语义
+        # 装配则直接用（含元工具，tools 必非空）；未预装配（规则/缓存短路、
+        # 预装配失败）则现场装配，行为与原链路一致
+        cache = state.get("capability_cache") or {}
+        if not cache.get("tools"):
+            cache = await assemble_tools(query, conf["agent_id"], tool_budget)
         # 记忆注入（M5，模块详细设计 §2.6）：platform 全文 + 最近 2 天 daily
         # 每个 run 自动携带“我是谁 + 最近发生了什么”
         memories = await get_protected_memories()
@@ -341,9 +411,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         conf = config["configurable"]
         run_id: str = conf["run_id"]
         # 规划是内部短调用：轻量模型优先，未配置回退主模型
-        llm = await _get_internal_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
-        if llm is None:
+        r = await _get_internal_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
+        if r is None:
             return {"plan_ref": None}
+        llm, pid = r
         msgs = state.get("messages") or []
         task_text = _human_text(msgs[-1].content) if msgs else ""
         usage: dict[str, int] = {}
@@ -363,9 +434,13 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
         except Exception:  # noqa: BLE001 —— 规划失败不阻断，空计划继续
             steps = None
-        # planner 自身的 LLM 消耗也记账（iteration 不前进，与 verify 同模式）
+        # planner 自身的 LLM 消耗也记账（iteration 不前进，与 verify 同模式），
+        # 归属实际调用的 provider（轻量/覆盖模型）
         await runtime.hooks.on_turn_end(
-            _ctx(run_id), _ctx(run_id).budget.get("iterations") or 0, usage
+            _ctx(run_id),
+            _ctx(run_id).budget.get("iterations") or 0,
+            usage,
+            provider_id=pid,
         )
         items = [
             {"seq": i + 1, "text": str(s), "status": "pending"} for i, s in enumerate(steps or [])
@@ -411,11 +486,14 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         llm, agent_cfg = llm_pack
 
         intent = (state.get("protected_context") or {}).get("intent", "task")
+        # 本轮实际生效 provider（计量归属）：Agent 绑定/对话内覆盖的主模型，
+        # 闲聊命中轻量模型时改记轻量账
+        turn_pid = agent_cfg.get("provider_id")
         # 闲聊回复走轻量模型（未配置回退主模型，行为不变）
         if intent == "chitchat":
             light = await _get_lightweight_llm(runtime)
             if light is not None:
-                llm = light
+                llm, turn_pid = light
         state_msgs = list(state.get("messages") or [])
         # L1/L2 压缩（估算用量 ≥ 阈值触发；保护名单不在消息区，天然安全）
         from app.modules.discovery.assembler import compact_messages, local_view
@@ -476,7 +554,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             raise RuntimeError(f"模型调用失败: {type(e).__name__}: {e}") from e
         if not final.content and not final.tool_calls:
             raise RuntimeError("模型连续两次返回空回复（思考型模型偶发，请重试）")
-        await hooks.on_turn_end(ctx, iteration, usage)
+        await hooks.on_turn_end(ctx, iteration, usage, provider_id=turn_pid)
 
         # thought 事件：本轮思考选择/计划调用的工具（SSE 可见）
         if final.tool_calls:
@@ -617,11 +695,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         llm_pack = await _get_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
         if llm_pack is None:
             return {}
-        llm, _ = llm_pack
-        # 验收是内部短调用：轻量模型优先，未配置用主模型
+        llm, agent_cfg = llm_pack
+        # 验收是内部短调用：轻量模型优先，未配置用主模型；pid 供计量归属
+        pid = agent_cfg.get("provider_id")
         light = await _get_lightweight_llm(runtime)
         if light is not None:
-            llm = light
+            llm, pid = light
 
         msgs = state.get("messages") or []
         task_text = ""
@@ -653,8 +732,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         budget: dict[str, Any] = dict(state.get("budget_state") or {})
         retries = int(budget.get("verify_retries") or 0)
         budget["verify_retries"] = retries + 1
-        # verify 自身的 LLM 消耗也记账（iteration 不前进）
-        await hooks.on_turn_end(ctx, ctx.budget.get("iterations") or 0, usage)
+        # verify 自身的 LLM 消耗也记账（iteration 不前进），
+        # 归属实际调用的 provider（轻量/覆盖模型）
+        await hooks.on_turn_end(
+            ctx, ctx.budget.get("iterations") or 0, usage, provider_id=pid
+        )
 
         achieved = bool(verdict.get("achieved")) or retries + 1 >= VERIFY_RETRY_LIMIT
         protected = dict(state.get("protected_context") or {})

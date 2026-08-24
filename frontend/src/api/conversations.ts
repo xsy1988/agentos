@@ -11,8 +11,12 @@ export const conversationsApi = {
     api.patch<ConversationOut>(`/conversations/${convId}`, body),
   // 删除：消息/任务/事件/计划级联清除
   del: (convId: string) => api.del<void>(`/conversations/${convId}`),
-  messages: (convId: string) =>
-    api.get<MessageOut[]>(`/conversations/${convId}/messages`),
+  // beforeId 游标翻页（加载更早）；默认返回最近 limit 条（升序）
+  messages: (convId: string, beforeId?: string) =>
+    api.get<MessageOut[]>(
+      `/conversations/${convId}/messages`,
+      beforeId ? { before_id: beforeId } : undefined,
+    ),
   sendMessage: (
     convId: string,
     text: string,

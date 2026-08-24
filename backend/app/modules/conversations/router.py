@@ -121,15 +121,23 @@ async def delete_conversation(
 async def list_messages(
     conversation_id: UUID,
     limit: int = 200,
+    before_id: UUID | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[Message]:
-    stmt = (
-        select(Message)
-        .where(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at)
-        .limit(limit)
-    )
-    return list((await db.scalars(stmt)).all())
+    """按时间升序返回最近 limit 条；before_id 游标向前翻页（加载更早）。
+
+    注意不能升序 + limit（那取到的是最旧一页，长会话最新消息反而看不到）；
+    必须倒序取尾部再反转。返回条数 == limit 时前端可认为还有更早的历史。
+    """
+    stmt = select(Message).where(Message.conversation_id == conversation_id)
+    if before_id is not None:
+        anchor = await db.get(Message, before_id)
+        if anchor is not None:
+            stmt = stmt.where(Message.created_at < anchor.created_at)
+    stmt = stmt.order_by(Message.created_at.desc()).limit(limit)
+    rows = list((await db.scalars(stmt)).all())
+    rows.reverse()
+    return rows
 
 
 @router.post(

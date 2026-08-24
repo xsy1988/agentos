@@ -78,7 +78,14 @@ class EngineHook(Protocol):
 
     async def on_turn_start(self, ctx: RunContext, iteration: int) -> None: ...
 
-    async def on_turn_end(self, ctx: RunContext, iteration: int, usage: dict[str, int]) -> None: ...
+    async def on_turn_end(
+        self, ctx: RunContext, iteration: int, usage: dict[str, int], provider_id: str | None = None
+    ) -> None: ...
+
+    """provider_id（优化阶段增量扩展，兼容冻结协议）：本轮实际调用的模型——
+    内部短调用（分类/规划/验收）与闲聊回复可能用了轻量模型，对话内可能临时
+    换模型；计量钩子据此把 token 记到真实 provider 账上。缺省 None = 按原
+    行为记 Agent 绑定的主模型。"""
 
     async def on_tool_call(self, ctx: RunContext, call: ToolCallRequest) -> None: ...
 
@@ -117,8 +124,10 @@ class HookChain:
     async def on_turn_start(self, ctx: RunContext, iteration: int) -> None:
         await self._run("on_turn_start", ctx, iteration)
 
-    async def on_turn_end(self, ctx: RunContext, iteration: int, usage: dict[str, int]) -> None:
-        await self._run("on_turn_end", ctx, iteration, usage)
+    async def on_turn_end(
+        self, ctx: RunContext, iteration: int, usage: dict[str, int], provider_id: str | None = None
+    ) -> None:
+        await self._run("on_turn_end", ctx, iteration, usage, provider_id)
 
     async def on_tool_call(self, ctx: RunContext, call: ToolCallRequest) -> None:
         await self._run("on_tool_call", ctx, call)
