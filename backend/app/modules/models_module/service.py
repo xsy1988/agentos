@@ -60,13 +60,22 @@ async def update_provider(
 
 
 async def test_provider(db: AsyncSession, provider: ModelProvider) -> dict:
-    """连通性测试：真实调一次 1-token 补全。"""
-    from app.modules.models_module.provider import decrypt_secret, get_chat_model
+    """连通性测试：llm 真实调一次 1-token 补全；embedding 真实向量化一条查询。"""
+    from app.modules.models_module.provider import (
+        decrypt_secret,
+        get_chat_model,
+        get_embeddings,
+    )
 
     if provider.impl != "openai_compatible":
         return {"ok": False, "detail": f"impl={provider.impl} 暂不支持测试"}
     api_key = decrypt_secret(provider.api_key_encrypted or b"")
     try:
+        if provider.kind == "embedding":
+            # embedding 模型没有 chat 端点，走真实向量化并回报维度
+            embeddings = get_embeddings(provider, api_key)
+            vector = await embeddings.aembed_query("连通性测试")
+            return {"ok": True, "reply_preview": f"向量化成功，维度 {len(vector)}"}
         llm = get_chat_model(provider, api_key)
         resp = await llm.ainvoke("hi")
         return {"ok": True, "reply_preview": str(resp.content)[:80]}

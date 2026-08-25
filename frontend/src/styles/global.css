@@ -297,6 +297,22 @@ body {
   color: var(--ant-color-text-tertiary);
 }
 
+/* 模型下拉项：两行结构（名称 + model_name 小字辅助行），下拉宽 320px 独立于触发器 */
+.model-option-name {
+  line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-option-sub {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ant-color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* 知识库第一级：文件夹卡片网格（正常每行 4 个，窄屏自动降列） */
 .kb-folder-grid {
   display: grid;

@@ -4,7 +4,7 @@
  * 模型选择：run 级覆盖（随消息快照固化），默认跟随 Agent 绑定模型。
  * 附件：选择/粘贴/拖入 → 先传 /files/upload 拿 file_id → 发消息只传 id 引用。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Input, Button, Space, Select, Tooltip, Modal, message as antdMessage } from "antd";
 import {
   SendOutlined,
@@ -331,13 +331,37 @@ export default function InputBar({
                 size="small"
                 variant="borderless"
                 className="model-select"
-                style={{ minWidth: 160 }}
+                style={{ minWidth: 160, maxWidth: 240 }}
+                // 下拉宽度独立于触发器：触发器窄（弱化），下拉要能看全模型名
+                popupMatchSelectWidth={320}
                 value={modelId ?? "follow-agent"}
                 onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
                 options={[
-                  { value: "follow-agent", label: "跟随 Agent 默认" },
-                  ...llms.map((m) => ({ value: m.id, label: m.name })),
+                  { value: "follow-agent", label: "跟随 Agent 默认", model_name: "" },
+                  ...llms.map((m) => ({
+                    value: m.id,
+                    label: m.name,
+                    model_name: m.model_name,
+                  })),
                 ]}
+                // 下拉项两行：名称 + model_name 小字辅助行（长名称不截断，模型标识可辨识）。
+                // optionRender 回调参数是 FlattenOptionData 包装，自定义字段在 data 下。
+                optionRender={(option) => {
+                  const { label, model_name } = (
+                    option.data ?? option
+                  ) as {
+                    label?: ReactNode;
+                    model_name?: string;
+                  };
+                  return (
+                    <div className="model-option">
+                      <div className="model-option-name">{label}</div>
+                      {model_name ? (
+                        <div className="model-option-sub">{model_name}</div>
+                      ) : null}
+                    </div>
+                  );
+                }}
               />
             </Tooltip>
           </Space>
