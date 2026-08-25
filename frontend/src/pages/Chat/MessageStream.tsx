@@ -19,7 +19,7 @@ import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
-import type { RunEventOut, MessageOut } from "@/api/types";
+import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
 
 // 从消息 content 提取文本
@@ -104,30 +104,33 @@ function AttachmentList({ atts }: { atts: MsgAttachment[] }) {
   );
 }
 
-// 从 SSE 事件流累积 message_delta → 完整文本
+// 从 SSE 事件流累积 message_delta → 完整文本（后端 payload 字段为 text）
 function accumulateDeltas(events: RunEventOut[]): string {
   let text = "";
   for (const e of events) {
     if (e.event_type === "message_delta") {
-      const delta = e.payload.delta as string;
+      const delta = (e.payload.text ?? e.payload.delta) as string;
       if (delta) text += delta;
     }
   }
   return text;
 }
 
-// 提取预算使用
-function extractBudgetUsed(events: RunEventOut[]): { iterations: number; max: number; tokens: number } | null {
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].event_type === "budget_used") {
-      return {
-        iterations: events[i].payload.iterations as number,
-        max: events[i].payload.max_iterations as number,
-        tokens: events[i].payload.tokens as number,
-      };
-    }
-  }
-  return null;
+// 预算使用：从 run 落库的 budget_used 读（SSE 无 budget_used 事件；
+// runtime 在暂停/终态时落库，运行中为空不显示）
+function extractBudgetUsed(run: RunOut | undefined): {
+  iterations: number;
+  max: number;
+  tokens: number;
+} | null {
+  const used = run?.budget_used as Record<string, number> | undefined;
+  const budget = run?.budget as Record<string, number> | undefined;
+  if (!used) return null;
+  return {
+    iterations: (used.iterations as number) ?? 0,
+    max: (budget?.max_iterations as number) ?? 0,
+    tokens: ((used.input_tokens as number) ?? 0) + ((used.output_tokens as number) ?? 0),
+  };
 }
 
 function MessageItem({ msg }: { msg: MessageOut }) {
@@ -195,6 +198,9 @@ export function EventItem({ event }: { event: RunEventOut }) {
   if (event_type === "message_delta") return null; // 已累积渲染
 
   if (event_type === "thought") {
+    // 后端 payload：{tool_calls: [{name, args}]}——本轮思考选择的工具；
+    // text/content 为兼容将来纯文本思考的兑底
+    const toolCalls = (payload.tool_calls ?? []) as { name: string; args: unknown }[];
     const text = (payload.text ?? payload.content ?? "") as string;
     return (
       <Collapse
@@ -206,18 +212,32 @@ export function EventItem({ event }: { event: RunEventOut }) {
             <Space size={6}>
               <BulbOutlined style={{ color: "var(--ant-color-warning)" }} />
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                思考过程
+                思考过程{toolCalls.length > 0 ? ` · 选择 ${toolCalls.length} 个工具` : ""}
               </Typography.Text>
             </Space>
           ),
-          children: (
-            <Typography.Paragraph
-              style={{ fontSize: 13, whiteSpace: "pre-wrap", margin: 0 }}
-              type="secondary"
-            >
-              {text}
-            </Typography.Paragraph>
-          ),
+          children:
+            toolCalls.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {toolCalls.map((c, i) => (
+                  <Typography.Text
+                    key={i}
+                    type="secondary"
+                    style={{ fontSize: 13 }}
+                    className="font-mono-tight"
+                  >
+                    决定调用 {c.name}
+                  </Typography.Text>
+                ))}
+              </div>
+            ) : (
+              <Typography.Paragraph
+                style={{ fontSize: 13, whiteSpace: "pre-wrap", margin: 0 }}
+                type="secondary"
+              >
+                {text}
+              </Typography.Paragraph>
+            ),
         }]}
       />
     );
@@ -297,7 +317,8 @@ export function EventItem({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "tool_result") {
-    const name = (payload.tool_name ?? "") as string;
+    // 后端 payload：{name, ok, elapsed_ms, content}
+    const name = (payload.name ?? payload.tool_name ?? "") as string;
     const result = payload.result ?? payload.content ?? "";
     const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
     return (
@@ -382,8 +403,19 @@ export function EventItem({ event }: { event: RunEventOut }) {
     );
   }
 
+  if (event_type === "budget_warning") {
+    return (
+      <Tooltip title={(payload.detail as string) ?? ""}>
+        <Tag color="warning" style={{ marginBottom: 4, fontSize: 11 }}>
+          预算告警：{String(payload.gate ?? "")}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
   if (event_type === "error") {
-    const msg = (payload.message ?? payload.error ?? "未知错误") as string;
+    // 后端 payload：{code, detail}
+    const msg = (payload.message ?? payload.detail ?? payload.error ?? "未知错误") as string;
     return (
       <Tag color="error" style={{ marginBottom: 4, fontSize: 11 }}>
         错误：{msg}
@@ -399,14 +431,14 @@ function LiveRun({ runId }: { runId: string }) {
   const events = eventsByRun[runId] ?? [];
 
   const accumulated = accumulateDeltas(events);
-  const budget = extractBudgetUsed(events);
 
-  // 同时拉取 run 详情获取预算信息
+  // 同时拉取 run 详情：预算指示读 budget_used 落库值
   const { data: run } = useQuery({
     queryKey: ["run", runId],
     queryFn: () => runsApi.get(runId),
     refetchInterval: 3000,
   });
+  const budget = extractBudgetUsed(run);
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -435,7 +467,7 @@ function LiveRun({ runId }: { runId: string }) {
 
       {/* SSE 事件渲染 */}
       {events
-        .filter((e) => e.event_type !== "message_delta" && e.event_type !== "budget_used")
+        .filter((e) => e.event_type !== "message_delta")
         .map((e) => (
           <EventItem key={e.seq} event={e} />
         ))}

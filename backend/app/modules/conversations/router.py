@@ -213,6 +213,11 @@ async def send_message(
         await files_service.add_ref(
             db, UUID(att["file_id"]), "message", msg.id
         )
+    # 首条消息自动命名：仍是默认标题时用消息首行生成（手动重命名过的不覆盖）
+    if not conv.message_count and conv.title == "新会话":
+        first_line = next((ln.strip() for ln in body.text.splitlines() if ln.strip()), "")
+        if first_line:
+            conv.title = first_line[:30] + ("…" if len(first_line) > 30 else "")
     conv.message_count = (conv.message_count or 0) + 1
     conv.last_message_at = datetime.now(UTC)
 

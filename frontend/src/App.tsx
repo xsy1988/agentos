@@ -56,6 +56,7 @@ export default function App() {
       <ConfigProvider
         locale={zhCN}
         theme={{
+          cssVar: true,
           algorithm: dark
             ? antdTheme.darkAlgorithm
             : antdTheme.defaultAlgorithm,

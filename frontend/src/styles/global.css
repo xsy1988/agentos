@@ -11,6 +11,20 @@
 /* KaTeX 数学公式 */
 @import "katex/dist/katex.min.css";
 
+/* antd 主题变量别名：ConfigProvider 开启 cssVar 后 antd 生成 camelCase 变量
+   （--ant-colorPrimary 等），项目内统一用 kebab-case 引用，这里桥接一层。
+   随 algorithm（dark/light）动态切换。 */
+:root {
+  --ant-color-bg-container: var(--ant-colorBgContainer);
+  --ant-color-error: var(--ant-colorError);
+  --ant-color-primary: var(--ant-colorPrimary);
+  --ant-color-success: var(--ant-colorSuccess);
+  --ant-color-text: var(--ant-colorText);
+  --ant-color-text-secondary: var(--ant-colorTextSecondary);
+  --ant-color-text-tertiary: var(--ant-colorTextTertiary);
+  --ant-color-warning: var(--ant-colorWarning);
+}
+
 /* ---- 工作台风格全局调整 ---- */
 body {
   margin: 0;
@@ -88,6 +102,17 @@ body {
 .input-shell.drag-over {
   border-color: var(--ant-color-primary);
   background: rgba(22, 119, 255, 0.04);
+}
+
+/* 输入栏模型选择器弱化：小字灰色，不抢输入区视觉 */
+.model-select .ant-select-selection-item,
+.model-select .ant-select-selection-placeholder {
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
+}
+.model-select .ant-select-arrow {
+  font-size: 10px;
+  color: var(--ant-color-text-tertiary);
 }
 
 /* 知识库第一级：文件夹卡片网格（正常每行 4 个，窄屏自动降列） */

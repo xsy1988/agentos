@@ -330,7 +330,8 @@ export default function InputBar({
               <Select
                 size="small"
                 variant="borderless"
-                style={{ minWidth: 170, color: "rgba(128,128,128,0.9)" }}
+                className="model-select"
+                style={{ minWidth: 160 }}
                 value={modelId ?? "follow-agent"}
                 onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
                 options={[
