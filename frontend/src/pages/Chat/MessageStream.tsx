@@ -139,55 +139,57 @@ function MessageItem({ msg }: { msg: MessageOut }) {
   const text = msgText(msg);
   const setCtxRun = useSSEStore((s) => s.setActiveRun);
   const openContextPanel = useUIStore((s) => s.openContextPanel);
-  return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: isUser ? "flex-end" : "flex-start",
-        marginBottom: 12,
-      }}
-    >
+  if (isUser) {
+    // 用户消息：蓝色气泡右对齐（短内容，气泡式合适）
+    return (
       <div
-        className="msg-bubble"
         style={{
-          maxWidth: "80%",
-          padding: "8px 14px",
-          borderRadius: 8,
-          background: isUser
-            ? "var(--ant-color-primary)"
-            : "var(--ant-color-bg-container)",
-          color: isUser
-            ? "#fff"
-            : "var(--ant-color-text)",
+          display: "flex",
+          justifyContent: "flex-end",
+          marginBottom: 12,
         }}
       >
-        {isUser && <AttachmentList atts={atts} />}
-        {isUser ? (
-          text ? (
+        <div
+          className="msg-bubble"
+          style={{
+            maxWidth: "80%",
+            padding: "8px 14px",
+            borderRadius: 8,
+            background: "var(--ant-color-primary)",
+            color: "#fff",
+          }}
+        >
+          <AttachmentList atts={atts} />
+          {text ? (
             <div style={{ whiteSpace: "pre-wrap", fontSize: 14 }}>{text}</div>
-          ) : null
-        ) : (
-          <MarkdownRenderer content={text} />
-        )}
-        {/* 消息 ↔ 任务关联入口：本条回复出自哪个 run，点开右栏看执行过程 */}
-        {!isUser && msg.run_id && (
-          <div style={{ marginTop: 4 }}>
-            <Button
-              type="text"
-              size="small"
-              className="msg-run-link"
-              icon={<ProfileOutlined />}
-              onClick={() => {
-                setCtxRun(msg.run_id!);
-                openContextPanel();
-              }}
-              style={{ fontSize: 11, padding: "0 4px", height: 20 }}
-            >
-              任务详情 · {msg.run_id.slice(0, 8)}
-            </Button>
-          </div>
-        )}
+          ) : null}
+        </div>
       </div>
+    );
+  }
+  // assistant 回复：全宽文档式（无气泡）——内容本质是文档
+  // （表格/代码块/长列表），全宽排版更舒展（ChatGPT/Claude 同款）
+  return (
+    <div className="msg-doc" style={{ marginBottom: 12 }}>
+      <MarkdownRenderer content={text} />
+      {/* 消息 ↔ 任务关联入口：本条回复出自哪个 run，点开右栏看执行过程 */}
+      {msg.run_id && (
+        <div style={{ marginTop: 4 }}>
+          <Button
+            type="text"
+            size="small"
+            className="msg-run-link"
+            icon={<ProfileOutlined />}
+            onClick={() => {
+              setCtxRun(msg.run_id!);
+              openContextPanel();
+            }}
+            style={{ fontSize: 11, padding: "0 4px", height: 20 }}
+          >
+            任务详情 · {msg.run_id.slice(0, 8)}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -426,7 +428,10 @@ export function EventItem({ event }: { event: RunEventOut }) {
   return null;
 }
 
-function LiveRun({ runId }: { runId: string }) {
+function LiveRun({ runId, replied }: { runId: string; replied?: boolean }) {
+  // replied：历史消息已含本 run 的 assistant 回复（终态后 messages 刷新到达）。
+  // 此时隐藏流式气泡交给 MessageItem，避免同一回复双渲染；
+  // 执行过程事件（thought/tool_call 等）历史里没有，继续展示。
   const { eventsByRun } = useSSEStore();
   const events = eventsByRun[runId] ?? [];
 
@@ -472,26 +477,12 @@ function LiveRun({ runId }: { runId: string }) {
           <EventItem key={e.seq} event={e} />
         ))}
 
-      {/* 流式 Agent 回复 */}
-      {accumulated && (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-start",
-            marginBottom: 12,
-          }}
-        >
-          <div
-            style={{
-              maxWidth: "80%",
-              padding: "8px 14px",
-              borderRadius: 8,
-              background: "var(--ant-color-bg-container)",
-            }}
-          >
-            <MarkdownRenderer content={accumulated} />
-            <span className="cursor-blink">▎</span>
-          </div>
+      {/* 流式 Agent 回复：历史消息未接管时才渲染（终态交接，防双渲染）。
+          assistant 全宽文档式，与 MessageItem 一致 */}
+      {accumulated && !replied && (
+        <div className="msg-doc" style={{ marginBottom: 12 }}>
+          <MarkdownRenderer content={accumulated} />
+          <span className="cursor-blink">▎</span>
         </div>
       )}
     </div>
@@ -581,9 +572,14 @@ export default function MessageStream({
         <MessageItem key={msg.id} msg={msg} />
       ))}
 
-      {/* 实时运行事件 */}
+      {/* 实时运行事件：终态后保留（执行过程历史消息不存，刷新前可查） */}
       {activeRun && (
-        <LiveRun runId={activeRun.runId} />
+        <LiveRun
+          runId={activeRun.runId}
+          replied={all.some(
+            (m) => m.role === "assistant" && m.run_id === activeRun.runId,
+          )}
+        />
       )}
 
       <div ref={bottomRef} />

@@ -77,11 +77,11 @@ export default function ConversationList({
     );
   }, [conversations, search]);
 
-  // 分组
+  // 分组：排序键同后端——最后消息时间，没有则用创建时间（新建会话归「今天」）
   const groups = useMemo(() => {
     const map = new Map<string, ConversationOut[]>();
     for (const c of filtered) {
-      const key = formatDateGroup(c.last_message_at);
+      const key = formatDateGroup(c.last_message_at ?? c.created_at);
       (map.get(key) ?? map.set(key, []).get(key))!.push(c);
     }
     return Array.from(map.entries());

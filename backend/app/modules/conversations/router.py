@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -38,7 +38,10 @@ router = APIRouter(
 
 @router.get("", response_model=list[ConversationOut])
 async def list_conversations(db: AsyncSession = Depends(get_db)) -> list[Conversation]:
-    stmt = select(Conversation).order_by(Conversation.last_message_at.desc().nullslast())
+    # 排序键 = 最后消息时间，没有则用创建时间（新建即置顶，无消息空会话不沉底）
+    stmt = select(Conversation).order_by(
+        func.coalesce(Conversation.last_message_at, Conversation.created_at).desc()
+    )
     return list((await db.scalars(stmt)).all())
 
 

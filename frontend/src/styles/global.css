@@ -2,21 +2,24 @@
  * 全局样式：Tailwind v3 指令 + highlight.js 主题 + KaTeX + 工作台调整。
  * preflight 已在 tailwind.config.js 中关闭以避免与 Antd 冲突。
  */
+/* @import 必须位于所有规则之前（含 @tailwind 展开的规则），
+   否则被浏览器静默丢弃（曾致 hljs/katex 样式长期未加载） */
+@import "highlight.js/styles/github-dark.css";
+@import "katex/dist/katex.min.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-/* highlight.js 深色主题 */
-@import "highlight.js/styles/github-dark.css";
-/* KaTeX 数学公式 */
-@import "katex/dist/katex.min.css";
 
 /* antd 主题变量别名：ConfigProvider 开启 cssVar 后 antd 生成 camelCase 变量
    （--ant-colorPrimary 等），项目内统一用 kebab-case 引用，这里桥接一层。
    随 algorithm（dark/light）动态切换。 */
 :root {
   --ant-color-bg-container: var(--ant-colorBgContainer);
+  --ant-color-border-secondary: var(--ant-colorBorderSecondary);
   --ant-color-error: var(--ant-colorError);
+  --ant-color-fill-quaternary: var(--ant-colorFillQuaternary);
+  --ant-color-fill-tertiary: var(--ant-colorFillTertiary);
   --ant-color-primary: var(--ant-colorPrimary);
   --ant-color-success: var(--ant-colorSuccess);
   --ant-color-text: var(--ant-colorText);
@@ -55,17 +58,195 @@ body {
   font-size: 0.85em;
 }
 
-/* Markdown 内代码高亮 */
-.markdown-body pre {
-  border-radius: 6px;
+/* ---- Markdown 渲染排版（GitHub Primer 为蓝本，antd CSS 变量驱动暗/亮自适应） ---- */
+.markdown-body {
+  word-break: break-word;
+}
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 标题阶梯：聊天场景不用于文档，去掉 GitHub 的 h1/h2 底部线，只做尺寸/间距 */
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ant-color-text);
+}
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.22em; }
+.markdown-body h3 { font-size: 1.1em; }
+.markdown-body h4 { font-size: 1em; }
+.markdown-body h5 { font-size: 0.94em; color: var(--ant-color-text-secondary); }
+.markdown-body h6 { font-size: 0.9em; color: var(--ant-color-text-tertiary); }
+
+/* 段落 / 列表 / 分隔线 */
+.markdown-body p { margin: 0.6em 0; }
+.markdown-body ul,
+.markdown-body ol {
   margin: 0.5em 0;
+  padding-left: 1.6em;
 }
-.markdown-body code {
-  border-radius: 3px;
-  padding: 0.1em 0.3em;
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body li > p { margin: 0.3em 0; }
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.25));
+  margin: 1.2em 0;
 }
-.markdown-body pre code {
+
+/* 链接 / 图片 */
+.markdown-body a {
+  color: var(--ant-color-primary);
+  text-decoration: none;
+}
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 6px;
+}
+
+/* 引用块：左侧主色边 + 弱化底色 */
+.markdown-body blockquote {
+  margin: 0.8em 0;
+  padding: 0.4em 1em;
+  border-left: 3px solid var(--ant-color-primary);
+  border-radius: 0 6px 6px 0;
+  background: var(--ant-color-fill-tertiary, rgba(128, 128, 128, 0.08));
+  color: var(--ant-color-text-secondary);
+}
+.markdown-body blockquote > :first-child { margin-top: 0.2em; }
+.markdown-body blockquote > :last-child { margin-bottom: 0.2em; }
+
+/* 行内代码：胶囊样式（带边框更精致） */
+.markdown-body code:not(.hljs) {
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background: var(--ant-color-fill-tertiary, rgba(128, 128, 128, 0.12));
+  border: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.2));
+  font-size: 0.88em;
+  color: var(--ant-color-text);
+}
+
+/* 代码块：外层容器（MarkdownRenderer 的 .md-code-wrap 提供头部条） */
+.markdown-body .md-code-wrap {
+  margin: 0.8em 0;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+  overflow: hidden;
+  background: #0d1117; /* 代码区固定深色（hljs 主题为 github-dark，亮色主题下同样成立） */
+}
+.markdown-body .md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  background: #161b22;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+  color: rgba(230, 237, 243, 0.55);
+  font-size: 11px;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
+}
+.markdown-body .md-code-copy {
+  border: none;
+  background: transparent;
+  color: rgba(230, 237, 243, 0.55);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.markdown-body .md-code-copy:hover {
+  color: rgba(230, 237, 243, 0.9);
+  background: rgba(110, 118, 129, 0.25);
+}
+.markdown-body .md-code-copy.copied {
+  color: #3fb950;
+}
+.markdown-body .md-code-wrap pre {
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  background: transparent;
+}
+.markdown-body .md-code-wrap pre code {
   padding: 0;
+  background: transparent;
+  border: none;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+/* 无头部条兑底（理论上不会走到）：裸 pre */
+.markdown-body > pre {
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #0d1117;
+  border: 1px solid rgba(128, 128, 128, 0.22);
+}
+
+/* 表格：圆角容器 + 表头加重 + 斑马纹 + 行 hover，去竖线更现代 */
+.markdown-body .md-table-wrap {
+  margin: 0.8em 0;
+  border: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.22));
+  border-radius: 8px;
+  overflow: hidden;
+}
+.markdown-body .md-table-scroll {
+  overflow-x: auto;
+}
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.92em;
+}
+.markdown-body thead {
+  background: var(--ant-color-fill-tertiary, rgba(128, 128, 128, 0.1));
+}
+.markdown-body th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--ant-color-text);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.25));
+}
+.markdown-body td {
+  padding: 7px 12px;
+  color: var(--ant-color-text);
+  vertical-align: top;
+}
+.markdown-body tbody tr {
+  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.12));
+}
+.markdown-body tbody tr:last-child {
+  border-bottom: none;
+}
+.markdown-body tbody tr:nth-child(odd) {
+  background: var(--ant-color-fill-quaternary, transparent);
+}
+.markdown-body tbody tr:hover {
+  background: var(--ant-color-fill-tertiary, rgba(128, 128, 128, 0.12));
+}
+
+/* KaTeX 块级公式横向滚动，防溢出 */
+.markdown-body .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
 }
 
 /* 会话列表项 hover 时显示重命名/删除操作（默认隐藏；不能用内联 style 隐藏——
@@ -76,13 +257,14 @@ body {
 .ant-list-item:hover .conv-item-actions {
   visibility: visible;
 }
-/* 任务详情入口：hover 才显示，不抢消息视觉 */
+/* 任务详情入口：hover 才显示，不抢消息视觉（气泡式用户消息 + 文档式 assistant 回复两类容器） */
 .msg-run-link {
   opacity: 0;
   transition: opacity 0.15s;
 }
 .ant-list-item:hover .msg-run-link,
-.msg-bubble:hover .msg-run-link {
+.msg-bubble:hover .msg-run-link,
+.msg-doc:hover .msg-run-link {
   opacity: 1;
 }
 
