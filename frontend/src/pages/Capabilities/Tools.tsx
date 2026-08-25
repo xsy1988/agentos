@@ -1,26 +1,14 @@
 /**
  * 工具页（前端设计 §3.4）：type=tool 的能力管理。
- * 内置工具只读；外部工具可注册（OpenAI 函数签名 payload.schema）。
+ * 内置工具只读；外部工具可注册/编辑（右侧 Drawer 表单，§4 规范）。
  */
 import { useState } from "react";
-import {
-  Table,
-  Button,
-  Modal,
-  Form,
-  Input,
-  Select,
-  Tag,
-  Switch,
-  Space,
-  Typography,
-  message,
-  Popconfirm,
-} from "antd";
-import { PlusOutlined, ToolOutlined, DeleteOutlined } from "@ant-design/icons";
+import { Table, Button, Tag, Switch, Space, Typography, message, Popconfirm } from "antd";
+import { PlusOutlined, ToolOutlined, DeleteOutlined, EditOutlined } from "@ant-design/icons";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { capabilitiesApi } from "@/api/capabilities";
 import type { CapabilityOut } from "@/api/types";
+import CapFormDrawer from "./CapFormDrawer";
 
 const RISK_COLORS: Record<string, string> = {
   read: "green",
@@ -30,43 +18,15 @@ const RISK_COLORS: Record<string, string> = {
 
 export default function ToolsPage() {
   const queryClient = useQueryClient();
-  const [modalOpen, setModalOpen] = useState(false);
-  const [form] = Form.useForm();
+  // Drawer 状态：open + 当前编辑对象（null = 注册模式）
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [formCap, setFormCap] = useState<CapabilityOut | null>(null);
 
   const { data: allCaps = [] } = useQuery({
     queryKey: ["capabilities", "all"],
     queryFn: () => capabilitiesApi.list(true),
   });
   const toolCaps = allCaps.filter((c) => c.type === "tool");
-
-  const createMutation = useMutation({
-    mutationFn: (values: Record<string, unknown>) => {
-      let schema: unknown = {};
-      if (values.schema_text) {
-        try {
-          schema = JSON.parse(values.schema_text as string);
-        } catch {
-          throw new Error("schema JSON 解析失败");
-        }
-      }
-      return capabilitiesApi.create({
-        type: "tool",
-        category: "external",
-        name: values.name as string,
-        description: values.description as string,
-        version: (values.version as string) || "0.1.0",
-        risk_level: values.risk_level as string,
-        payload: { schema },
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["capabilities"] });
-      message.success("工具已注册");
-      setModalOpen(false);
-      form.resetFields();
-    },
-    onError: (e: Error) => message.error(e.message || "注册失败"),
-  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => capabilitiesApi.del(id),
@@ -88,7 +48,14 @@ export default function ToolsPage() {
         <Typography.Title level={5} style={{ margin: 0 }}>
           <ToolOutlined /> 工具
         </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+        <Button
+          type="primary"
+          icon={<PlusOutlined />}
+          onClick={() => {
+            setFormCap(null);
+            setDrawerOpen(true);
+          }}
+        >
           注册工具
         </Button>
       </div>
@@ -146,50 +113,34 @@ export default function ToolsPage() {
           },
           {
             title: "",
-            width: 50,
+            width: 90,
             render: (_, r) =>
               r.category !== "builtin" ? (
-                <Popconfirm title="删除此工具？" onConfirm={() => deleteMutation.mutate(r.id)}>
-                  <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
+                <Space size={0}>
+                  <Button
+                    size="small"
+                    type="text"
+                    icon={<EditOutlined />}
+                    onClick={() => {
+                      setFormCap(r);
+                      setDrawerOpen(true);
+                    }}
+                  />
+                  <Popconfirm title="删除此工具？" onConfirm={() => deleteMutation.mutate(r.id)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
               ) : null,
           },
         ]}
       />
 
-      <Modal
-        title="注册工具"
-        open={modalOpen}
-        onCancel={() => setModalOpen(false)}
-        onOk={() => form.validateFields().then((v) => createMutation.mutate(v))}
-        confirmLoading={createMutation.isPending}
-        width={520}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" initialValues={{ version: "0.1.0", risk_level: "read" }}>
-          <Form.Item name="name" label="名称" rules={[{ required: true }, { pattern: /^[a-zA-Z0-9_.-]+$/, message: "仅字母数字 . - _" }]}>
-            <Input placeholder="如: web_search" />
-          </Form.Item>
-          <Form.Item name="description" label="描述" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Space size="small">
-            <Form.Item name="version" label="版本" style={{ width: 120 }}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="risk_level" label="风险级别" style={{ width: 150 }}>
-              <Select options={[{ value: "read" }, { value: "write" }, { value: "dangerous" }]} />
-            </Form.Item>
-          </Space>
-          <Form.Item name="schema_text" label="函数签名（JSON Schema，可选）">
-            <Input.TextArea
-              rows={6}
-              style={{ fontFamily: "monospace", fontSize: 12 }}
-              placeholder='{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}'
-            />
-          </Form.Item>
-        </Form>
-      </Modal>
+      <CapFormDrawer
+        type="tool"
+        cap={formCap}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+      />
     </div>
   );
 }

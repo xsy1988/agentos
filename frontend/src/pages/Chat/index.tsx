@@ -11,6 +11,7 @@ import { conversationsApi } from "@/api/conversations";
 import { runsApi } from "@/api/runs";
 import { useSSE } from "@/hooks/useSSE";
 import { useSSEStore } from "@/store/sse";
+import { useUIStore } from "@/store/ui";
 import ConversationList from "./ConversationList";
 import MessageStream from "./MessageStream";
 import InputBar from "./InputBar";
@@ -32,6 +33,7 @@ export default function ChatPage() {
   } | null>(null);
   const queryClient = useQueryClient();
   const { setActiveRun: setCtxRun, reconnecting } = useSSEStore();
+  const openContextPanel = useUIStore((s) => s.openContextPanel);
 
   // SSE 回调：处理确认中断（后端事件名为 confirmation_request，
   // payload 结构 {reason: plan_review|high_risk_tool, payload: {...}}）
@@ -82,6 +84,8 @@ export default function ChatPage() {
     );
     setActiveRun({ runId: result.run_id, status: "running" });
     setCtxRun(result.run_id);
+    // 发送消息 = 具体事件：自动展开右栏任务详情
+    openContextPanel();
     // 用户消息立即上屏：不等 run 终态（run 可能停在等待确认，届时才刷新就太晚）
     queryClient.invalidateQueries({ queryKey: ["messages", activeConvId] });
     // 会话列表排序（last_message_at）同步刷新
@@ -112,12 +116,14 @@ export default function ChatPage() {
         if (paused.length > 0) {
           setActiveRun({ runId: paused[0].id, status: "paused_awaiting_confirm" });
           setCtxRun(paused[0].id);
+          // 恢复待确认任务 = 具体事件：自动展开右栏
+          openContextPanel();
         }
       } catch {
         // 恢复失败不阻断会话浏览
       }
     },
-    [setCtxRun],
+    [setCtxRun, openContextPanel],
   );
 
   // 会话被删除：若删的是当前会话，清空选中与运行态，回到空态

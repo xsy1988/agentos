@@ -2,10 +2,11 @@
 import { api } from "./client";
 import type { CapabilityOut, CapabilityToolOut } from "./types";
 
+// 与后端 CapabilitySmokeReport.checks 对齐（smoke.py 逐条 {name, ok, detail}）
 export interface SmokeCheck {
-  tool: string;
-  passed: boolean;
-  error: string | null;
+  name: string;
+  ok: boolean;
+  detail: string;
 }
 
 export interface CapabilityCreatedOut {

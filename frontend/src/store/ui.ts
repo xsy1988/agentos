@@ -16,7 +16,8 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   dark: true,
   sidebarCollapsed: false,
-  contextPanelOpen: true,
+  // 任务详情面板默认收起，仅在发消息/点「任务详情」等具体事件时打开（§4 规范）
+  contextPanelOpen: false,
   commandPaletteOpen: false,
 
   toggleDark: () => set((s) => ({ dark: !s.dark })),
