@@ -10,4 +10,8 @@ export const modelsApi = {
   update: (id: string, body: Record<string, unknown>) =>
     api.patch<ModelProviderOut>(`/models/${id}`, body),
   test: (id: string) => api.post(`/models/${id}/test`),
+  syncGateway: () =>
+    api.post<{ gateway: string; total: number; migrated: number; created: number }>(
+      "/models/sync-gateway",
+    ),
 };

@@ -47,6 +47,12 @@ async def list_models(
     return [_to_out(p) for p in await service.list_providers(db, kind=kind)]
 
 
+@router.post("/sync-gateway")
+async def sync_gateway(db: AsyncSession = Depends(get_db)) -> dict:
+    """从 LLM_Gateway 同步模型清单（幂等：既有迁移 + 新模型创建）。"""
+    return await service.sync_from_gateway(db)
+
+
 @router.post("", response_model=ModelProviderOut, status_code=status.HTTP_201_CREATED)
 async def create_model(
     body: ModelProviderCreateIn, db: AsyncSession = Depends(get_db)

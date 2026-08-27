@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # 运行时数据目录（文件存储根，gitignore）；解析容器 REST 地址（docling-serve）
     data_dir: Path = Path("data")
     parser_url: str = "http://localhost:5001"
+    # LLM 统一网关（LLM_Gateway）：所有模型经网关路由，平台不直连上游；
+    # 真实上游密钥由网关集中管理（providers.yaml），平台只持有网关 key
+    llm_gateway_base_url: str = "http://localhost:18080/v1"
+    llm_gateway_api_key: str = "local-demo-key"
 
 
 settings = Settings()

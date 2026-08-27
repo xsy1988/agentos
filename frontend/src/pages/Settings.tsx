@@ -26,6 +26,7 @@ import {
   CloudServerOutlined,
   DeleteOutlined,
   ApiOutlined,
+  SyncOutlined,
 } from "@ant-design/icons";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
@@ -303,6 +304,18 @@ function ModelsTab() {
     onSettled: () => setTestingId(null),
   });
 
+  // 从 LLM_Gateway 同步：既有模型迁移为网关路由，新模型自动创建
+  const syncMutation = useMutation({
+    mutationFn: () => modelsApi.syncGateway(),
+    onSuccess: (r: { total: number; migrated: number; created: number }) => {
+      queryClient.invalidateQueries({ queryKey: ["models"] });
+      message.success(
+        `网关同步完成：共 ${r.total} 个模型，迁移 ${r.migrated} 条，新建 ${r.created} 条`,
+      );
+    },
+    onError: (e: Error) => message.error(`同步失败：${e.message}`),
+  });
+
   const openEdit = (m: ModelProviderOut) => {
     setEditing(m);
     form.setFieldsValue({
@@ -321,17 +334,28 @@ function ModelsTab() {
   return (
     <div>
       <div style={{ marginBottom: 12, textAlign: "right" }}>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => {
-            setEditing(null);
-            form.resetFields();
-            setModalOpen(true);
-          }}
-        >
-          添加模型
-        </Button>
+        <Space>
+          <Tooltip title="从 LLM_Gateway 拉取模型清单：既有模型迁移为网关路由，新模型自动创建（模型统一由网关管理）">
+            <Button
+              icon={<SyncOutlined spin={syncMutation.isPending} />}
+              loading={syncMutation.isPending}
+              onClick={() => syncMutation.mutate()}
+            >
+              从网关同步
+            </Button>
+          </Tooltip>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              setEditing(null);
+              form.resetFields();
+              setModalOpen(true);
+            }}
+          >
+            添加模型
+          </Button>
+        </Space>
       </div>
 
       <Table<ModelProviderOut>
