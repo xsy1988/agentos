@@ -225,7 +225,8 @@ class EngineRuntime:
         elif et == "confirmation":
             run_id = event.get("target_run_id")
             answer = str(event["payload"].get("answer", ""))
-            if run_id and answer in ("approved", "rejected"):
+            # approved/rejected 是计划与高危工具确认；其余非空文本是支线子任务答复（ADR-24）
+            if run_id and answer:
                 self._spawn_run_task(str(run_id), self._resume_run(str(run_id), answer))
         elif et == "abort":
             run_id = event.get("target_run_id")
@@ -372,7 +373,9 @@ class EngineRuntime:
                 self._build_ctx(run)
             await self._set_run_status(run_id, "running")
             await self.emit_event(
-                run_id, "run_status", {"status": "running", "resumed_with": answer}
+                run_id,
+                "run_status",
+                {"status": "running", "resumed_with": answer[:200]},
             )
             await self._invoke_and_finalize(
                 run_id,
@@ -429,11 +432,17 @@ class EngineRuntime:
         assert self.graph is not None
         run = await self._load_run(run_id)
         timeout = (run.budget or {}).get("timeout_seconds") or 600 if run else 600
+        # 任务架构（M7a）：run 从创建时就快照了 task_id（send_message 写入 run.input）；
+        # 迁移前的老 run 用会话惰性补建，保证任何 run 都能挂到主任务上。
+        task_id = (run.input or {}).get("task_id") if run else None
+        if not task_id and run is not None and run.conversation_id:
+            task_id = await self.backend.ensure_task_id(str(run.conversation_id))
         config: RunnableConfig = {
             "configurable": {
                 "thread_id": thread_id,
                 "run_id": run_id,
                 "agent_id": agent_id,
+                "task_id": str(task_id) if task_id else None,
                 # trigger 供确认门区分人审场景（timer 无人值守，计划确认自动通过）
                 "trigger": run.trigger if run else None,
                 # 对话内临时换模型（run 级覆盖，随 run.input 快照固化）
@@ -464,7 +473,15 @@ class EngineRuntime:
             if getattr(m, "type", "") == "ai" and m.content:
                 final_text = str(m.content)
                 break
-        await self._finalize(run_id, "done", {"text": final_text})
+        # 任务架构：只有「本 run 确实把任务做完了」才推进主线子任务。
+        # 闲聊不推进（用户在任务会话里插一句寒暄不该算完成一个子任务）；
+        # 复杂任务以验收结论为准（verify 未达成时预算已耗尽才结束，此时不推进）。
+        protected = final_state.get("protected_context") or {}
+        verdict = protected.get("verify_verdict") or {}
+        achieved = protected.get("intent", "task") != "chitchat" and bool(
+            verdict.get("achieved", True)
+        )
+        await self._finalize(run_id, "done", {"text": final_text}, achieved=achieved)
 
     async def _pause_for_confirmation(self, run_id: str, snapshot: Any) -> None:
         payload: dict[str, Any] = {"reason": "unknown", "payload": {}}
@@ -490,9 +507,12 @@ class EngineRuntime:
             {"status": "paused_awaiting_confirm", "reason": payload.get("reason")},
         )
 
-    async def _finalize(self, run_id: str, status: str, result: dict[str, Any]) -> None:
+    async def _finalize(
+        self, run_id: str, status: str, result: dict[str, Any], *, achieved: bool = True
+    ) -> None:
         ctx = self.get_run_ctx(run_id)
         budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
+        task_id: str | None = None
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
@@ -501,6 +521,9 @@ class EngineRuntime:
                 run.budget_used = budget_used
                 run.finished_at = datetime.now(UTC)
                 await db.commit()
+                task_id = (run.input or {}).get("task_id")
+                if not task_id and run.conversation_id:
+                    task_id = await self.backend.ensure_task_id(str(run.conversation_id))
                 # 通知路由（M5，模块详细设计 §3）：无会话归属的 run（定时任务）
                 # 没有实时推送面 → 进通知中心；有会话的靠 SSE 实时推送
                 if run.conversation_id is None and status in ("done", "failed"):
@@ -515,6 +538,16 @@ class EngineRuntime:
                         )
                     )
                     await db.commit()
+        # 任务架构回写（ADR-26）：把本次 run 完成的主线子任务推进到 done，
+        # 主线收口后进度重算会自动跳过未触发的支线并把主任务置 done。
+        if task_id and status == "done":
+            try:
+                await self.backend.finalize_task_plan(task_id, run_id, achieved=achieved)
+                from app.modules.engine.graph import emit_task_steps
+
+                await emit_task_steps(self, task_id, run_id)
+            except Exception:  # noqa: BLE001 —— 任务回写失败不能影响 run 落库
+                logger.exception("run %s 任务回写失败", run_id)
         await self.hooks.on_run_end(ctx, status, result)
         await self.emit_event(run_id, "run_status", {"status": status})
         self._run_ctx.pop(run_id, None)

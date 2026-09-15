@@ -247,11 +247,45 @@ async def _get_internal_llm(
     return llm, agent_cfg.get("provider_id")
 
 
+async def emit_task_steps(runtime: Any, task_id: str, run_id: str) -> None:
+    """把主任务当前步骤作为计划事件推给前端（计划状态区与看板同源）。
+
+    复用既有 plan_updated 事件类型（事件族不扩类，见 ADR-25）：items 即子任务清单，
+    前端计划面板与左侧任务看板据此同步刷新，不需要新增事件通道。
+    """
+    tctx = await runtime.backend.get_task_context(task_id)
+    if not tctx:
+        return
+    items = [
+        {
+            "seq": s["seq"],
+            "text": s["name"],
+            "status": s["status"],
+            "step_id": s["id"],
+            "kind": s["kind"],
+        }
+        for s in tctx["steps"]
+    ]
+    await runtime.emit_event(
+        run_id,
+        "plan_updated",
+        {
+            "plan_ref": None,
+            "items": items,
+            "progress": {"done": tctx["progress_done"], "total": tctx["progress_total"]},
+            "task_id": task_id,
+        },
+    )
+
+
 def build_graph(runtime: Any) -> CompiledStateGraph:
     """runtime: EngineRuntime 实例（提供 backend/emit_event/hooks/run_ctx 依赖）。"""
 
     def _ctx(run_id: str) -> Any:
         return runtime.get_run_ctx(run_id)
+
+    async def _emit_task_steps(task_id: str, run_id: str) -> None:
+        await emit_task_steps(runtime, task_id, run_id)
 
     # ---------- 节点 ----------
 
@@ -332,7 +366,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 try:
                     agent_cfg = await runtime.backend.get_agent_config(conf["agent_id"])
                     tb = int(agent_cfg.get("tool_budget") or 8)
-                    return await assemble_tools(text, conf["agent_id"], tb)
+                    return await assemble_tools(text, conf["agent_id"], tb, conf.get("task_id"))
                 except Exception:  # noqa: BLE001
                     return None
 
@@ -378,7 +412,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 预装配失败）则现场装配，行为与原链路一致
         cache = state.get("capability_cache") or {}
         if not cache.get("tools"):
-            cache = await assemble_tools(query, conf["agent_id"], tool_budget)
+            cache = await assemble_tools(query, conf["agent_id"], tool_budget, conf.get("task_id"))
         # 记忆注入（M5，模块详细设计 §2.6）：platform 全文 + 最近 2 天 daily
         # 每个 run 自动携带“我是谁 + 最近发生了什么”
         memories = await get_protected_memories()
@@ -396,20 +430,45 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 "请参照其步骤与注意事项执行）\n"
                 + "\n\n---\n\n".join(skill_mds)
             )
+        # 任务架构区（M7a，ADR-23/24）：主任务目标 + 子任务清单 + 进度。
+        # 放在 protected_context.system_prompt 里随固定区一起注入、永不压缩——
+        # 多轮会话里模型可能忘记「这是哪个主任务、还剩哪几个子任务」，
+        # 该区是看板与模型共享的同一份事实。
+        task_id = conf.get("task_id")
+        task_ctx: dict[str, Any] | None = None
+        if task_id:
+            task_ctx = await runtime.backend.get_task_context(str(task_id))
+            if task_ctx and task_ctx.get("card"):
+                system_prompt = f"{system_prompt}\n\n{task_ctx['card']}"
         return {
             "protected_context": {
                 "intent": "task",
                 # 复杂度判定结果穿透装配节点（simple 分流在 assembly 之后）
                 "complexity": (state.get("protected_context") or {}).get("complexity", "simple"),
                 "system_prompt": system_prompt,
+                "task_id": str(task_id) if task_id else None,
             },
             "capability_cache": cache,
         }
 
     async def planner(state: LoopState, config: RunnableConfig) -> dict:
-        """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。"""
+        """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。
+
+        计划来源优先取**主任务架构**（M7a）：主任务是任务集合，其主线子任务即
+        用户预先定义的执行架构，比每次让 LLM 凭空拆解更稳定、且与看板同源。
+        仅当主任务无待办主线（或工具型 run 无任务）时才回退到 LLM 自由规划。
+        """
         conf = config["configurable"]
         run_id: str = conf["run_id"]
+        task_id = conf.get("task_id")
+        if task_id:
+            structured = await runtime.backend.start_task_plan(str(task_id), run_id)
+            if structured:
+                plan_ref = await runtime.backend.save_plan(run_id, structured)
+                await runtime.emit_event(
+                    run_id, "plan_updated", {"plan_ref": plan_ref, "items": structured}
+                )
+                return {"plan_ref": plan_ref}
         # 规划是内部短调用：轻量模型优先，未配置回退主模型
         r = await _get_internal_llm(runtime, conf["agent_id"], conf.get("model_provider_id"))
         if r is None:
@@ -599,6 +658,65 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         cache_tools = (state.get("capability_cache") or {}).get("tools") or []
         meta_by_name = {t["name"]: t for t in cache_tools}
 
+        # 0) 澄清型支线（M7a/ADR-24）：先登记支线 + 暂停等答复，再回填答复。
+        # 顺序是「登记 → interrupt → 回填」：登记放在 interrupt 之前，用户在看板
+        # 才能立刻看到「正在等答复哪一条支线」；重放时登记按 (task, run, 标题) 复用，
+        # 回填覆盖 resolution，故整段重放幂等（与 search_more_tools 同纪律）。
+        # 本轮其余工具调用一律不执行：用户答复可能改变它们的参数，交给下一轮。
+        ask_calls = [c for c in calls if c["name"] == "ask_user"]
+        if ask_calls:
+            first = ask_calls[0]
+            args = dict(first["args"])
+            question = str(args.get("question") or "").strip()
+            title = str(args.get("title") or "").strip() or question[:40] or "向用户确认"
+            task_id = conf.get("task_id")
+            step_id: str | None = None
+            if task_id:
+                info = await runtime.backend.raise_subtask(
+                    str(task_id),
+                    run_id,
+                    name=title,
+                    description=question,
+                    question=question,
+                )
+                step_id = (info or {}).get("step_id")
+                await _emit_task_steps(str(task_id), run_id)
+            answer = interrupt(
+                {
+                    "reason": "subtask_clarification",
+                    "payload": {
+                        "question": question,
+                        "title": title,
+                        "step_id": step_id,
+                        "kind": "branch",
+                    },
+                }
+            )
+            answer_text = (
+                str(answer.get("answer") or "") if isinstance(answer, dict) else str(answer)
+            )
+            if task_id and step_id:
+                await runtime.backend.answer_subtask(
+                    str(task_id), step_id, answer_text, run_id
+                )
+                await _emit_task_steps(str(task_id), run_id)
+            ask_results: list[ToolMessage] = [
+                ToolMessage(
+                    content=f"用户答复：{answer_text}",
+                    tool_call_id=str(first["id"]),
+                )
+            ]
+            for c in calls:
+                if c["id"] == first["id"]:
+                    continue
+                ask_results.append(
+                    ToolMessage(
+                        content="（本次因等待用户澄清而中断，该调用未执行，请在下一轮重新发起）",
+                        tool_call_id=str(c["id"]),
+                    )
+                )
+            return {"messages": ask_results, "budget_state": dict(ctx.budget)}
+
         # 1) 风险预查（幂等读 state，重放安全）
         risky = [
             {"name": c["name"], "args": c["args"]}
@@ -649,8 +767,27 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                                 dict(c["args"]),
                                 conf["agent_id"],
                                 state.get("capability_cache") or {},
+                                conf.get("task_id"),
                             )
                             ok = True
+                        elif meta["name"] == "declare_subtask":
+                            title = str(c["args"].get("title") or "").strip()
+                            desc = str(c["args"].get("description") or "").strip()
+                            task_id = conf.get("task_id")
+                            if not title:
+                                content, ok = "参数错误：title 不能为空", False
+                            elif not task_id:
+                                content, ok = "当前会话没有主任务，无法登记支线子任务。", False
+                            else:
+                                info = await runtime.backend.raise_subtask(
+                                    str(task_id), run_id, name=title, description=desc
+                                )
+                                if info is None:
+                                    content, ok = "登记支线子任务失败。", False
+                                else:
+                                    await _emit_task_steps(str(task_id), run_id)
+                                    content = f"已登记支线子任务：{title}（B{info['seq']}）"
+                                    ok = True
                         else:
                             content, ok = f"未知元工具：{c['name']}", False
                     elif meta["kind"] == "mcp":

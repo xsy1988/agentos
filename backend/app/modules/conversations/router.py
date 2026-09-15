@@ -4,8 +4,6 @@
 落 message → 创建 run(pending) → 投 inbox_events + NOTIFY → 返回 run_id。
 """
 
-import json
-from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.modules.agents.models import Agent
 from app.modules.auth.deps import get_current_user
+from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation, Message
 from app.modules.conversations.schemas import (
     ConversationCreateIn,
@@ -23,11 +22,10 @@ from app.modules.conversations.schemas import (
     MessageIn,
     MessageOut,
     SendMessageOut,
+    SendMessageRunCreated,
 )
-from app.modules.files import service as files_service
-from app.modules.files.models import File
-from app.modules.models_module.models import ModelProvider
 from app.modules.runs.models import Run
+from app.modules.tasks import service as tasks_service
 
 router = APIRouter(
     prefix="/conversations",
@@ -49,18 +47,16 @@ async def list_conversations(db: AsyncSession = Depends(get_db)) -> list[Convers
 async def create_conversation(
     body: ConversationCreateIn, db: AsyncSession = Depends(get_db)
 ) -> Conversation:
-    if body.agent_id:
-        agent = await db.get(Agent, body.agent_id)
-        if agent is None or agent.status != "enabled":
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent 不存在或已停用")
-    else:
-        agent = await db.scalar(
-            select(Agent).where(Agent.is_default.is_(True), Agent.status == "enabled")
-        )
-        if agent is None:
-            raise HTTPException(status.HTTP_409_CONFLICT, "无可用 Agent，请先创建")
+    """新建会话（= 新的主任务实例，归属「通用任务集」，除非走 POST /tasks）。
+
+    会话与主任务实例 1:1（ADR-26）：这里同时建立任务实例，让任务看板不会漏掉
+    任何会话。真正选择主任务由 `POST /tasks` 负责，它会改写 task_type_id。
+    """
+    agent = await conv_service.resolve_agent(db, body.agent_id)
     conv = Conversation(agent_id=agent.id, title=body.title)
     db.add(conv)
+    await db.flush()
+    await tasks_service.ensure_task_for_conversation(db, conv)
     await db.commit()
     await db.refresh(conv)
     return conv
@@ -162,98 +158,31 @@ async def send_message(
     if agent is None or agent.status != "enabled":
         raise HTTPException(status.HTTP_409_CONFLICT, "会话绑定的 Agent 不可用")
 
-    # 对话内临时换模型：校验可用性，随 run.input 快照固化（数据库设计 §2.3）
-    model_override: str | None = None
-    if body.model_provider_id is not None:
-        provider = await db.get(ModelProvider, body.model_provider_id)
-        if provider is None or provider.status != "enabled" or provider.kind != "llm":
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "模型不存在或不可用")
-        model_override = str(provider.id)
-
-    # 附件校验：批量查 File 记录（已入库即已过白名单/大小限制）
-    attachments: list[dict] = []
-    has_image = False
-    if body.attachment_ids:
-        stmt = select(File).where(File.id.in_(body.attachment_ids))
-        found = {f.id: f for f in (await db.scalars(stmt)).all()}
-        missing = [str(i) for i in body.attachment_ids if i not in found]
-        if missing:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND, f"附件不存在：{', '.join(missing)}"
-            )
-        attachments = [
-            {
-                "file_id": str(f.id),
-                "filename": f.filename,
-                "mime": f.mime,
-                "size": f.size,
-            }
-            for f in (found[i] for i in body.attachment_ids)
-        ]
-        has_image = any((a["mime"] or "").startswith("image/") for a in attachments)
-
-    # 图片外发涉密确认门：带图且生效模型支持视觉 → 图片将上传至模型服务商。
-    # 未确认时 428，前端弹窗（含服务商名）确认后携 confirm_upload=true 重发。
-    # 文档附件走本地 docling 容器提取，不出本机，无需确认。
-    if has_image and not body.confirm_upload:
-        effective_pid = model_override or str(agent.model_provider_id or "")
-        ep = await db.get(ModelProvider, UUID(effective_pid)) if effective_pid else None
-        if ep is not None and ep.status == "enabled" and (ep.params or {}).get("vision"):
-            raise HTTPException(
-                status.HTTP_428_PRECONDITION_REQUIRED,
-                f"图片将上传至模型服务商「{ep.name}」处理，请确认内容不涉密后重试",
-            )
-
-    # 1) 落用户消息（content.attachments 供前端展示；引擎读 run.input 消费）
-    msg = Message(
-        conversation_id=conv.id,
-        role="user",
-        content={"text": body.text, "attachments": attachments},
+    model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
+    attachments, has_image = await conv_service.collect_attachments(db, body.attachment_ids)
+    await conv_service.assert_image_upload_confirmed(
+        db,
+        has_image=has_image,
+        confirm_upload=body.confirm_upload,
+        agent=agent,
+        model_override=model_override,
     )
-    db.add(msg)
-    await db.flush()  # 拿 msg.id 供 FileRef 登记
-    for att in attachments:
-        await files_service.add_ref(
-            db, UUID(att["file_id"]), "message", msg.id
-        )
-    # 首条消息自动命名：仍是默认标题时用消息首行生成（手动重命名过的不覆盖）
-    if not conv.message_count and conv.title == "新会话":
-        first_line = next((ln.strip() for ln in body.text.splitlines() if ln.strip()), "")
-        if first_line:
-            conv.title = first_line[:30] + ("…" if len(first_line) > 30 else "")
-    conv.message_count = (conv.message_count or 0) + 1
-    conv.last_message_at = datetime.now(UTC)
 
-    # 2) 创建 run：预算快照创建时固化（数据库设计 §2.3）；附件随 input 快照
-    run = Run(
-        conversation_id=conv.id,
-        agent_id=conv.agent_id,
-        trigger="manual",
-        input={
-            "text": body.text,
-            "model_provider_id": model_override,
-            "attachment_ids": [att["file_id"] for att in attachments],
-            # 涉密确认留痕（审计）：带图消息外发前已经用户确认
-            "attachment_upload_confirmed": body.confirm_upload,
-        },
-        budget={
-            "tool_budget": agent.tool_budget,
-            "max_iterations": agent.max_iterations,
-            "max_tokens_per_run": agent.max_tokens_per_run,
-            "timeout_seconds": agent.timeout_seconds,
-        },
-    )
-    db.add(run)
-    await db.flush()  # 拿 run.id
+    # 会话↔主任务实例 1:1：老会话（迁移遗漏）在此惰性补建，引擎侧无需判空分叉
+    task = await tasks_service.ensure_task_for_conversation(db, conv)
+    if body.force_current_task and body.text.strip():
+        # 用户选择「仍在本会话继续」：留痕，供任务卡提示模型聚焦当前主任务
+        await tasks_service.append_out_of_scope(db, task, body.text)
 
-    # 3) 投 inbox + NOTIFY（唤醒引擎 worker）
-    await db.execute(
-        text(
-            "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "
-            "VALUES ('user_input', :rid, CAST(:p AS jsonb), 'new')"
-        ),
-        {"rid": run.id, "p": json.dumps({"run_id": str(run.id)}, ensure_ascii=False)},
+    run = await conv_service.create_user_run(
+        db,
+        conv,
+        agent,
+        text=body.text,
+        attachments=attachments,
+        model_override=model_override,
+        confirm_upload=body.confirm_upload,
+        task=task,
     )
-    await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
     await db.commit()
-    return SendMessageOut(conversation_id=conv.id, run_id=run.id)
+    return SendMessageRunCreated(conversation_id=conv.id, run_id=run.id)

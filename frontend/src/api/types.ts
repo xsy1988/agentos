@@ -62,10 +62,28 @@ export interface MessageOut {
   run_id: string | null;
   created_at: string;
 }
-export interface SendMessageOut {
+/** 正常路径：run 已创建，前端转 SSE 订阅 */
+export interface SendMessageRunCreated {
+  kind: "run_created";
   conversation_id: string;
   run_id: string;
 }
+export interface TaskSwitchSuggestion {
+  task_type_id: string;
+  task_type_name: string;
+  task_type_icon: string | null;
+  confidence: number;
+  reason: string;
+}
+/** 疑似新的主任务：不落消息不建 run，由用户拍板（ADR-27 软提示） */
+export interface SendMessageTaskSwitch {
+  kind: "task_switch_suggested";
+  conversation_id: string;
+  suggested_task_type: TaskSwitchSuggestion;
+  pending_text: string;
+  current_task_type_name: string;
+}
+export type SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch;
 
 // ---- Runs ----
 export interface RunOut {
@@ -246,4 +264,109 @@ export interface FileOut {
   size: number;
   sha256: string;
   deduplicated: boolean;
+}
+
+// ---- 任务架构：主任务模板（L1 定义层） ----
+export interface StepTemplateOut {
+  id: string;
+  seq: number;
+  name: string;
+  description: string;
+  kind: "main" | "branch";
+  optional: boolean;
+  capability_hint: string[] | null;
+}
+export interface StepTemplateIn {
+  name: string;
+  description?: string;
+  kind?: "main" | "branch";
+  optional?: boolean;
+  capability_hint?: string[] | null;
+}
+export interface TaskTypeOut {
+  id: string;
+  name: string;
+  description: string;
+  /** business 业务主任务 / common 通用任务集（内建，不可删除） */
+  kind: string;
+  icon: string | null;
+  color: string | null;
+  sort_order: number;
+  default_agent_id: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  steps: StepTemplateOut[];
+  capability_count: number;
+  task_count: number;
+}
+export interface TaskTypeCapabilityOut {
+  capability_id: string;
+  name: string;
+  type: string;
+  risk_level: string;
+  enabled: boolean;
+}
+
+// ---- 任务架构：主任务实例 / 子任务（L2 实例层） ----
+export interface TaskStepOut {
+  id: string;
+  seq: number;
+  name: string;
+  description: string;
+  kind: "main" | "branch";
+  status: string;
+  /** template | planner | agent_raised | user */
+  source: string;
+  resolution: { question?: string; answer?: string; at?: string } | null;
+  run_id: string | null;
+  raised_at: string | null;
+  resolved_at: string | null;
+  updated_at: string;
+}
+export interface TaskConversationBrief {
+  id: string;
+  title: string;
+  status: string;
+  message_count: number;
+  last_message_at: string | null;
+}
+export interface TaskOut {
+  id: string;
+  task_type_id: string;
+  task_type_name: string;
+  task_type_icon: string | null;
+  task_type_color: string | null;
+  agent_id: string;
+  title: string;
+  status: string;
+  progress_done: number;
+  progress_total: number;
+  progress_percent: number;
+  out_of_scope_count: number;
+  conversation: TaskConversationBrief | null;
+  awaiting_confirm: boolean;
+  awaiting_steps_count: number;
+  active_run_id: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface TaskDetailOut extends TaskOut {
+  steps: TaskStepOut[];
+  run_ids: string[];
+}
+export interface TaskGroupOut {
+  task_type: TaskTypeOut;
+  task_count: number;
+  active_count: number;
+  awaiting_confirm_count: number;
+  progress_percent: number;
+  tasks: TaskOut[];
+}
+export interface TaskCreateOut {
+  task: TaskOut;
+  conversation_id: string;
+  run_id: string | null;
 }

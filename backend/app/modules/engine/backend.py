@@ -62,3 +62,41 @@ class EngineBackend(Protocol):
         M3 换 discovery 检索 Top-K + pinned 后此方法语义不变。
         """
         ...
+
+    # ---- M7a 增量扩展（ADR-23~28：任务架构）----
+
+    async def ensure_task_id(self, conversation_id: str) -> str | None:
+        """会话 → 主任务实例 id（1 会话 = 1 主任务；无会话的 timer run 返回 None）。"""
+        ...
+
+    async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
+        """主任务上下文（任务卡文本 + 步骤清单），装配进 system_prompt 保护区。"""
+        ...
+
+    async def start_task_plan(self, task_id: str, run_id: str) -> list[dict[str, Any]] | None:
+        """按主任务架构生成计划项（含 step_id 绑定）并启动第一步；无待办主线返回 None。"""
+        ...
+
+    async def raise_subtask(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        name: str,
+        description: str = "",
+        question: str | None = None,
+    ) -> dict[str, Any] | None:
+        """抛出支线子任务；question 非空表示阻塞型澄清（run 将暂停等答复）。"""
+        ...
+
+    async def answer_subtask(
+        self, task_id: str, step_id: str, answer: str, run_id: str
+    ) -> bool:
+        """回填用户答复并把支线置 done。"""
+        ...
+
+    async def finalize_task_plan(
+        self, task_id: str, run_id: str, *, achieved: bool
+    ) -> int:
+        """run 终态回写：achieved 时推进绑定主步骤至 done，返回推进条数。"""
+        ...

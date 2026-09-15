@@ -15,6 +15,7 @@ import {
   CodeOutlined,
   ExperimentOutlined,
   BulbOutlined,
+  ProjectOutlined,
 } from "@ant-design/icons";
 import type { MenuProps } from "antd";
 
@@ -22,7 +23,8 @@ type MenuItem = Required<MenuProps>["items"][number];
 
 const items: MenuItem[] = [
   { key: "/chat", icon: <MessageOutlined />, label: "对话" },
-  { key: "/runs", icon: <ScheduleOutlined />, label: "任务" },
+  { key: "/task-types", icon: <ProjectOutlined />, label: "任务模板" },
+  { key: "/runs", icon: <ScheduleOutlined />, label: "执行记录" },
   { key: "/knowledge", icon: <BookOutlined />, label: "知识库" },
   {
     key: "capabilities",

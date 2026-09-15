@@ -7,6 +7,8 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.db import session_factory
+from app.modules.engine.models import Plan as PlanModel
+from app.modules.tasks.models import Task as TaskModel
 
 
 class InProcessBackend:
@@ -184,3 +186,102 @@ class InProcessBackend:
                 }
                 for c in rows
             ]
+
+    # ---- M7a 增量扩展（ADR-23~28：任务架构）----
+
+    async def ensure_task_id(self, conversation_id: str) -> str | None:
+        from app.modules.tasks import service as tasks_service
+
+        try:
+            conv_id = uuid.UUID(conversation_id)
+        except ValueError:
+            return None
+        async with session_factory() as db:
+            task = await tasks_service.ensure_task_for_conversation(db, conv_id)
+            if task is None:
+                return None
+            await db.commit()
+            return str(task.id)
+
+    async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            return await tasks_service.task_context(db, uuid.UUID(task_id))
+
+    async def start_task_plan(self, task_id: str, run_id: str) -> list[dict[str, Any]] | None:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            task = await db.get(TaskModel, uuid.UUID(task_id))
+            if task is None:
+                return None
+            items = await tasks_service.plan_items_from_steps(db, task, uuid.UUID(run_id))
+            await db.commit()
+            return items
+
+    async def raise_subtask(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        name: str,
+        description: str = "",
+        question: str | None = None,
+    ) -> dict[str, Any] | None:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            task = await db.get(TaskModel, uuid.UUID(task_id))
+            if task is None:
+                return None
+            step = await tasks_service.raise_branch_step(
+                db,
+                task,
+                name=name,
+                description=description,
+                question=question,
+                run_id=uuid.UUID(run_id),
+            )
+            await db.commit()
+            return {"step_id": str(step.id), "seq": step.seq, "name": step.name}
+
+    async def answer_subtask(self, task_id: str, step_id: str, answer: str, run_id: str) -> bool:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            task = await db.get(TaskModel, uuid.UUID(task_id))
+            if task is None:
+                return False
+            step = await tasks_service.answer_branch_step(
+                db, task, uuid.UUID(step_id), answer, run_id=uuid.UUID(run_id)
+            )
+            await db.commit()
+            return step is not None
+
+    async def finalize_task_plan(self, task_id: str, run_id: str, *, achieved: bool) -> int:
+        from sqlalchemy import select
+
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            task = await db.get(TaskModel, uuid.UUID(task_id))
+            if task is None or not achieved:
+                return 0
+            plan = await db.scalar(
+                select(PlanModel).where(PlanModel.run_id == uuid.UUID(run_id))
+            )
+            bound: list[uuid.UUID] = []
+            for it in list(plan.items) if plan else []:
+                raw = it.get("step_id")
+                if not raw:
+                    continue
+                try:
+                    bound.append(uuid.UUID(str(raw)))
+                except ValueError:
+                    continue
+            closed = await tasks_service.advance_run_steps(
+                db, task, uuid.UUID(run_id), step_ids=bound or None
+            )
+            await db.commit()
+            return len(closed)

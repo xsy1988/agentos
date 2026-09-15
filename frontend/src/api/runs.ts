@@ -16,6 +16,7 @@ export const runsApi = {
     api.get<RunEventOut[]>(`/runs/${runId}/events`, { after }),
   abort: (runId: string) =>
     api.post<{ run_id: string; status: string; detail?: string }>(`/runs/${runId}/abort`),
-  confirm: (runId: string, answer: "approved" | "rejected") =>
+  // answer：approved/rejected 为计划与高危工具确认；其余文本为支线子任务答复（ADR-24）
+  confirm: (runId: string, answer: string) =>
     api.post<{ run_id: string; status: string; answer: string }>(`/runs/${runId}/confirm`, { answer }),
 };

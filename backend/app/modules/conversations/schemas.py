@@ -28,6 +28,8 @@ class MessageIn(BaseModel):
     # 图片外发涉密确认：带图消息且生效模型支持视觉时，首次未确认返回 428，
     # 前端弹窗确认后携 true 重发
     confirm_upload: bool = False
+    # 用户对「这像是一个新主任务」提示选择「仍在本会话继续」时回传（ADR-27）
+    force_current_task: bool = False
 
     @model_validator(mode="after")
     def _check_non_empty(self) -> "MessageIn":
@@ -58,8 +60,31 @@ class ConversationOut(BaseModel):
     created_at: datetime
 
 
-class SendMessageOut(BaseModel):
-    """发消息返回：run_id + 会话 id。前端转 SSE 订阅。"""
+class SendMessageRunCreated(BaseModel):
+    """正常路径：run 已创建并投递，前端转 SSE 订阅。"""
 
+    kind: Literal["run_created"] = "run_created"
     conversation_id: UUID
     run_id: UUID
+
+
+class TaskSwitchSuggestion(BaseModel):
+    """检测到疑似新的主任务：只给建议，不落消息不建 run（ADR-27 软提示）。"""
+
+    task_type_id: UUID
+    task_type_name: str
+    task_type_icon: str | None = None
+    confidence: float = 0.0
+    reason: str = ""
+
+
+class SendMessageTaskSwitch(BaseModel):
+    kind: Literal["task_switch_suggested"] = "task_switch_suggested"
+    conversation_id: UUID
+    suggested_task_type: TaskSwitchSuggestion
+    # 原样回传用户的输入，前端「新开会话并发送」时直接复用，无需用户重打
+    pending_text: str
+    current_task_type_name: str
+
+
+SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch

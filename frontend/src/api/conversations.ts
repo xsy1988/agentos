@@ -23,11 +23,14 @@ export const conversationsApi = {
     modelProviderId?: string,
     attachmentIds?: string[],
     confirmUpload?: boolean,
+    forceCurrentTask?: boolean,
   ) =>
     api.post<SendMessageOut>(`/conversations/${convId}/messages`, {
       text,
       model_provider_id: modelProviderId ?? null,
       attachment_ids: attachmentIds ?? [],
       confirm_upload: confirmUpload ?? false,
+      // 「仍在本会话继续」：跳过新主任务检测，直接在当前任务里执行（ADR-27）
+      force_current_task: forceCurrentTask ?? false,
     }),
 };

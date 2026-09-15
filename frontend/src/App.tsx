@@ -9,6 +9,7 @@ import MainLayout from "@/layouts/MainLayout";
 import LoginPage from "@/pages/Login";
 import ChatPage from "@/pages/Chat";
 import RunsPage from "@/pages/Runs";
+import TaskTypesPage from "@/pages/TaskTypes";
 import KnowledgePage from "@/pages/Knowledge";
 import McpServicesPage from "@/pages/Capabilities/McpServices";
 import ToolsPage from "@/pages/Capabilities/Tools";
@@ -81,6 +82,7 @@ export default function App() {
                 <Route index element={<ChatPage />} />
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="runs" element={<RunsPage />} />
+                <Route path="task-types" element={<TaskTypesPage />} />
                 <Route path="knowledge" element={<KnowledgePage />} />
                 <Route path="knowledge/:folderId" element={<KnowledgePage />} />
                 <Route path="capabilities/mcp" element={<McpServicesPage />} />

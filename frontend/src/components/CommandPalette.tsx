@@ -16,6 +16,7 @@ import {
   ToolOutlined,
   CodeOutlined,
   BulbOutlined,
+  ProjectOutlined,
 } from "@ant-design/icons";
 import { useUIStore } from "@/store/ui";
 
@@ -47,7 +48,8 @@ export default function CommandPalette() {
 
   const commands: Command[] = [
     { label: "新会话", icon: <MessageOutlined />, group: "对话", action: () => navigate("/chat") },
-    { label: "任务列表", icon: <ScheduleOutlined />, group: "任务", action: () => navigate("/runs") },
+    { label: "主任务模板", icon: <ProjectOutlined />, group: "任务", action: () => navigate("/task-types") },
+    { label: "执行记录", icon: <ScheduleOutlined />, group: "任务", action: () => navigate("/runs") },
     { label: "知识库", icon: <BookOutlined />, group: "知识库", action: () => navigate("/knowledge") },
     { label: "MCP 服务", icon: <ThunderboltOutlined />, group: "能力", action: () => navigate("/capabilities/mcp") },
     { label: "工具", icon: <ToolOutlined />, group: "能力", action: () => navigate("/capabilities/tools") },

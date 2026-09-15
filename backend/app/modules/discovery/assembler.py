@@ -52,8 +52,57 @@ SEARCH_MORE_TOOLS_SCHEMA: dict[str, Any] = {
 }
 
 
+ASK_USER_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "ask_user",
+        "description": (
+            "遇到无法自行决定、必须由用户确认的事情时调用（例如识别不到供应商名称、"
+            "出现无法识别的工艺、单据内部数据矛盾）。调用后本次执行立即暂停，问题会"
+            "作为一条**支线子任务**登记到当前主任务并展示给用户；用户答复后执行自动"
+            "继续，答复也会写入任务记录。一次只问一个问题。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "支线子任务的短标题，例如「确认供应商名称」",
+                },
+                "question": {"type": "string", "description": "要用户确认的完整问题"},
+            },
+            "required": ["title", "question"],
+        },
+    },
+}
+
+DECLARE_SUBTASK_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "declare_subtask",
+        "description": (
+            "执行主线任务的途中发现了新的支线工作（例如识别到新供应商需要建档、"
+            "报价单外还发现了附件需要一并处理），登记到当前主任务的子任务清单，"
+            "供用户在看板上看到。不阻塞当前执行。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "支线子任务的短标题"},
+                "description": {"type": "string", "description": "这条支线要做什么"},
+            },
+            "required": ["title"],
+        },
+    },
+}
+
+
 def _meta_tools() -> list[dict[str, Any]]:
-    """元工具条目（不占 tool_budget 预算）。"""
+    """元工具条目（不占 tool_budget 预算）。
+
+    ask_user / declare_subtask 是任务架构（ADR-24）的执行面：支线子任务的产生
+    不依赖某个具体 MCP/插件的装配结果，必须任何会话都可用，故做成常驻元工具。
+    """
     return [
         {
             "name": "search_more_tools",
@@ -61,7 +110,21 @@ def _meta_tools() -> list[dict[str, Any]]:
             "kind": "meta",
             "risk_level": "read",
             "source": "meta",
-        }
+        },
+        {
+            "name": "ask_user",
+            "schema": ASK_USER_SCHEMA,
+            "kind": "meta",
+            "risk_level": "read",
+            "source": "meta",
+        },
+        {
+            "name": "declare_subtask",
+            "schema": DECLARE_SUBTASK_SCHEMA,
+            "kind": "meta",
+            "risk_level": "read",
+            "source": "meta",
+        },
     ]
 
 
@@ -119,16 +182,20 @@ async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, 
     return out
 
 
-async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[str, Any]:
+async def assemble_tools(
+    query: str, agent_id: str, tool_budget: int, task_id: str | None = None
+) -> dict[str, Any]:
     """工具描述区装配：pinned 常驻 + 语义 Top-K（tool_budget 封顶）+ 元工具。
 
     返回 capability_cache（{"tools": [...], "skills": [...]}），条目含 name/schema/kind/
     capability_id/risk_level/source——tools 节点按 kind 分派执行通道。
+    source 记录装配来源（pinned / task_domain / task_common / global），
+    使「这个能力属于哪个主任务」在运行期可溯源（能力归属软约束，ADR-28）。
     skills 为语义命中的 SKILL.md 全文列表，供 context_assembly 注入参考。
     """
     from app.modules.discovery.retriever import retrieve_capabilities
 
-    res = await retrieve_capabilities(query, agent_id)
+    res = await retrieve_capabilities(query, agent_id, task_id=task_id)
     tools: list[dict[str, Any]] = []
     skills: list[str] = []  # 命中 skill 的 SKILL.md 全文
     seen_caps: set[str] = set()
@@ -145,7 +212,7 @@ async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[st
                 if md.strip():
                     skills.append(md)
                 continue
-            for item in await expand_capability(cap, source):
+            for item in await expand_capability(cap, cap.get("scope") or source):
                 if item["name"] not in seen_names:
                     seen_names.add(item["name"])
                     tools.append(item)
@@ -156,7 +223,7 @@ async def assemble_tools(query: str, agent_id: str, tool_budget: int) -> dict[st
 
 
 async def run_search_more_tools(
-    args: dict[str, Any], agent_id: str, cache: dict[str, Any]
+    args: dict[str, Any], agent_id: str, cache: dict[str, Any], task_id: str | None = None
 ) -> tuple[str, dict[str, Any]]:
     """元工具执行：检索 → 文本报告 + 命中工具并入 capability_cache。
 
@@ -165,12 +232,12 @@ async def run_search_more_tools(
     from app.modules.discovery.retriever import retrieve_capabilities
 
     query = str(args.get("query") or "")
-    res = await retrieve_capabilities(query, agent_id)
+    res = await retrieve_capabilities(query, agent_id, task_id=task_id)
     tools = list((cache or {}).get("tools") or [])
     seen = {t["name"] for t in tools}
     lines: list[str] = []
     for cap in res["semantic"]:
-        for item in await expand_capability(cap, "search"):
+        for item in await expand_capability(cap, cap.get("scope") or "search"):
             if item["name"] in seen:
                 continue
             seen.add(item["name"])

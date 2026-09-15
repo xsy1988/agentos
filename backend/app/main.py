@@ -30,6 +30,9 @@ from app.modules.runs.router import router as runs_router
 from app.modules.scheduler.router import router as scheduler_router
 from app.modules.scheduler.runtime import scheduler_runtime
 from app.modules.skills_forge.router import router as skills_router
+from app.modules.tasks.router import router as tasks_router
+from app.modules.tasks.router import task_types_router
+from app.modules.tasks.service import seed_common_task_type
 
 logging.basicConfig(level=logging.INFO)
 
@@ -42,6 +45,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await seed_builtin_capabilities()
     # 幂等 seed：知识库三个默认根目录（产品/研发/生活）
     await seed_default_folders()
+    # 幂等 seed：内建「通用任务集」主任务模板 + 未归属能力兜底挂载（任务架构 ADR-23/ADR-28）
+    await seed_common_task_type()
     # 管道中断文档 → failed（可 retry），不自动续跑
     await reconcile_interrupted()
     # 引擎运行时：checkpointer + 图 + inbox worker（单进程纪律：只有这一份）
@@ -72,6 +77,8 @@ app.include_router(memory_router, prefix=API_PREFIX)
 app.include_router(scheduler_router, prefix=API_PREFIX)
 app.include_router(notifications_router, prefix=API_PREFIX)
 app.include_router(skills_router, prefix=API_PREFIX)
+app.include_router(task_types_router, prefix=API_PREFIX)
+app.include_router(tasks_router, prefix=API_PREFIX)
 
 
 @app.get("/health")
