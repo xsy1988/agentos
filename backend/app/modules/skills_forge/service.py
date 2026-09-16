@@ -75,9 +75,7 @@ async def _collect_trace(run_id: str) -> tuple[str, str]:
             items = p.get("items") or []
             lines.append("计划: " + "; ".join(str(i.get("text", ""))[:80] for i in items[:5]))
         elif ev.event_type == "tool_call":
-            lines.append(
-                f"调用工具 {p.get('name')}: {str(p.get('args'))[:120]}"
-            )
+            lines.append(f"调用工具 {p.get('name')}: {str(p.get('args'))[:120]}")
         elif ev.event_type == "tool_result":
             lines.append(f"工具结果({p.get('name')}): {str(p.get('content'))[:120]}")
         elif ev.event_type == "thought":
@@ -263,9 +261,7 @@ async def approve_proposal(proposal_id: str, review_note: str | None = None) -> 
         else:
             # 新技能：同名则升级为覆盖，否则创建
             cap = (
-                await db.execute(
-                    select(Capability).where(Capability.name == name)
-                )
+                await db.execute(select(Capability).where(Capability.name == name))
             ).scalar_one_or_none()
             if cap is None:
                 cap = Capability(

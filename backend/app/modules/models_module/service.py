@@ -111,9 +111,7 @@ async def sync_from_gateway(db: AsyncSession) -> dict:
         ) from e
 
     gateway_names = {m["id"] for m in models if m.get("id")}
-    existing = {
-        p.model_name: p for p in (await db.scalars(select(ModelProvider))).all()
-    }
+    existing = {p.model_name: p for p in (await db.scalars(select(ModelProvider))).all()}
 
     migrated, created = 0, 0
     for name in gateway_names:

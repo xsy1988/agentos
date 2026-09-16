@@ -10,9 +10,7 @@ class TestParseProducts:
     """LLM 双产物输出解析（===PLATFORM=== / ===DAILY=== 分隔）。"""
 
     def test_both_sections(self) -> None:
-        reply = (
-            "前置废话\n===PLATFORM===\n- 工具A 故障已恢复\n===DAILY===\n- 用户偏好简洁回答"
-        )
+        reply = "前置废话\n===PLATFORM===\n- 工具A 故障已恢复\n===DAILY===\n- 用户偏好简洁回答"
         plat, daily = _parse_products(reply)
         assert plat == "- 工具A 故障已恢复"
         assert daily == "- 用户偏好简洁回答"

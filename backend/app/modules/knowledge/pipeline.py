@@ -39,9 +39,7 @@ async def create_doc(
     db: AsyncSession, file_id: uuid.UUID, folder_id: uuid.UUID, title: str | None
 ) -> KbDoc:
     """从已上传文件创建知识文档（status=uploaded），登记引用并启动管道。"""
-    file = (
-        await db.execute(select(File).where(File.id == file_id))
-    ).scalar_one_or_none()
+    file = (await db.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
     if file is None:
         from fastapi import HTTPException
 
@@ -86,9 +84,9 @@ async def _process(
         logger.exception("kb 管道失败 doc=%s", doc_id)
         async with session_factory() as db:
             await db.execute(
-                update(KbDoc).where(KbDoc.id == uuid.UUID(doc_id)).values(
-                    status="failed", error=str(exc)[:2000]
-                )
+                update(KbDoc)
+                .where(KbDoc.id == uuid.UUID(doc_id))
+                .values(status="failed", error=str(exc)[:2000])
             )
             await db.commit()
     finally:
@@ -144,9 +142,7 @@ async def _step_chunking(
         raise RuntimeError("切分结果为空：文档无有效文本内容")
 
     async with session_factory() as db:
-        await db.execute(
-            update(KbDoc).where(KbDoc.id == did).values(status="chunking", error=None)
-        )
+        await db.execute(update(KbDoc).where(KbDoc.id == did).values(status="chunking", error=None))
         await db.execute(delete(KbChunk).where(KbChunk.doc_id == did))
         for seq, piece in enumerate(pieces):
             db.add(
@@ -198,7 +194,8 @@ async def _step_embedding(doc_id: str) -> None:
 
         chunks = (
             (await db.execute(select(KbChunk).where(KbChunk.doc_id == did).order_by(KbChunk.seq)))
-            .scalars().all()
+            .scalars()
+            .all()
         )
         if not chunks:
             raise RuntimeError("chunks 缺失，应先完成 chunking")
@@ -238,9 +235,7 @@ async def retry_doc(db: AsyncSession, doc_id: uuid.UUID) -> KbDoc:
     # 断点推断（读 chunks 存量在管道步骤内自行幂等处理）：
     # 无解析产物 → parsing；有产物无 chunks → chunking；有 chunks → embedding
     async with session_factory() as db2:
-        has_chunks = await db2.scalar(
-            select(KbChunk.id).where(KbChunk.doc_id == doc_id).limit(1)
-        )
+        has_chunks = await db2.scalar(select(KbChunk.id).where(KbChunk.doc_id == doc_id).limit(1))
     p = _parse_path(str(doc_id))
     if not p.exists():
         resume = "parsing"

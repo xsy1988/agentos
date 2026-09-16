@@ -83,8 +83,12 @@ async def doc_chunk_ids(doc_id: uuid.UUID) -> list[str]:
     """调试辅助：文档的 chunk id 列表。"""
     async with session_factory() as db:
         rows = (
-            await db.execute(
-                select(KbChunk.id).where(KbChunk.doc_id == doc_id).order_by(KbChunk.seq)
+            (
+                await db.execute(
+                    select(KbChunk.id).where(KbChunk.doc_id == doc_id).order_by(KbChunk.seq)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return [str(r) for r in rows]

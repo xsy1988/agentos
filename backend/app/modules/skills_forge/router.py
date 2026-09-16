@@ -78,9 +78,7 @@ async def list_proposals(
 
 
 @router.get("/proposals/{proposal_id}", response_model=ProposalOut)
-async def get_proposal(
-    proposal_id: uuid.UUID, db: AsyncSession = Depends(get_db)
-) -> ProposalOut:
+async def get_proposal(proposal_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> ProposalOut:
     p = await db.get(SkillProposal, proposal_id)
     if p is None:
         raise HTTPException(status_code=404, detail="草稿不存在")

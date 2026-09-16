@@ -1,13 +1,13 @@
-"""采购报价对比 Agent 入驻 seed（决策4，§5）：平台侧只做登记，不并入外部代码。
+"""采购报价对比 Agent 入驻 seed（决策4）：平台侧只做登记，不并入外部代码。
 
-采购 Agent 保持独立外部服务；平台侧新增极少——本模块幂等登记：
-1. 一个 plugin 能力「采购决策面板」（iframe 前端清单，供侧边栏加载其决策页，§3.5）；
-2. 一个业务 Worker「供应商报价对比」（WORKER.md 三级披露：L1 简要 + L2 playbook + L3 引用）；
-3. 5 条主线子任务（映射九段流水线）+ 4 条支线子任务（映射四类决策点）；
-4. 把 5 个桥接 builtin tool（见 tools_builtin）+ plugin 绑定到该 Worker（能力归属）。
+采购 Agent 保持独立外部服务；平台侧极薄——本模块幂等登记：
+1. 一个 plugin 能力「采购决策面板」（iframe 前端清单，供侧边栏加载其决策页，DB 能力表）；
+2. 一个业务 Worker「供应商报价对比」文件包（data/workers/供应商报价对比/v1/，
+   WORKER.md + sub_workers/ 5 主线 + 4 支线；文件为唯一权威，已存在不覆盖用户编辑）；
+3. 桥接 builtin tool（5 个，见 capabilities.BUILTIN_SEED）与 plugin 写入
+   WORKER.md 的 capabilities 引用清单。
 
-桥接 tool 本体经 capabilities.BUILTIN_SEED 登记；本模块只负责 Worker/plugin/归属。
-外部服务不可用时桥接工具友好降级，Worker 仍可登记（模板与运行解耦）。
+外部服务不可用时桥接工具友好降级，Worker 文件包仍可登记（定义与运行解耦）。
 """
 
 import uuid
@@ -19,8 +19,7 @@ from app.core.config import settings
 from app.core.db import session_factory
 from app.modules.capabilities.models import Capability
 from app.modules.capabilities.service import index_capability
-from app.modules.tasks.models import TaskType, TaskTypeCapability, TaskTypeStep
-from app.modules.tasks.worker_files import serialize_worker
+from app.modules.workers.registry import ensure_worker
 
 PROCUREMENT_WORKER_NAME = "供应商报价对比"
 PROCUREMENT_PLUGIN_NAME = "采购决策面板"
@@ -34,7 +33,7 @@ BRIDGE_TOOL_NAMES = [
     "procurement_report",
 ]
 
-# L2 正文 playbook：干什么 / 怎么干 / 会遇到什么问题 / 如何处理 / 能力路由（§3.2 五件事）
+# L2 正文 playbook：干什么 / 怎么干 / 会遇到什么问题 / 如何处理 / 能力路由（五件事）
 WORKER_PLAYBOOK = """# 供应商报价对比 Worker
 
 ## 干什么
@@ -57,15 +56,15 @@ WORKER_PLAYBOOK = """# 供应商报价对比 Worker
 
 ## 会遇到什么问题 + 如何处理（支线 4 类决策点）
 外部流水线在以下情形产出待决策面（procurement_decisions 返回），需人工介入：
-- 识别到未管理的供应商 → 支线「确认/新增供应商」
-- 出现无法识别的工艺 → 支线「确认工艺处理方案」
-- 报价未关联项目 → 支线「绑定项目」
-- 单据内部数据矛盾/勾稽异常 → 支线「数据纠错」
+- 识别到未管理的供应商 → 启用子 Worker：sub_workers/确认新增供应商
+- 出现无法识别的工艺 → 启用子 Worker：sub_workers/确认工艺处理方案
+- 报价未关联项目 → 启用子 Worker：sub_workers/绑定项目
+- 单据内部数据矛盾/勾稽异常 → 启用子 Worker：sub_workers/数据纠错
 处理纪律：对每个待决策面，调 request_decision 抛交互决策卡（plugin=采购决策面板，
 init_data 带决策面数据），用户在侧边栏选/删/改后结构化回传；拿到回传 data 后调
 procurement_submit_decision 写回外部 Agent 落库，再继续主线。仅需一句文本澄清时改用 ask_user。
 
-## 能力路由表
+## 工具引用清单与能力路由表
 - probe_url（read）：依赖预检（第零步，探测外部服务可达性）
 - procurement_trigger（write）：触发解析
 - procurement_status（read）：轮询进度
@@ -92,7 +91,7 @@ WORKER_REFERENCES: list[dict] = [
     {"kind": "plugin", "title": PROCUREMENT_PLUGIN_NAME, "capability": PROCUREMENT_PLUGIN_NAME},
 ]
 
-# 子任务模板：主线定 seq（planner 按骨架推进），支线 optional（按需触发，§3.3 决策树）
+# 子任务：主线定 seq（planner 按骨架推进），支线 optional（按需触发）
 STEP_TEMPLATES: list[dict] = [
     {
         "seq": 1,
@@ -141,7 +140,7 @@ STEP_TEMPLATES: list[dict] = [
     },
     {
         "seq": 6,
-        "name": "确认/新增供应商",
+        "name": "确认新增供应商",
         "kind": "branch",
         "optional": True,
         "description": "识别到未管理供应商时，由用户在侧边栏确认建档或合并到已有供应商。",
@@ -183,7 +182,7 @@ STEP_TEMPLATES: list[dict] = [
 
 
 def _plugin_payload() -> dict:
-    """采购决策面板 plugin 的前端清单（§3.5 iframe 模式，与外部服务同源）。"""
+    """采购决策面板 plugin 的前端清单（iframe 模式，与外部服务同源）。"""
     base = settings.procurement_agent_base_url.rstrip("/")
     parsed = urlparse(base)
     origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else base
@@ -223,76 +222,26 @@ async def _seed_plugin(db) -> uuid.UUID:
     return cap.id
 
 
-async def _bind_capabilities(db, task_type_id: uuid.UUID, cap_ids: list[uuid.UUID]) -> None:
-    """把能力归属到 Worker（幂等：已归属的跳过）。"""
-    existing = set(
-        (
-            await db.scalars(
-                select(TaskTypeCapability.capability_id).where(
-                    TaskTypeCapability.task_type_id == task_type_id
-                )
-            )
-        ).all()
-    )
-    for cap_id in cap_ids:
-        if cap_id not in existing:
-            db.add(TaskTypeCapability(task_type_id=task_type_id, capability_id=cap_id))
-
-
 async def seed_procurement_worker() -> None:
-    """幂等登记采购报价对比 Worker（应用启动时调用，晚于 builtin 能力与通用任务集 seed）。"""
+    """幂等登记采购报价对比 Worker（应用启动时调用，晚于 builtin 能力 seed）。
+
+    Worker 定义落文件包（data/workers/<名>/v1/，文件为唯一权威）：
+    已存在时不覆盖——保护用户在文件管理器里的编辑（演进走「构建新版本」）。
+    """
     async with session_factory() as db:
-        plugin_id = await _seed_plugin(db)
-
-        worker = await db.scalar(
-            select(TaskType).where(TaskType.name == PROCUREMENT_WORKER_NAME)
-        )
-        if worker is None:
-            worker = TaskType(
-                name=PROCUREMENT_WORKER_NAME,
-                description=(
-                    "对比多家供应商的报价单：机械比对价差 + AI 综合分析，产出对比报告。"
-                    "含供应商建档、工艺确认、项目绑定、数据纠错四类人工决策点。适用于采购询比价场景。"
-                ),
-                playbook=WORKER_PLAYBOOK,
-                references=WORKER_REFERENCES,
-                kind="business",
-                icon="📊",
-                color="#1677ff",
-                sort_order=10,
-                enabled=True,
-            )
-            db.add(worker)
-            await db.flush()
-            for st in STEP_TEMPLATES:
-                db.add(
-                    TaskTypeStep(
-                        task_type_id=worker.id,
-                        seq=st["seq"],
-                        name=st["name"],
-                        description=st["description"],
-                        playbook=st["playbook"],
-                        kind=st["kind"],
-                        optional=st.get("optional", False),
-                        capability_hint=st.get("capability_hint"),
-                    )
-                )
-        else:
-            # 幂等刷新 L2：依赖预检规范等演进需同步到已登记的 Worker
-            # （与 _seed_plugin 刷新 description/payload 同纪律，步骤模板不变）。
-            worker.playbook = WORKER_PLAYBOOK
-            worker.references = WORKER_REFERENCES
-
-        # 归属：桥接 tool（经 BUILTIN_SEED 登记）+ 决策面板 plugin → 该 Worker
-        bridge_ids = list(
-            (
-                await db.scalars(
-                    select(Capability.id).where(Capability.name.in_(BRIDGE_TOOL_NAMES))
-                )
-            ).all()
-        )
-        await _bind_capabilities(db, worker.id, [*bridge_ids, plugin_id])
+        await _seed_plugin(db)
         await db.commit()
 
-        # WORKER.md 投影（幂等）：DB 权威数据落成文件树，供文件侧编辑与外部查看
-        await serialize_worker(db, worker)
+    ensure_worker(
+        PROCUREMENT_WORKER_NAME,
+        description=(
+            "对比多家供应商的报价单：机械比对价差 + AI 综合分析，产出对比报告。"
+            "含供应商建档、工艺确认、项目绑定、数据纠错四类人工决策点。适用于采购询比价场景。"
+        ),
+        icon="📊",
+        color="#1677ff",
+        capabilities=[*BRIDGE_TOOL_NAMES, PROCUREMENT_PLUGIN_NAME],
+        references=WORKER_REFERENCES,
+        playbook=WORKER_PLAYBOOK,
+        sub_workers=STEP_TEMPLATES,
+    )

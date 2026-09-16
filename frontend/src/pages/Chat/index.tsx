@@ -180,14 +180,14 @@ export default function ChatPage() {
     [setCtxRun, queryClient],
   );
 
-  // 提示卡「新开会话并发送」：用建议模板新建任务实例并带上原消息
+  // 提示卡「新开会话并发送」：用建议 Worker 新建任务实例并带上原消息
   const handleSwitchNewSession = async () => {
     if (!suggestion) return;
     const s = suggestion;
     setSwitching(true);
     try {
       const res = await tasksApi.create({
-        task_type_id: s.suggested_task_type.task_type_id,
+        worker_name: s.suggested_worker.worker_name,
         text: s.pending_text,
       });
       setSuggestion(null);
@@ -201,7 +201,7 @@ export default function ChatPage() {
       } else {
         setActiveRun(null);
       }
-      antdMessage.success(`已新建主任务「${res.task.task_type_name}」`);
+      antdMessage.success(`已新建主任务「${res.task.worker_display_name}」`);
     } catch (e) {
       antdMessage.error(e instanceof Error ? e.message : "新建任务失败");
     } finally {

@@ -88,10 +88,6 @@ async def fire_alarm(alarm_id: uuid.UUID) -> None:
         alarm = await db.get(Alarm, alarm_id)
         if alarm is None or alarm.status != "waiting":
             return
-        db.add(
-            Notification(
-                kind="alarm", title="闹钟提醒", content=alarm.content, url=alarm.url
-            )
-        )
+        db.add(Notification(kind="alarm", title="闹钟提醒", content=alarm.content, url=alarm.url))
         alarm.status = "fired"
         await db.commit()

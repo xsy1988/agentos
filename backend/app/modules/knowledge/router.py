@@ -80,9 +80,7 @@ async def create_folder(body: FolderCreateIn, db: AsyncSession = Depends(get_db)
 async def update_folder(
     folder_id: UUID, body: FolderUpdateIn, db: AsyncSession = Depends(get_db)
 ) -> FolderOut:
-    folder = await service.update_folder(
-        db, folder_id, body.name, body.parent_id, body.description
-    )
+    folder = await service.update_folder(db, folder_id, body.name, body.parent_id, body.description)
     return FolderOut(
         id=str(folder.id),
         name=folder.name,
@@ -115,9 +113,7 @@ async def list_docs(
 @router.get("/docs/{doc_id}", response_model=DocDetailOut)
 async def get_doc(doc_id: UUID, db: AsyncSession = Depends(get_db)) -> DocDetailOut:
     """文档详情：管道状态 + 已向量化块数 + 解析产物存在性（详情 Drawer 用）。"""
-    doc = (
-        (await db.execute(select(KbDoc).where(KbDoc.id == doc_id))).scalar_one_or_none()
-    )
+    doc = (await db.execute(select(KbDoc).where(KbDoc.id == doc_id))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     embedded = await db.scalar(
@@ -136,9 +132,7 @@ async def get_doc(doc_id: UUID, db: AsyncSession = Depends(get_db)) -> DocDetail
 @router.get("/docs/{doc_id}/parse", response_model=ParsePreviewOut)
 async def parse_preview(doc_id: UUID, db: AsyncSession = Depends(get_db)) -> ParsePreviewOut:
     """解析产物 markdown 预览（docling 落盘的中间产物，切分的真正输入）。"""
-    doc = (
-        (await db.execute(select(KbDoc.id).where(KbDoc.id == doc_id))).scalar_one_or_none()
-    )
+    doc = (await db.execute(select(KbDoc.id).where(KbDoc.id == doc_id))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     p = settings.data_dir / "parse" / f"{doc_id}.md"
@@ -150,9 +144,7 @@ async def parse_preview(doc_id: UUID, db: AsyncSession = Depends(get_db)) -> Par
 @router.post("/docs", response_model=DocOut, status_code=201)
 async def create_doc(body: DocCreateIn, db: AsyncSession = Depends(get_db)) -> DocOut:
     """从已上传文件创建知识文档，管道后台启动（uploaded → … → ready）。"""
-    doc = await pipeline.create_doc(
-        db, UUID(body.file_id), UUID(body.folder_id), body.title
-    )
+    doc = await pipeline.create_doc(db, UUID(body.file_id), UUID(body.folder_id), body.title)
     return _doc_out(doc)
 
 
@@ -190,9 +182,7 @@ async def list_chunks(
     db: AsyncSession = Depends(get_db),
 ) -> list[ChunkOut]:
     """切片分页列表（seq 升序）；返回条数 == limit 时前端可继续翻页。"""
-    doc = (
-        (await db.execute(select(KbDoc.id).where(KbDoc.id == doc_id))).scalar_one_or_none()
-    )
+    doc = (await db.execute(select(KbDoc.id).where(KbDoc.id == doc_id))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     rows = (
@@ -227,9 +217,7 @@ async def update_chunk(
     chunk_id: UUID, body: ChunkUpdateIn, db: AsyncSession = Depends(get_db)
 ) -> ChunkOut:
     """编辑切片内容：修解析错字等；保存后同步重算该块向量（保持检索一致）。"""
-    chunk = (
-        (await db.execute(select(KbChunk).where(KbChunk.id == chunk_id))).scalar_one_or_none()
-    )
+    chunk = (await db.execute(select(KbChunk).where(KbChunk.id == chunk_id))).scalar_one_or_none()
     if chunk is None:
         raise HTTPException(status_code=404, detail="切片不存在")
     from app.modules.knowledge.chunker import est_tokens
@@ -256,9 +244,7 @@ async def update_chunk(
 @router.delete("/chunks/{chunk_id}", status_code=204)
 async def delete_chunk(chunk_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
     """删除坏块（乱码/无价值段落）：同步递减文档块数。"""
-    chunk = (
-        (await db.execute(select(KbChunk).where(KbChunk.id == chunk_id))).scalar_one_or_none()
-    )
+    chunk = (await db.execute(select(KbChunk).where(KbChunk.id == chunk_id))).scalar_one_or_none()
     if chunk is None:
         raise HTTPException(status_code=404, detail="切片不存在")
     doc = await db.get(KbDoc, chunk.doc_id)
@@ -269,9 +255,7 @@ async def delete_chunk(chunk_id: UUID, db: AsyncSession = Depends(get_db)) -> No
 
 
 @router.post("/docs/{doc_id}/rechunk", response_model=DocOut)
-async def rechunk_doc(
-    doc_id: UUID, body: RechunkIn, db: AsyncSession = Depends(get_db)
-) -> DocOut:
+async def rechunk_doc(doc_id: UUID, body: RechunkIn, db: AsyncSession = Depends(get_db)) -> DocOut:
     """按自定义参数重新切分（基于既有解析产物，不重跑 docling）。"""
     doc = await pipeline.rechunk_doc(db, doc_id, body.target_tokens, body.overlap_tokens)
     return _doc_out(doc)

@@ -1,19 +1,14 @@
 /**
- * 任务架构 API（ADR-23）：L1 主任务模板 + L2 主任务实例/子任务。
- * 看板数据源 = GET /tasks/board（左侧面板）。
+ * 任务实例 API（ADR-23）：Worker 定义已文件化（见 api/workers.ts），
+ * 本模块只管 L2 实例层：看板 / 主任务实例 / 子任务状态机。
  */
 import { api } from "./client";
 import type {
-  StepTemplateIn,
   TaskCreateOut,
   TaskDetailOut,
   TaskGroupOut,
   TaskOut,
   TaskStepOut,
-  TaskTypeCapabilityOut,
-  TaskTypeOut,
-  WorkerFileOut,
-  WorkerReference,
 } from "./types";
 
 export interface BoardParams {
@@ -23,15 +18,16 @@ export interface BoardParams {
 }
 
 export const tasksApi = {
-  /** 看板：按主任务分组 + 组内实例（名称/进度/待确认） */
+  /** 看板：按 Worker 分组 + 组内实例（名称/进度/待确认） */
   board: (params?: BoardParams) =>
     api.get<TaskGroupOut[]>("/tasks/board", params as Record<string, boolean | number>),
-  list: (params?: { status?: string; task_type_id?: string; limit?: number }) =>
+  list: (params?: { status?: string; worker_name?: string; limit?: number }) =>
     api.get<TaskOut[]>("/tasks", params as Record<string, string | number>),
   get: (taskId: string) => api.get<TaskDetailOut>(`/tasks/${taskId}`),
-  /** 新建主任务：一把创建 会话 + 任务实例 + 步骤骨架（+ 首条 run） */
+  /** 新建主任务：一把创建 会话 + 任务实例 + 步骤骨架（+ 首条 run）；
+   *  worker_name = data/workers 目录名，创建时锁定其生效版本 */
   create: (body: {
-    task_type_id: string;
+    worker_name: string;
     title?: string | null;
     agent_id?: string | null;
     text?: string;
@@ -48,63 +44,4 @@ export const tasksApi = {
     stepId: string,
     body: { status?: string; resolution?: Record<string, unknown> | null },
   ) => api.patch<TaskDetailOut>(`/tasks/${taskId}/steps/${stepId}`, body),
-};
-
-export const taskTypesApi = {
-  list: () => api.get<TaskTypeOut[]>("/task-types"),
-  get: (id: string) => api.get<TaskTypeOut>(`/task-types/${id}`),
-  create: (body: {
-    name: string;
-    description?: string;
-    playbook?: string;
-    references?: WorkerReference[] | null;
-    icon?: string | null;
-    color?: string | null;
-    sort_order?: number;
-    default_agent_id?: string | null;
-    enabled?: boolean;
-    steps?: StepTemplateIn[];
-  }) => api.post<TaskTypeOut>("/task-types", body),
-  update: (
-    id: string,
-    body: Partial<{
-      name: string;
-      description: string;
-      playbook: string;
-      references: WorkerReference[] | null;
-      icon: string | null;
-      color: string | null;
-      sort_order: number;
-      default_agent_id: string | null;
-      enabled: boolean;
-    }>,
-  ) => api.patch<TaskTypeOut>(`/task-types/${id}`, body),
-  del: (id: string) => api.del<void>(`/task-types/${id}`),
-  /** 整表替换步骤模板（模板量小，避免逐条 CRUD 的排序竞态） */
-  replaceSteps: (id: string, steps: StepTemplateIn[]) =>
-    api.put<TaskTypeOut>(`/task-types/${id}/steps`, { steps }),
-  capabilities: (id: string) =>
-    api.get<TaskTypeCapabilityOut[]>(`/task-types/${id}/capabilities`),
-  bindCapabilities: (id: string, capabilityIds: string[]) =>
-    api.post<TaskTypeCapabilityOut[]>(`/task-types/${id}/capabilities`, {
-      capability_ids: capabilityIds,
-    }),
-  unbindCapability: (id: string, capabilityId: string) =>
-    api.del<void>(`/task-types/${id}/capabilities/${capabilityId}`),
-  /** WORKER.md 文件读写（stepId 省略 = 主任务文件；文件是权威编辑载体，保存即同步 DB） */
-  workerFile: {
-    get: (id: string, stepId?: string) =>
-      api.get<WorkerFileOut>(
-        `/task-types/${id}/worker-file`,
-        stepId ? { step_id: stepId } : undefined,
-      ),
-    put: (id: string, content: string, stepId?: string) =>
-      api.put<TaskTypeOut>(
-        `/task-types/${id}/worker-file`,
-        { content },
-        stepId ? { step_id: stepId } : undefined,
-      ),
-  },
-  /** 全量投影：DB 模板 → data/workers 文件树（外部编辑前对齐基线） */
-  syncFiles: () => api.post<{ synced: number; root: string }>("/task-types/sync-files"),
 };

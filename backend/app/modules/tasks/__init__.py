@@ -1,23 +1,19 @@
-"""tasks 模块：任务架构（主任务模板 / 主任务实例 / 子任务）。"""
+"""tasks 模块：任务架构（主任务实例 / 子任务；Worker 定义已文件化，见 workers 模块）。"""
 
 from app.modules.tasks.models import (
-    COMMON_TASK_TYPE_NAME,
+    STEP_KINDS,
+    STEP_SOURCES,
+    STEP_STATUSES,
     TASK_STATUSES,
-    TASK_TYPE_KINDS,
     Task,
     TaskStep,
-    TaskType,
-    TaskTypeCapability,
-    TaskTypeStep,
 )
 
 __all__ = [
-    "COMMON_TASK_TYPE_NAME",
+    "STEP_KINDS",
+    "STEP_SOURCES",
+    "STEP_STATUSES",
     "TASK_STATUSES",
-    "TASK_TYPE_KINDS",
     "Task",
     "TaskStep",
-    "TaskType",
-    "TaskTypeCapability",
-    "TaskTypeStep",
 ]

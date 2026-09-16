@@ -90,9 +90,7 @@ class EngineBackend(Protocol):
         """抛出支线子任务；question 非空表示阻塞型澄清（run 将暂停等答复）。"""
         ...
 
-    async def answer_subtask(
-        self, task_id: str, step_id: str, answer: str, run_id: str
-    ) -> bool:
+    async def answer_subtask(self, task_id: str, step_id: str, answer: str, run_id: str) -> bool:
         """回填用户答复并把支线置 done。"""
         ...
 
@@ -109,8 +107,6 @@ class EngineBackend(Protocol):
         """回填侧边栏结构化回传（§3.5）：action=submit 置 done / cancel 置 skipped。"""
         ...
 
-    async def finalize_task_plan(
-        self, task_id: str, run_id: str, *, achieved: bool
-    ) -> int:
+    async def finalize_task_plan(self, task_id: str, run_id: str, *, achieved: bool) -> int:
         """run 终态回写：achieved 时推进绑定主步骤至 done，返回推进条数。"""
         ...

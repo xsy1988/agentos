@@ -258,12 +258,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
-        "ix_task_type_capabilities_task_type_id", table_name="task_type_capabilities"
-    )
-    op.drop_index(
-        "ix_task_type_capabilities_capability_id", table_name="task_type_capabilities"
-    )
+    op.drop_index("ix_task_type_capabilities_task_type_id", table_name="task_type_capabilities")
+    op.drop_index("ix_task_type_capabilities_capability_id", table_name="task_type_capabilities")
     op.drop_table("task_type_capabilities")
     op.drop_index("ix_task_steps_task_seq", table_name="task_steps")
     op.drop_table("task_steps")

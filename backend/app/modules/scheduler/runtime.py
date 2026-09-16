@@ -73,8 +73,8 @@ class SchedulerRuntime:
                 self._scheduler.remove_job(job.id)
         async with session_factory() as db:
             timers = (
-                await db.execute(select(Timer).where(Timer.status == "active"))
-            ).scalars().all()
+                (await db.execute(select(Timer).where(Timer.status == "active"))).scalars().all()
+            )
         for t in timers:
             try:
                 trigger = CronTrigger.from_crontab(t.cron_expr, timezone="UTC")
@@ -95,9 +95,7 @@ class SchedulerRuntime:
 
                 async with session_factory() as db:
                     await db.execute(
-                        update(Timer)
-                        .where(Timer.id == t.id)
-                        .values(next_fire_at=job.next_run_time)
+                        update(Timer).where(Timer.id == t.id).values(next_fire_at=job.next_run_time)
                     )
                     await db.commit()
 
@@ -112,8 +110,8 @@ class SchedulerRuntime:
                 self._scheduler.remove_job(job.id)
         async with session_factory() as db:
             alarms = (
-                await db.execute(select(Alarm).where(Alarm.status == "waiting"))
-            ).scalars().all()
+                (await db.execute(select(Alarm).where(Alarm.status == "waiting"))).scalars().all()
+            )
         for a in alarms:
             self._scheduler.add_job(
                 self._fire_alarm,

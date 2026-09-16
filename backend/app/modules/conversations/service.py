@@ -106,7 +106,7 @@ async def create_user_run(
 ) -> Run:
     """落用户消息 + 创建 run + 投 inbox 事件（**不 commit**，由调用方事务收口）。
 
-    task 非空时把 task_id / task_type_id 快照进 run.input：引擎据此把 run 绑定到
+    task 非空时把 task_id / worker_name 快照进 run.input：引擎据此把 run 绑定到
     主任务（P1 的 engine-task-binding），后续 context_assembly 才能注入任务卡。
     """
     msg = Message(
@@ -146,7 +146,8 @@ async def create_user_run(
     }
     if task is not None:
         run_input["task_id"] = str(task.id)
-        run_input["task_type_id"] = str(task.task_type_id)
+        run_input["worker_name"] = task.worker_name
+        run_input["worker_version"] = task.worker_version
 
     # 预算快照创建时固化（数据库设计 §2.3）；附件随 input 快照
     run = Run(

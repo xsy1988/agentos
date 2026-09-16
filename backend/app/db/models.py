@@ -16,9 +16,6 @@ from app.modules.skills_forge.models import SkillProposal
 from app.modules.tasks.models import (
     Task,
     TaskStep,
-    TaskType,
-    TaskTypeCapability,
-    TaskTypeStep,
 )
 
 __all__ = [
@@ -44,9 +41,6 @@ __all__ = [
     "SkillProposal",
     "Task",
     "TaskStep",
-    "TaskType",
-    "TaskTypeCapability",
-    "TaskTypeStep",
     "Timer",
     "User",
 ]

@@ -1,9 +1,9 @@
 /**
  * 任务看板（前端设计 §3.1 左栏）。
  *
- * 全部任务平铺单层列表：按创建时间倒序（最新在上），不按模板分组。
- * 新建会话零选择：直接建会话（后端惰性落「通用任务集」），
- * Agent 根据用户在会话中发的首条消息自动判定并改绑主任务类型。
+ * 全部任务平铺单层列表：按创建时间倒序（最新在上），不按 Worker 分组。
+ * 新建会话零选择：直接建会话（后端惰性落内建「通用任务」），
+ * Agent 根据用户在会话中发的首条消息自动判定并改绑主任务 Worker。
  */
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
@@ -161,7 +161,7 @@ export default function TaskBoard({
     onError: () => antdMessage.error("删除失败"),
   });
 
-  // 新建会话：零选择，后端建会话 + 通用任务集任务实例；刷新列表后直接进入。
+  // 新建会话：零选择，后端建会话 + 内建通用任务实例；刷新列表后直接进入。
   // 注意不能用 fetchQuery（与看板 20s 轮询共享 queryKey，会复用建会话前发起的
   // in-flight 请求拿到旧列表 → find 不到新任务 → 不跳转）：直接调 API 绕过缓存。
   const createMutation = useMutation({
@@ -186,7 +186,7 @@ export default function TaskBoard({
           matches(t, filter) &&
           (!kw ||
             t.title.toLowerCase().includes(kw) ||
-            t.task_type_name.toLowerCase().includes(kw)),
+            t.worker_display_name.toLowerCase().includes(kw)),
       );
   }, [tasks, filter, search]);
 
@@ -287,7 +287,7 @@ export default function TaskBoard({
                     {task.progress_done}/{task.progress_total}
                   </span>
                 )}
-                <span className="board-task-type">{task.task_type_name}</span>
+                <span className="board-task-type">{task.worker_display_name}</span>
                 {task.out_of_scope_count > 0 && (
                   <Tooltip title="本会话内执行了不属于该主任务的请求">
                     <Tag className="board-tag-mini" style={{ marginInlineEnd: 0 }}>
@@ -326,9 +326,9 @@ export default function TaskBoard({
           block
           icon={<SettingOutlined />}
           style={{ fontSize: 12, color: "var(--ant-color-text-secondary)" }}
-          onClick={() => navigate("/tasks?tab=templates")}
+          onClick={() => navigate("/capabilities/workers")}
         >
-          管理主任务模板
+          管理 Worker
         </Button>
       </div>
 

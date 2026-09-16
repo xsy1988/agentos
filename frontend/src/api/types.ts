@@ -68,10 +68,12 @@ export interface SendMessageRunCreated {
   conversation_id: string;
   run_id: string;
 }
+/** 疑似新的主任务：不落消息不建 run，由用户拍板（ADR-27 软提示） */
 export interface TaskSwitchSuggestion {
-  task_type_id: string;
-  task_type_name: string;
-  task_type_icon: string | null;
+  /** data/workers 目录名（POST /tasks 直接复用） */
+  worker_name: string;
+  worker_display_name: string;
+  worker_icon: string | null;
   confidence: number;
   reason: string;
 }
@@ -79,9 +81,9 @@ export interface TaskSwitchSuggestion {
 export interface SendMessageTaskSwitch {
   kind: "task_switch_suggested";
   conversation_id: string;
-  suggested_task_type: TaskSwitchSuggestion;
+  suggested_worker: TaskSwitchSuggestion;
   pending_text: string;
-  current_task_type_name: string;
+  current_task_name: string;
 }
 export type SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch;
 
@@ -304,63 +306,76 @@ export interface FileOut {
   deduplicated: boolean;
 }
 
-// ---- 任务架构：主任务模板（L1 定义层） ----
-/** L3 引用资源条目（子 WORKER.md / 卡片模板 / plugin 清单 / 数据契约等，按需拉取）。 */
+// ---- 任务架构：Worker 文件包（L1 定义层，文件为唯一权威） ----
+/** L3 引用资源条目（references/*.md 等，LLM 按需拉取） */
 export type WorkerReference = Record<string, unknown>;
-export interface StepTemplateOut {
-  id: string;
-  seq: number;
+/** 子任务（sub_workers/<ref>/WORKER.md 的摘要） */
+export interface SubWorkerOut {
+  /** sub_workers 文件夹名（= task_steps.worker_step_ref） */
+  ref: string;
   name: string;
-  description: string;
-  /** L2 playbook 正文（推进到该子任务时载入） */
-  playbook: string;
-  /** L3 引用资源（按需读取） */
-  references: WorkerReference[] | null;
+  seq: number;
   kind: "main" | "branch";
   optional: boolean;
-  capability_hint: string[] | null;
+  description: string;
+  capability_hint: string[];
 }
-export interface StepTemplateIn {
-  name: string;
-  description?: string;
-  playbook?: string;
-  references?: WorkerReference[] | null;
-  kind?: "main" | "branch";
-  optional?: boolean;
-  capability_hint?: string[] | null;
+export interface WorkerVersionOut {
+  version: string;
+  active: boolean;
+  latest: boolean;
+  created_at: string | null;
 }
-/** WORKER.md 文件内容（主任务或子任务 Worker 的权威编辑载体） */
-export interface WorkerFileOut {
-  path: string;
-  content: string;
-}
-export interface TaskTypeOut {
-  id: string;
+/** Worker 概览（列表页 + 详情页头部） */
+export interface WorkerOut {
   name: string;
   description: string;
-  /** L2 playbook 正文（Worker 激活时随任务卡注入） */
-  playbook: string;
-  /** L3 引用资源（按需读取） */
-  references: WorkerReference[] | null;
-  /** business 业务主任务 / common 通用任务集（内建，不可删除） */
-  kind: string;
   icon: string | null;
   color: string | null;
-  sort_order: number;
-  default_agent_id: string | null;
   enabled: boolean;
-  created_at: string;
-  updated_at: string;
-  steps: StepTemplateOut[];
-  capability_count: number;
-  task_count: number;
+  /** 实际生效版本（effective） */
+  active_version: string | null;
+  /** manifest 显式指定版本（null=跟随最新） */
+  pinned_version: string | null;
+  latest_version: string | null;
+  versions: WorkerVersionOut[];
+  /** 工具引用清单（能力名，与 capabilities 表比对校验） */
+  capabilities: string[];
+  references: WorkerReference[] | null;
+  playbook: string;
+  sub_workers: SubWorkerOut[];
+  has_files: boolean;
 }
-export interface TaskTypeCapabilityOut {
-  capability_id: string;
+/** 版本内文件树节点 */
+export interface FileNodeOut {
   name: string;
-  type: string;
-  risk_level: string;
-  enabled: boolean;
+  type: "dir" | "file";
+  children: FileNodeOut[];
+}
+/** WORKER.md 等文件内容（只有 active 版本可写，历史版本只读） */
+export interface WorkerFileOut {
+  path: string;
+  version: string;
+  writable: boolean;
+  content: string;
+}
+export interface VersionBuildOut {
+  version: string;
+  copied_from: string;
+}
+/** 工具引用清单校验结果（命中/缺失） */
+export interface CapabilityRefOut {
+  name: string;
+  found: boolean;
+  capability_id: string | null;
+  type: string | null;
+  risk_level: string | null;
+  enabled: boolean | null;
+}
+export interface CapabilityRefsOut {
+  version: string;
+  references: CapabilityRefOut[];
+  missing: string[];
 }
 
 // ---- 任务架构：主任务实例 / 子任务（L2 实例层） ----
@@ -388,10 +403,12 @@ export interface TaskConversationBrief {
 }
 export interface TaskOut {
   id: string;
-  task_type_id: string;
-  task_type_name: string;
-  task_type_icon: string | null;
-  task_type_color: string | null;
+  /** 绑定的 Worker（data/workers 目录名；__common__ = 内建通用任务） */
+  worker_name: string;
+  worker_display_name: string;
+  /** 创建时锁定的版本（通用任务为空串） */
+  worker_version: string;
+  worker_icon: string | null;
   agent_id: string;
   title: string;
   status: string;
@@ -412,8 +429,17 @@ export interface TaskDetailOut extends TaskOut {
   steps: TaskStepOut[];
   run_ids: string[];
 }
+/** 看板分组头：来自文件注册中心的 Worker 概览（或已删除 Worker 的降级信息） */
+export interface WorkerGroupBrief {
+  name: string;
+  display_name: string;
+  description: string;
+  icon: string | null;
+  enabled: boolean;
+  active_version: string | null;
+}
 export interface TaskGroupOut {
-  task_type: TaskTypeOut;
+  worker: WorkerGroupBrief;
   task_count: number;
   active_count: number;
   awaiting_confirm_count: number;

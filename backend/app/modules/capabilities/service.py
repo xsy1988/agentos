@@ -68,7 +68,7 @@ BUILTIN_SEED: list[dict[str, Any]] = [
                 "folders": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "可选，目录范围（物化路径前缀，如 [\"/产品知识\"]）；缺省全库",
+                    "description": '可选，目录范围（物化路径前缀，如 ["/产品知识"]）；缺省全库',
                 },
                 "k": {"type": "integer", "description": "返回条数，缺省 8"},
             },

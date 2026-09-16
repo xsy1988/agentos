@@ -1,38 +1,26 @@
-"""tasks 路由：主任务模板（定义层） + 主任务/子任务实例（任务看板的唯一数据源）。
+"""tasks 路由：主任务/子任务实例（任务看板的唯一数据源）。
 
-两个 router：
-- `task_types_router`（/task-types）：人工维护的主任务模板与步骤模板、能力归属；
-- `router`（/tasks）：主任务实例、子任务步骤、进度、看板分组。
+Worker 定义层已文件化（/workers，app/modules/workers/router.py）；
+本 router（/tasks）只管实例：创建（绑定 Worker 生效版本）、进度、看板分组。
 """
 
 from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
-from app.modules.capabilities.models import Capability
 from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation
 from app.modules.runs.models import Run
 from app.modules.tasks import service
-from app.modules.tasks.models import (
-    COMMON_TASK_TYPE_NAME,
-    Task,
-    TaskStep,
-    TaskType,
-    TaskTypeCapability,
-    TaskTypeStep,
-)
+from app.modules.tasks.models import Task, TaskStep
 from app.modules.tasks.schemas import (
-    CapabilityBindIn,
     ConversationBrief,
     StepCreateIn,
-    StepTemplateOut,
-    StepTemplateReplaceIn,
     StepUpdateIn,
     TaskCreateIn,
     TaskCreateOut,
@@ -40,32 +28,12 @@ from app.modules.tasks.schemas import (
     TaskGroupOut,
     TaskOut,
     TaskStepOut,
-    TaskTypeCapabilityOut,
-    TaskTypeCreateIn,
-    TaskTypeOut,
-    TaskTypeUpdateIn,
     TaskUpdateIn,
-    WorkerFileIn,
-    WorkerFileOut,
+    WorkerGroupBrief,
 )
-from app.modules.tasks.worker_files import (
-    import_step_content,
-    import_worker_content,
-    read_step_file,
-    read_worker_file,
-    remove_worker_files,
-    serialize_worker,
-    serialize_worker_safely,
-    step_file_path,
-    worker_dir,
-    workers_root,
-)
+from app.modules.workers import registry
+from app.modules.workers.registry import COMMON_WORKER, COMMON_WORKER_DISPLAY
 
-task_types_router = APIRouter(
-    prefix="/task-types",
-    tags=["task-types"],
-    dependencies=[Depends(get_current_user)],
-)
 router = APIRouter(
     prefix="/tasks",
     tags=["tasks"],
@@ -86,9 +54,7 @@ def _percent(done: int, total: int, task_status: str) -> int:
     return min(100, round(done * 100 / total))
 
 
-async def _run_flags(
-    db: AsyncSession, conv_ids: list[UUID]
-) -> dict[str, tuple[bool, UUID | None]]:
+async def _run_flags(db: AsyncSession, conv_ids: list[UUID]) -> dict[str, tuple[bool, UUID | None]]:
     """会话 → (是否存在待确认 run, 最新活跃 run_id)。
 
     未终态 run 数量极小（单进程引擎），一次查完即可，无需 per-会话查询。
@@ -121,10 +87,13 @@ async def _awaiting_step_counts(db: AsyncSession, task_ids: list[UUID]) -> dict[
 
 
 async def _decorate_tasks(db: AsyncSession, tasks: list[Task]) -> list[TaskOut]:
-    """任务实例 → 出参（补齐模板信息/会话摘要/待确认标记）。"""
+    """任务实例 → 出参（补齐 Worker 展示信息/会话摘要/待确认标记）。
+
+    Worker 信息来自文件注册中心（缓存命中零开销）；未注册 Worker 优雅降级。
+    """
     if not tasks:
         return []
-    types = {str(t.id): t for t in (await db.scalars(select(TaskType))).all()}
+    metas = {m.name: m for m in registry.list_workers()}
     conv_ids = [t.conversation_id for t in tasks if t.conversation_id]
     convs: dict[str, Conversation] = {}
     if conv_ids:
@@ -134,17 +103,23 @@ async def _decorate_tasks(db: AsyncSession, tasks: list[Task]) -> list[TaskOut]:
     awaiting_steps = await _awaiting_step_counts(db, [t.id for t in tasks])
     out: list[TaskOut] = []
     for t in tasks:
-        tpl = types.get(str(t.task_type_id))
+        meta = metas.get(t.worker_name)
+        wdef = meta.def_ if meta is not None else None
+        display = (
+            COMMON_WORKER_DISPLAY
+            if t.worker_name in ("", COMMON_WORKER)
+            else (wdef.name if wdef is not None else t.worker_name)
+        )
         conv = convs.get(str(t.conversation_id)) if t.conversation_id else None
         awaiting, active_run_id = flags.get(str(t.conversation_id), (False, None))
         pending_steps = awaiting_steps.get(str(t.id), 0)
         out.append(
             TaskOut(
                 id=t.id,
-                task_type_id=t.task_type_id,
-                task_type_name=tpl.name if tpl else "（模板已删除）",
-                task_type_icon=tpl.icon if tpl else None,
-                task_type_color=tpl.color if tpl else None,
+                worker_name=t.worker_name,
+                worker_display_name=display,
+                worker_version=t.worker_version,
+                worker_icon=wdef.icon if wdef is not None else None,
                 agent_id=t.agent_id,
                 title=t.title,
                 status=t.status,
@@ -203,335 +178,6 @@ async def _task_detail(db: AsyncSession, task: Task) -> TaskDetailOut:
     )
 
 
-async def _task_types_out(db: AsyncSession, types: list[TaskType]) -> list[TaskTypeOut]:
-    if not types:
-        return []
-    ids = [t.id for t in types]
-    steps = list(
-        (
-            await db.scalars(
-                select(TaskTypeStep)
-                .where(TaskTypeStep.task_type_id.in_(ids))
-                .order_by(TaskTypeStep.seq)
-            )
-        ).all()
-    )
-    grouped: dict[str, list[StepTemplateOut]] = {}
-    for s in steps:
-        grouped.setdefault(str(s.task_type_id), []).append(StepTemplateOut.model_validate(s))
-    counts = await service.counts_for_task_types(db)
-    out: list[TaskTypeOut] = []
-    for t in types:
-        c = counts.get(str(t.id), {})
-        item = TaskTypeOut.model_validate(t)
-        item.steps = grouped.get(str(t.id), [])
-        item.capability_count = c.get("capability_count", 0)
-        item.task_count = c.get("task_count", 0)
-        out.append(item)
-    return out
-
-
-async def _get_task_type(db: AsyncSession, task_type_id: UUID) -> TaskType:
-    tpl = await db.get(TaskType, task_type_id)
-    if tpl is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "主任务模板不存在")
-    return tpl
-
-
-async def _replace_step_templates(
-    db: AsyncSession, tpl: TaskType, items: list
-) -> None:
-    """整表替换步骤模板（模板量小，避免逐条 CRUD 的排序竞态）。
-
-    已实例化的 task_steps.template_step_id 是 SET NULL，删模板不会带走历史实例。
-    """
-    await db.execute(delete(TaskTypeStep).where(TaskTypeStep.task_type_id == tpl.id))
-    for i, item in enumerate(items, start=1):
-        db.add(
-            TaskTypeStep(
-                task_type_id=tpl.id,
-                seq=i,
-                name=item.name.strip(),
-                description=item.description,
-                playbook=item.playbook,
-                references=item.references,
-                kind=item.kind,
-                optional=item.optional,
-                capability_hint=item.capability_hint,
-            )
-        )
-    await db.flush()
-
-
-# ---------- 主任务模板（L1 定义层） ----------
-
-
-@task_types_router.get("", response_model=list[TaskTypeOut])
-async def list_task_types(
-    enabled_only: bool = False, db: AsyncSession = Depends(get_db)
-) -> list[TaskTypeOut]:
-    """主任务模板列表（含步骤模板 + 能力/实例计数），按 sort_order 排序。"""
-    stmt = select(TaskType).order_by(TaskType.sort_order, TaskType.name)
-    if enabled_only:
-        stmt = stmt.where(TaskType.enabled.is_(True))
-    return await _task_types_out(db, list((await db.scalars(stmt)).all()))
-
-
-@task_types_router.post("", response_model=TaskTypeOut, status_code=status.HTTP_201_CREATED)
-async def create_task_type(
-    body: TaskTypeCreateIn, db: AsyncSession = Depends(get_db)
-) -> TaskTypeOut:
-    exists = await db.scalar(select(TaskType.id).where(TaskType.name == body.name))
-    if exists is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, f"主任务「{body.name}」已存在")
-    tpl = TaskType(
-        name=body.name,
-        description=body.description,
-        playbook=body.playbook,
-        references=body.references,
-        kind="business",
-        icon=body.icon,
-        color=body.color,
-        sort_order=body.sort_order,
-        default_agent_id=body.default_agent_id,
-        enabled=body.enabled,
-    )
-    db.add(tpl)
-    await db.flush()
-    if body.steps:
-        await _replace_step_templates(db, tpl, body.steps)
-    # 新模板默认继承「通用任务」的能力集合：新主任务立刻可用，再按需增删
-    common_id = await service.get_common_task_type_id(db)
-    common_caps = await db.scalars(
-        select(TaskTypeCapability.capability_id).where(
-            TaskTypeCapability.task_type_id == common_id
-        )
-    )
-    for cap_id in common_caps.all():
-        db.add(TaskTypeCapability(task_type_id=tpl.id, capability_id=cap_id))
-    await db.commit()
-    await db.refresh(tpl)
-    # WORKER.md 投影：模板落库同步生成文件（文件化管理的权威编辑载体）
-    await serialize_worker_safely(db, tpl)
-    return (await _task_types_out(db, [tpl]))[0]
-
-
-@task_types_router.get("/{task_type_id}", response_model=TaskTypeOut)
-async def get_task_type(
-    task_type_id: UUID, db: AsyncSession = Depends(get_db)
-) -> TaskTypeOut:
-    tpl = await _get_task_type(db, task_type_id)
-    return (await _task_types_out(db, [tpl]))[0]
-
-
-@task_types_router.patch("/{task_type_id}", response_model=TaskTypeOut)
-async def update_task_type(
-    task_type_id: UUID, body: TaskTypeUpdateIn, db: AsyncSession = Depends(get_db)
-) -> TaskTypeOut:
-    tpl = await _get_task_type(db, task_type_id)
-    if tpl.kind == "common" and body.enabled is False:
-        raise HTTPException(status.HTTP_409_CONFLICT, "通用任务集不可停用（能力兜底依赖它）")
-    data = body.model_dump(exclude_unset=True)
-    if "name" in data and data["name"] != tpl.name:
-        exists = await db.scalar(select(TaskType.id).where(TaskType.name == data["name"]))
-        if exists is not None:
-            raise HTTPException(status.HTTP_409_CONFLICT, f"主任务「{data['name']}」已存在")
-    for k, v in data.items():
-        setattr(tpl, k, v)
-    await db.commit()
-    await db.refresh(tpl)
-    await serialize_worker_safely(db, tpl)
-    return (await _task_types_out(db, [tpl]))[0]
-
-
-@task_types_router.delete("/{task_type_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task_type(task_type_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
-    """删除模板：通用任务集不可删；仍有任务实例的模板也不可删（先归档/删实例）。"""
-    tpl = await _get_task_type(db, task_type_id)
-    if tpl.kind == "common" or tpl.name == COMMON_TASK_TYPE_NAME:
-        raise HTTPException(status.HTTP_409_CONFLICT, "通用任务集不可删除")
-    used = await db.scalar(
-        select(func.count()).select_from(Task).where(Task.task_type_id == tpl.id)
-    )
-    if used:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"该主任务下仍有 {used} 个任务实例，无法删除"
-        )
-    await db.delete(tpl)  # 步骤模板/能力归属随 FK CASCADE 清除
-    await db.commit()
-    remove_worker_files(tpl.id)  # WORKER.md 文件树同步删除
-
-
-@task_types_router.put("/{task_type_id}/steps", response_model=TaskTypeOut)
-async def replace_step_templates(
-    task_type_id: UUID,
-    body: StepTemplateReplaceIn,
-    db: AsyncSession = Depends(get_db),
-) -> TaskTypeOut:
-    """整表替换子任务模板（主线 + 支线）。仅影响**之后**新建的任务实例。"""
-    tpl = await _get_task_type(db, task_type_id)
-    await _replace_step_templates(db, tpl, body.steps)
-    await db.commit()
-    await serialize_worker_safely(db, tpl)
-    return (await _task_types_out(db, [tpl]))[0]
-
-
-# ---------- WORKER.md 文件管理（任务模板的文件化存储） ----------
-
-
-async def _get_step_template(db: AsyncSession, tpl: TaskType, step_id: UUID) -> TaskTypeStep:
-    step = await db.get(TaskTypeStep, step_id)
-    if step is None or step.task_type_id != tpl.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "子任务模板不存在")
-    return step
-
-
-@task_types_router.post("/sync-files")
-async def sync_worker_files(db: AsyncSession = Depends(get_db)) -> dict:
-    """全量投影：DB 模板 → data/workers 文件树（幂等，外部编辑前对齐基线）。"""
-    types = list((await db.scalars(select(TaskType))).all())
-    for tpl in types:
-        await serialize_worker(db, tpl)
-    return {"synced": len(types), "root": str(workers_root())}
-
-
-@task_types_router.get("/{task_type_id}/worker-file", response_model=WorkerFileOut)
-async def get_worker_file(
-    task_type_id: UUID,
-    step_id: UUID | None = None,
-    db: AsyncSession = Depends(get_db),
-) -> WorkerFileOut:
-    """读 WORKER.md：不带 step_id 返回主任务文件，带则返回子任务文件。"""
-    tpl = await _get_task_type(db, task_type_id)
-    if step_id is None:
-        path = worker_dir(tpl.id) / "WORKER.md"
-        content = read_worker_file(tpl)
-    else:
-        step = await _get_step_template(db, tpl, step_id)
-        path = step_file_path(step)
-        content = read_step_file(step)
-    return WorkerFileOut(path=str(path), content=content)
-
-
-@task_types_router.put("/{task_type_id}/worker-file", response_model=TaskTypeOut)
-async def put_worker_file(
-    task_type_id: UUID,
-    body: WorkerFileIn,
-    step_id: UUID | None = None,
-    db: AsyncSession = Depends(get_db),
-) -> TaskTypeOut:
-    """编辑保存 WORKER.md：写文件并解析回写 DB（文件是权威编辑载体，保存即同步）。"""
-    tpl = await _get_task_type(db, task_type_id)
-    try:
-        if step_id is None:
-            import_worker_content(tpl, body.content)
-            path = worker_dir(tpl.id) / "WORKER.md"
-        else:
-            step = await _get_step_template(db, tpl, step_id)
-            import_step_content(step, body.content)
-            path = step_file_path(step)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body.content, encoding="utf-8")
-    except ValueError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    await db.commit()
-    await db.refresh(tpl)
-    return (await _task_types_out(db, [tpl]))[0]
-
-
-@task_types_router.get("/{task_type_id}/capabilities", response_model=list[TaskTypeCapabilityOut])
-async def list_task_type_capabilities(
-    task_type_id: UUID, db: AsyncSession = Depends(get_db)
-) -> list[TaskTypeCapabilityOut]:
-    """该主任务归属的能力清单（域内检索偏置的依据）。"""
-    await _get_task_type(db, task_type_id)
-    rows = await db.execute(
-        select(Capability)
-        .join(TaskTypeCapability, TaskTypeCapability.capability_id == Capability.id)
-        .where(TaskTypeCapability.task_type_id == task_type_id)
-        .order_by(Capability.type, Capability.name)
-    )
-    return [
-        TaskTypeCapabilityOut(
-            capability_id=c.id,
-            name=c.name,
-            type=c.type,
-            risk_level=c.risk_level,
-            enabled=c.enabled,
-        )
-        for c in rows.scalars().all()
-    ]
-
-
-@task_types_router.post(
-    "/{task_type_id}/capabilities",
-    response_model=list[TaskTypeCapabilityOut],
-    status_code=status.HTTP_201_CREATED,
-)
-async def bind_task_type_capabilities(
-    task_type_id: UUID,
-    body: CapabilityBindIn,
-    db: AsyncSession = Depends(get_db),
-) -> list[TaskTypeCapabilityOut]:
-    """追加能力归属（幂等：已归属的跳过）。"""
-    await _get_task_type(db, task_type_id)
-    rows = await db.scalars(select(Capability.id).where(Capability.id.in_(body.capability_ids)))
-    found = set(rows.all())
-    missing = [str(i) for i in body.capability_ids if i not in found]
-    if missing:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"能力不存在：{', '.join(missing)}")
-    existing = set(
-        (
-            await db.scalars(
-                select(TaskTypeCapability.capability_id).where(
-                    TaskTypeCapability.task_type_id == task_type_id
-                )
-            )
-        ).all()
-    )
-    for cap_id in found - existing:
-        db.add(TaskTypeCapability(task_type_id=task_type_id, capability_id=cap_id))
-    await db.commit()
-    return await list_task_type_capabilities(task_type_id, db)
-
-
-@task_types_router.delete(
-    "/{task_type_id}/capabilities/{capability_id}", status_code=status.HTTP_204_NO_CONTENT
-)
-async def unbind_task_type_capability(
-    task_type_id: UUID, capability_id: UUID, db: AsyncSession = Depends(get_db)
-) -> None:
-    """解除归属；若该能力已无任何归属，自动挂回「通用任务」（保证兜底档非空）。"""
-    await _get_task_type(db, task_type_id)
-    await db.execute(
-        delete(TaskTypeCapability).where(
-            TaskTypeCapability.task_type_id == task_type_id,
-            TaskTypeCapability.capability_id == capability_id,
-        )
-    )
-    await db.commit()
-    rows = await db.scalar(
-        select(func.count())
-        .select_from(TaskTypeCapability)
-        .where(TaskTypeCapability.capability_id == capability_id)
-    )
-    if not rows:
-        await service.attach_unowned_capabilities_common(
-            await service.get_common_task_type_id(db)
-        )
-
-
-# ---------- 任务实例与看板（L2 实例层） ----------
-
-
-def _board_query():
-    return (
-        select(Task)
-        .outerjoin(Conversation, Conversation.id == Task.conversation_id)
-        .order_by(func.coalesce(Conversation.last_message_at, Task.created_at).desc())
-    )
-
-
 def _group_summary(items: list[TaskOut]) -> dict[str, int]:
     """组级汇总：实例数 / 进行中 / 待确认 / 加权进度（按步数）。"""
     total_steps = sum(i.progress_total for i in items)
@@ -544,10 +190,21 @@ def _group_summary(items: list[TaskOut]) -> dict[str, int]:
     }
 
 
+def _board_query():
+    return (
+        select(Task)
+        .outerjoin(Conversation, Conversation.id == Task.conversation_id)
+        .order_by(func.coalesce(Conversation.last_message_at, Task.created_at).desc())
+    )
+
+
+# ---------- 任务实例与看板（L2 实例层） ----------
+
+
 @router.get("", response_model=list[TaskOut])
 async def list_tasks(
     status_filter: str | None = Query(default=None, alias="status"),
-    task_type_id: UUID | None = None,
+    worker_name: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ) -> list[TaskOut]:
@@ -555,8 +212,8 @@ async def list_tasks(
     stmt = _board_query()
     if status_filter:
         stmt = stmt.where(Task.status == status_filter)
-    if task_type_id is not None:
-        stmt = stmt.where(Task.task_type_id == task_type_id)
+    if worker_name is not None:
+        stmt = stmt.where(Task.worker_name == worker_name)
     tasks = list((await db.scalars(stmt.limit(limit))).all())
     return await _decorate_tasks(db, tasks)
 
@@ -568,63 +225,61 @@ async def task_board(
     include_closed_tasks: bool = True,
     db: AsyncSession = Depends(get_db),
 ) -> list[TaskGroupOut]:
-    """任务看板：按主任务分组，组内为该主任务的任务实例（左侧对话记录的新形态）。
+    """任务看板：按 Worker 分组，组内为该 Worker 的任务实例（左侧对话记录的新形态）。
 
     已完成的实例默认保留（用户要回看结论），靠 limit_per_group 截断避免无限增长。
+    分组头来自文件注册中心；指向已删除 Worker 的实例也保留分组（降级展示）。
     """
-    types = list(
-        (
-            await db.scalars(
-                select(TaskType).where(TaskType.enabled.is_(True)).order_by(
-                    TaskType.sort_order, TaskType.name
-                )
-            )
-        ).all()
-    )
     tasks = list((await db.scalars(_board_query())).all())
     if not include_closed_tasks:
         tasks = [t for t in tasks if t.status == "active"]
     decorated = await _decorate_tasks(db, tasks)
-    by_type: dict[str, list[TaskOut]] = {}
+    by_worker: dict[str, list[TaskOut]] = {}
     for item in decorated:
-        by_type.setdefault(str(item.task_type_id), []).append(item)
-    types_out = {str(t.id): t for t in await _task_types_out(db, types)}
+        by_worker.setdefault(item.worker_name, []).append(item)
+
+    metas = {m.name: m for m in registry.list_workers()}
     groups: list[TaskGroupOut] = []
-    for tpl in types:
-        items = by_type.get(str(tpl.id), [])
+
+    def _brief(name: str) -> WorkerGroupBrief:
+        meta = metas.get(name)
+        if name in ("", COMMON_WORKER):
+            return WorkerGroupBrief(
+                name=COMMON_WORKER, display_name=COMMON_WORKER_DISPLAY, enabled=True
+            )
+        if meta is None:
+            return WorkerGroupBrief(name=name, display_name=name, enabled=False)
+        return WorkerGroupBrief(
+            name=name,
+            display_name=name,
+            description=meta.def_.description if meta.def_ else "",
+            icon=meta.def_.icon if meta.def_ else None,
+            enabled=meta.enabled,
+            active_version=meta.effective_version,
+        )
+
+    ordered_names: list[str] = [m.name for m in metas.values()]
+    # 内建通用任务组：零选择会话的兑底分组，排在最后
+    ordered_names.append(COMMON_WORKER)
+    for name in ordered_names:
+        items = by_worker.get(name, [])
+        if name == COMMON_WORKER:
+            items = by_worker.get(COMMON_WORKER, []) + by_worker.get("", [])
         if not items and not include_empty:
             continue
         groups.append(
             TaskGroupOut(
-                task_type=types_out[str(tpl.id)],
-                **_group_summary(items),
-                tasks=items[:limit_per_group],
+                worker=_brief(name), **_group_summary(items), tasks=items[:limit_per_group]
             )
         )
-    # 兜底：实例指向已停用模板时也要能看到（否则任务凭空消失）
-    known = {str(t.id) for t in types}
-    for tid, items in by_type.items():
-        if tid in known:
+    # 兜底：实例指向已删除/未注册 Worker 时也要能看到（否则任务凭空消失）
+    for name, items in by_worker.items():
+        # 空串 = 旧数据未选 Worker，已并入通用任务组
+        if name in ordered_names or name == "":
             continue
         groups.append(
             TaskGroupOut(
-                task_type=TaskTypeOut(
-                    id=items[0].task_type_id,
-                    name=items[0].task_type_name,
-                    description="（模板已停用或删除）",
-                    playbook="",
-                    references=None,
-                    kind="business",
-                    icon=items[0].task_type_icon,
-                    color=items[0].task_type_color,
-                    sort_order=9999,
-                    default_agent_id=None,
-                    enabled=False,
-                    created_at=items[0].created_at,
-                    updated_at=items[0].updated_at,
-                ),
-                **_group_summary(items),
-                tasks=items[:limit_per_group],
+                worker=_brief(name), **_group_summary(items), tasks=items[:limit_per_group]
             )
         )
     return groups
@@ -635,11 +290,14 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     """新建主任务：一把创建 会话 + 任务实例（含子任务骨架）(+ 首条 run)。
 
     客户端「新开会话并发送」/「新建任务」都走这里——一个主任务一个会话（ADR-26）。
+    任务创建时锁定该 Worker 当前生效版本。
     """
-    tpl = await _get_task_type(db, body.task_type_id)
-    if not tpl.enabled:
-        raise HTTPException(status.HTTP_409_CONFLICT, f"主任务「{tpl.name}」已停用")
-    agent = await conv_service.resolve_agent(db, body.agent_id or tpl.default_agent_id)
+    meta = registry.get_meta(body.worker_name)
+    if meta is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Worker「{body.worker_name}」不存在")
+    if not meta.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Worker「{body.worker_name}」已停用")
+    agent = await conv_service.resolve_agent(db, body.agent_id)
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
 
     # 未显式命名 → 保持默认标题，首条消息到达时自动命名并同步任务标题
@@ -648,9 +306,9 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     await db.flush()
     task = await service.create_task(
         db,
-        task_type_id=tpl.id,
+        worker_name=body.worker_name,
         agent_id=agent.id,
-        title=body.title or tpl.name,
+        title=body.title or body.worker_name,
         conversation_id=conv.id,
     )
     run = None
@@ -762,9 +420,7 @@ async def update_task_step(
     if step is None or step.task_id != task.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "子任务不存在")
     if body.status is not None:
-        task = await service.update_step_status(
-            db, step, body.status, resolution=body.resolution
-        )
+        task = await service.update_step_status(db, step, body.status, resolution=body.resolution)
     elif body.resolution is not None:
         step.resolution = body.resolution
     await db.commit()

@@ -1,8 +1,11 @@
-"""tasks 业务逻辑：模板 seed、任务实例、子任务状态机、进度重算、任务卡渲染。
+"""tasks 业务逻辑：任务实例、子任务状态机、进度重算、任务卡渲染。
 
-设计要点（设计方案 ADR-23~28）：
+设计要点（设计方案 ADR-23~28，Worker 文件化版）：
+- Worker 定义（主任务/子任务模板）完全来自文件包（workers.registry，文件为唯一权威），
+  本模块只管实例层：任务创建时绑定 worker_name + worker_version（锁定当时生效版本）；
 - 进度由子任务状态**确定性**重算，绝不由 LLM 估算；
-- 主任务实例与会话 1:1，旧会话/迁移遗漏由 `ensure_task_for_conversation` 惰性补建；
+- 主任务实例与会话 1:1，旧会话/迁移遗漏由 `ensure_task_for_conversation` 惰性补建
+  （落内建 COMMON_WORKER，无步骤骨架）；
 - 支线子任务复用「先判定 → 写库」纪律，状态迁移全部收敛到本模块，避免多处散写。
 """
 
@@ -14,121 +17,62 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import session_factory
-from app.modules.capabilities.models import Capability
-from app.modules.tasks.models import (
-    COMMON_TASK_TYPE_NAME,
-    Task,
-    TaskStep,
-    TaskType,
-    TaskTypeCapability,
-    TaskTypeStep,
+from app.modules.tasks.models import Task, TaskStep
+from app.modules.workers import registry
+from app.modules.workers.registry import (
+    COMMON_WORKER,
+    COMMON_WORKER_DISPLAY,
+    WorkerDef,
 )
-from app.modules.tasks.worker_files import serialize_worker
 
 # 进度分子的状态：done 与 skipped（跳过的步骤不应把完成度永久压在 100% 以下）
 PROGRESS_COUNTED_STATUSES = ("done", "skipped")
 
-COMMON_TASK_TYPE_DESCRIPTION = (
-    "通用任务集：不属于任何特定主任务的能力与历史会话都归于此，"
-    "作为所有主任务的能力兜底。"
-)
+
+# ---------- Worker 定义（文件源） ----------
 
 
-# ---------- 模板（L1） ----------
+def get_worker_def(worker_name: str, worker_version: str = "") -> WorkerDef | None:
+    """任务绑定的 Worker 定义：按 (name, version) 直读文件（带缓存）。
+
+    绑定版本目录已被删除时 registry 内部降级到最新可用版本；
+    COMMON_WORKER / 未注册 Worker 返回 None（调用方优雅降级，只显示名称骨架）。
+    """
+    if not worker_name or worker_name == COMMON_WORKER:
+        return None
+    return registry.get_def(worker_name, worker_version or None)
 
 
-async def seed_common_task_type() -> uuid.UUID:
-    """幂等 seed 内建「通用任务集」，返回其 id（应用启动时调用）。"""
-    async with session_factory() as db:
-        existing = await db.scalar(
-            select(TaskType).where(TaskType.name == COMMON_TASK_TYPE_NAME)
-        )
-        if existing is None:
-            existing = TaskType(
-                name=COMMON_TASK_TYPE_NAME,
-                description=COMMON_TASK_TYPE_DESCRIPTION,
-                kind="common",
-                sort_order=0,
-                enabled=True,
-            )
-            db.add(existing)
-        await db.commit()
-        common_id = existing.id
-        # WORKER.md 投影（幂等）：通用任务集也有自己的文件，文件化管理全覆盖
-        await serialize_worker(db, existing)
-    # 兜底：任何未归属主任务的能力补挂「通用任务」（保证软约束第三档总有回退）
-    await attach_unowned_capabilities_common(common_id)
-    return common_id
-
-
-async def attach_unowned_capabilities_common(common_id: uuid.UUID) -> int:
-    """把尚无任何归属的能力挂到「通用任务」，返回新挂数量。"""
-    async with session_factory() as db:
-        rows = await db.execute(
-            select(Capability.id)
-            .outerjoin(
-                TaskTypeCapability, TaskTypeCapability.capability_id == Capability.id
-            )
-            .where(TaskTypeCapability.id.is_(None))
-        )
-        missing = [r[0] for r in rows.all()]
-        for cap_id in missing:
-            db.add(TaskTypeCapability(task_type_id=common_id, capability_id=cap_id))
-        if missing:
-            await db.commit()
-    return len(missing)
-
-
-async def get_common_task_type_id(db: AsyncSession) -> uuid.UUID:
-    """取「通用任务集」id（seed 保证存在；缺失则现场补建）。"""
-    tid = await db.scalar(select(TaskType.id).where(TaskType.name == COMMON_TASK_TYPE_NAME))
-    if tid is None:
-        return await seed_common_task_type()
-    return tid
-
-
-def _template_order(tpl: TaskTypeStep) -> tuple[int, int]:
-    """主线在前、支线在后，各自按 seq。"""
-    return (0 if tpl.kind == "main" else 1, tpl.seq)
-
-
-async def load_step_templates(db: AsyncSession, task_type_id: uuid.UUID) -> list[TaskTypeStep]:
-    rows = list(
-        (
-            await db.scalars(
-                select(TaskTypeStep).where(TaskTypeStep.task_type_id == task_type_id)
-            )
-        ).all()
-    )
-    return sorted(rows, key=_template_order)
+def worker_display(worker_name: str) -> str:
+    """Worker 显示名：通用任务兜底显示；业务 Worker = 目录名（= front.name）。"""
+    if not worker_name or worker_name == COMMON_WORKER:
+        return COMMON_WORKER_DISPLAY
+    return worker_name
 
 
 # ---------- 实例（L2） ----------
 
 
-async def instantiate_steps(
-    db: AsyncSession, task: Task, templates: Sequence[TaskTypeStep]
-) -> list[TaskStep]:
-    """按模板生成子任务骨架：主线 + 支线模板全部实例化（支线初始 pending 待触发）。
+async def instantiate_steps(db: AsyncSession, task: Task, wdef: WorkerDef) -> list[TaskStep]:
+    """按 Worker 文件包子任务骨架实例化：主线 + 支线全部实例化（支线初始 pending 待触发）。
 
     支线一起实例化的理由：看板要能一眼看出「这个主任务预计会涉及哪些支线」，
     且 raise_subtask 可复用同名的模板步骤，避免重复建步骤。
     """
     created: list[TaskStep] = []
-    for i, tpl in enumerate(sorted(templates, key=_template_order), start=1):
+    for i, sub in enumerate(wdef.ordered_sub_workers(), start=1):
         step = TaskStep(
             task_id=task.id,
             seq=i,
-            name=tpl.name,
-            description=tpl.description or "",
-            kind=tpl.kind,
+            name=sub.name,
+            description=sub.description or "",
+            kind=sub.kind,
             status="pending",
             source="template",
-            template_step_id=tpl.id,
+            worker_step_ref=sub.ref,
         )
         db.add(step)
         created.append(step)
@@ -141,17 +85,19 @@ async def instantiate_steps(
 async def create_task(
     db: AsyncSession,
     *,
-    task_type_id: uuid.UUID,
+    worker_name: str,
     agent_id: uuid.UUID,
     title: str,
     conversation_id: uuid.UUID | None = None,
 ) -> Task:
-    """新建主任务实例并实例化步骤骨架（调用方负责 commit）。"""
-    tpl = await db.get(TaskType, task_type_id)
-    if tpl is None:
-        raise ValueError("主任务模板不存在")
+    """新建主任务实例并实例化步骤骨架（调用方负责 commit）。
+
+    绑定 Worker 当时生效的版本；COMMON_WORKER / 未注册 Worker 无步骤骨架。
+    """
+    wdef = get_worker_def(worker_name)
     task = Task(
-        task_type_id=task_type_id,
+        worker_name=worker_name,
+        worker_version=wdef.version if wdef is not None else "",
         agent_id=agent_id,
         conversation_id=conversation_id,
         title=title or "新任务",
@@ -163,56 +109,48 @@ async def create_task(
     )
     db.add(task)
     await db.flush()
-    await instantiate_steps(db, task, await load_step_templates(db, task_type_id))
+    if wdef is not None:
+        await instantiate_steps(db, task, wdef)
     return task
 
 
-async def get_task_by_conversation(
-    db: AsyncSession, conversation_id: uuid.UUID
-) -> Task | None:
+async def get_task_by_conversation(db: AsyncSession, conversation_id: uuid.UUID) -> Task | None:
     return await db.scalar(select(Task).where(Task.conversation_id == conversation_id))
 
 
-async def ensure_task_for_conversation(
-    db: AsyncSession, conversation: Any
-) -> Task:
+async def ensure_task_for_conversation(db: AsyncSession, conversation: Any) -> Task:
     """会话 → 主任务实例；旧会话（迁移遗漏/并发新建）惰性补建为「通用任务」。"""
     task = await get_task_by_conversation(db, conversation.id)
     if task is not None:
         return task
-    common_id = await get_common_task_type_id(db)
     return await create_task(
         db,
-        task_type_id=common_id,
+        worker_name=COMMON_WORKER,
         agent_id=conversation.agent_id,
         title=conversation.title,
         conversation_id=conversation.id,
     )
 
 
-async def rebind_task_type(
-    db: AsyncSession, task: Task, new_task_type_id: uuid.UUID
-) -> bool:
-    """把任务改绑到另一主任务模板（需求：新建会话零选择，Agent 判定后自动落位）。
+async def rebind_worker(db: AsyncSession, task: Task, new_worker_name: str) -> bool:
+    """把任务改绑到另一 Worker（需求：新建会话零选择，Agent 判定后自动落位）。
 
     仅当任务**还没有任何进度**（步骤全部 pending，无 run 占用）时才改绑：
-    改写 task_type_id → 删除旧步骤 → 按新模板重建骨架；否则返回 False 不动，
-    避免把执行到一半的任务换成另一套主线架构（那种场景走软提示新开会话）。
+    改写 worker_name/version → 删除旧步骤 → 按新 Worker 生效版本重建骨架；否则返回
+    False 不动，避免把执行到一半的任务换成另一套主线架构（那种场景走软提示新开会话）。
     """
-    steps = list(
-        (
-            await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))
-        ).all()
-    )
+    steps = list((await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))).all())
     if steps and any(s.status != "pending" for s in steps):
         return False
-    task.task_type_id = new_task_type_id
+    wdef = get_worker_def(new_worker_name)
+    if wdef is None:
+        return False
+    task.worker_name = new_worker_name
+    task.worker_version = wdef.version
     for s in steps:
         await db.delete(s)
     await db.flush()
-    await instantiate_steps(
-        db, task, await load_step_templates(db, new_task_type_id)
-    )
+    await instantiate_steps(db, task, wdef)
     return True
 
 
@@ -240,13 +178,13 @@ async def append_out_of_scope(db: AsyncSession, task: Task, text: str) -> None:
 # 与各 Worker L1（name+description）语义比对的命中阈值（cosine，越高越保守）。
 # 软提示不阻断，阈值适中即可：命中当前/通用任务集会被排除，故误报率低。
 TASK_SWITCH_THRESHOLD = 0.75
-# Worker L1 向量缓存：task_type_id → (指纹, 向量)。L1 未变则复用，
+# Worker L1 向量缓存：worker_name → (指纹, 向量)。L1 未变则复用，
 # 避免每条消息都重复 embed 全部 Worker（检测是发消息热路径）。
 _L1_EMBED_CACHE: dict[str, tuple[str, list[float]]] = {}
 
 
 def _l1_fingerprint(name: str, description: str) -> str:
-    """L1 指纹：name+description 变动即失效缓存（模板编辑后重新 embed）。"""
+    """L1 指纹：name+description 变动即失效缓存（WORKER.md 编辑后重新 embed）。"""
     return hashlib.sha256(f"{name}\u0000{description}".encode()).hexdigest()[:16]
 
 
@@ -267,10 +205,10 @@ def pick_task_switch(
     common_type_id: str | None,
     threshold: float = TASK_SWITCH_THRESHOLD,
 ) -> tuple[str, str, str | None, float] | None:
-    """纯函数：从 (id, name, icon, 相似度) 中挑高置信、非当前、非通用的最佳命中。
+    """纯函数：从 (worker_name, name, icon, 相似度) 中挑高置信、非当前、非通用的最佳命中。
 
     返回 None = 无需软提示（无命中或命中即当前主任务/通用任务集）。
-    不碰 DB / embedding，便于单测（与 retriever.order_by_scope 同纪律）。
+    不碰文件 / embedding，便于单测（与 retriever.order_by_scope 同纪律）。
     """
     best: tuple[str, str, str | None, float] | None = None
     for tid, name, icon, sim in scored:
@@ -285,73 +223,62 @@ def pick_task_switch(
     return best
 
 
-async def _embed_worker_l1(
-    task_type_id: uuid.UUID, name: str, description: str
-) -> list[float] | None:
+async def _embed_worker_l1(worker_name: str, name: str, description: str) -> list[float] | None:
     """embed Worker 的 L1（name+description），带指纹缓存；无 provider 返回 None。"""
     from app.modules.discovery.retriever import embed_text
 
     fp = _l1_fingerprint(name, description)
-    cached = _L1_EMBED_CACHE.get(str(task_type_id))
+    cached = _L1_EMBED_CACHE.get(worker_name)
     if cached is not None and cached[0] == fp:
         return cached[1]
     vec = await embed_text(f"{name}\n{description}")
     if vec is None:
         return None
-    _L1_EMBED_CACHE[str(task_type_id)] = (fp, vec)
+    _L1_EMBED_CACHE[worker_name] = (fp, vec)
     return vec
 
 
 async def detect_task_switch(
-    db: AsyncSession, text: str, *, current_task_type_id: uuid.UUID | None
+    db: AsyncSession, text: str, *, current_worker_name: str | None
 ) -> dict[str, Any] | None:
-    """检测 text 是否更像另一个主任务（与各 Worker L1 语义比对，ADR-27）。
+    """检测 text 是否更像另一个主任务（与各启用 Worker 的 WORKER.md 头 L1 语义比对，ADR-27）。
 
-    命中（高置信、非当前主任务、非通用任务集）→ 返回建议 dict（可直接构造
-    TaskSwitchSuggestion）；否则 None。无 embedding provider / 无业务 Worker 时
-    静默返回 None（检测不可用不阻断发消息）。
+    命中（高置信、非当前 Worker、非通用任务）→ 返回建议 dict（可直接构造
+    TaskSwitchSuggestion）；否则 None。无 embedding provider / 无启用 Worker 时
+    静默返回 None（检测不可用不阻断发消息）。Worker 清单来自文件注册中心。
     """
     from app.modules.discovery.retriever import embed_text
 
     text = (text or "").strip()
     if not text:
         return None
-    workers = list(
-        (
-            await db.scalars(
-                select(TaskType).where(
-                    TaskType.enabled.is_(True),  # noqa: E712
-                    TaskType.kind == "business",
-                )
-            )
-        ).all()
-    )
+    workers = registry.iter_enabled_worker_defs()
     if not workers:
         return None
     msg_vec = await embed_text(text)
     if msg_vec is None:
         return None
     scored: list[tuple[str, str, str | None, float]] = []
-    for tpl in workers:
-        l1_vec = await _embed_worker_l1(tpl.id, tpl.name, tpl.description)
+    for wdef in workers:
+        l1_vec = await _embed_worker_l1(wdef.name, wdef.name, wdef.description)
         if l1_vec is None:
             continue
-        scored.append((str(tpl.id), tpl.name, tpl.icon, _cosine(msg_vec, l1_vec)))
-    common_id = await get_common_task_type_id(db)
+        scored.append((wdef.name, wdef.name, wdef.icon, _cosine(msg_vec, l1_vec)))
     best = pick_task_switch(
         scored,
-        current_type_id=str(current_task_type_id) if current_task_type_id else None,
-        common_type_id=str(common_id),
+        current_type_id=current_worker_name or None,
+        common_type_id=COMMON_WORKER,
     )
     if best is None:
         return None
-    tid, name, icon, sim = best
+    wname, _name, icon, sim = best
+    disp = worker_display(wname)
     return {
-        "task_type_id": uuid.UUID(tid),
-        "task_type_name": name,
-        "task_type_icon": icon,
+        "worker_name": wname,
+        "worker_display_name": disp,
+        "worker_icon": icon,
         "confidence": round(sim, 4),
-        "reason": f"这条消息与主任务「{name}」的目标高度吻合（语义相似度 {sim:.0%}）",
+        "reason": f"这条消息与主任务「{disp}」的目标高度吻合（语义相似度 {sim:.0%}）",
     }
 
 
@@ -362,9 +289,7 @@ async def recompute_progress(
     db: AsyncSession, task: Task, *, autoclose: bool = True
 ) -> list[TaskStep]:
     """按步骤状态重算进度；主线全部收口时自动跳过未触发的支线并置任务完成。"""
-    steps = list(
-        (await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))).all()
-    )
+    steps = list((await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))).all())
     main_steps = [s for s in steps if s.kind == "main"]
     # 仍有子任务进行中/待用户答复/受阻时不算收口：澄清型支线是阻塞闸门，引擎正暂停等
     # 答复，此时若把主任务判完成，看板会与 run 状态自相矛盾（ADR-24/ADR-28）。
@@ -435,9 +360,7 @@ async def find_or_create_branch_step(
     重放安全（ADR-24）：interrupt 恢复会整节点重放，故同一 run 内出现过同名支线
     一律复用（不论其当前状态），否则重放会再建一条同名支线、把任务清单撑爆。
     """
-    steps = list(
-        (await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))).all()
-    )
+    steps = list((await db.scalars(select(TaskStep).where(TaskStep.task_id == task.id))).all())
     target = _norm_name(name)
     for s in steps:
         if s.kind != "branch" or _norm_name(s.name) != target:
@@ -510,9 +433,6 @@ async def apply_run_plan(
     return touched
 
 
-# ---------- 任务卡（注入 system_prompt 的永不压缩区） ----------
-
-
 # ---------- 引擎接口（P4：run 生命周期 ↔ 子任务状态机） ----------
 
 
@@ -531,9 +451,9 @@ async def plan_items_from_steps(
 ) -> list[dict[str, Any]] | None:
     """把主任务的**未收口主线步骤**转成计划项（带 step_id 绑定），并启动第一步。
 
-    主线任务模板即计划来源：复杂任务不再让 planner 凭空拆解，而是沿用户/管理员
-    预先定义的架构推进（ADR-23）。返回 None 表示本主任务已无待办主线，
-    调用方回退到自由规划。front 端看板与 plans 表看到的是同一份计划。
+    主线骨架来自 Worker 文件包的实例化（ADR-23）：复杂任务不再让 planner 凭空拆解，
+    而是沿用户/管理员预先定义的架构推进。返回 None 表示本主任务已无待办主线，
+    调用方回退到自由规划。前端看板与 plans 表看到的是同一份计划。
     """
     steps = await _task_steps(db, task.id)
     open_main = [s for s in steps if s.kind == "main" and s.status not in PROGRESS_COUNTED_STATUSES]
@@ -691,7 +611,7 @@ async def resolve_branch_decision(
     applied: list | None = None,
     run_id: uuid.UUID | None = None,
 ) -> TaskStep | None:
-    """侧边栏结构化回传回填（§3.5 统一契约）：把 {action, data, applied}
+    """侧边栏结构化回传回填（统一契约）：把 {action, data, applied}
     固化到 resolution（供任务卡/看板/审计展示）。
 
     action=submit → 支线置 done（用户已处理）；action=cancel → 置 skipped（用户放弃该决策）。
@@ -713,17 +633,20 @@ async def resolve_branch_decision(
     )
 
 
+# ---------- 任务卡（注入 system_prompt 的永不压缩区） ----------
+
+
 async def task_context(db: AsyncSession, task_id: uuid.UUID) -> dict[str, Any] | None:
     """引擎侧任务上下文：任务卡文本 + 步骤清单（装配进 protected 区）。"""
     task = await db.get(Task, task_id)
     if task is None:
         return None
-    tpl = await db.get(TaskType, task.task_type_id)
     steps = await _task_steps(db, task.id)
     return {
         "task_id": str(task.id),
-        "task_type_id": str(task.task_type_id),
-        "task_type_name": tpl.name if tpl else task.title,
+        "worker_name": task.worker_name,
+        "worker_version": task.worker_version,
+        "task_type_name": worker_display(task.worker_name),  # 兼容旧字段名
         "title": task.title,
         "status": task.status,
         "progress_done": task.progress_done,
@@ -743,51 +666,48 @@ async def task_context(db: AsyncSession, task_id: uuid.UUID) -> dict[str, Any] |
     }
 
 
-async def _render_active_step_playbooks(
-    db: AsyncSession, steps: Sequence[TaskStep]
-) -> str:
-    """渲染当前 doing 子任务的 L2 playbook（经 template_step_id 取其模板正文）。
+def _render_active_step_playbooks(wdef: WorkerDef | None, steps: Sequence[TaskStep]) -> str:
+    """渲染当前 doing 子任务的 L2 playbook（经 worker_step_ref 读 sub_workers 文件）。
 
-    模型新增/人工添加的步骤无 template_step_id（无模板 playbook），自然跳过。
+    模型新增/人工添加的步骤无 worker_step_ref（无模板 playbook），自然跳过。
     """
-    active = [s for s in steps if s.status == "doing" and s.template_step_id is not None]
+    if wdef is None:
+        return ""
+    active = [s for s in steps if s.status == "doing" and s.worker_step_ref]
     if not active:
         return ""
-    tpl_ids = [s.template_step_id for s in active]
-    rows = await db.scalars(select(TaskTypeStep).where(TaskTypeStep.id.in_(tpl_ids)))
-    by_id = {str(r.id): r for r in rows.all()}
     parts: list[str] = []
     for s in active:
-        tpl_step = by_id.get(str(s.template_step_id))
-        if tpl_step is not None and tpl_step.playbook.strip():
-            parts.append(f"### {s.name}\n{tpl_step.playbook.strip()}")
+        sub = wdef.find_sub(s.worker_step_ref)  # type: ignore[arg-type]
+        if sub is not None and sub.playbook.strip():
+            parts.append(f"### {s.name}\n{sub.playbook.strip()}")
     if not parts:
         return ""
     return "\n## 当前子任务指引\n" + "\n".join(parts) + "\n"
 
 
 async def render_task_card(db: AsyncSession, task_id: uuid.UUID) -> str:
-    """渲染「当前主任务」区文本：目标 + L2 执行指引 + 进度 + 子任务清单（含用户已答复内容）。"""
+    """渲染「当前主任务」区文本：目标 + L2 执行指引 + 进度 + 子任务清单（含用户已答复内容）。
+
+    Worker 定义按任务绑定的 (worker_name, worker_version) 直读文件包；
+    文件缺失（Worker 已删/版本降级）时只显示名称骨架，不阻断执行。
+    """
     task = await db.get(Task, task_id)
     if task is None:
         return ""
-    tpl = await db.get(TaskType, task.task_type_id)
     steps = list(
         (
             await db.scalars(
-                select(TaskStep)
-                .where(TaskStep.task_id == task.id)
-                .order_by(TaskStep.seq)
+                select(TaskStep).where(TaskStep.task_id == task.id).order_by(TaskStep.seq)
             )
         ).all()
     )
+    wdef = get_worker_def(task.worker_name, task.worker_version)
     branch_no = 0
-    branch_index: dict[str, int] = {}
     lines: list[str] = []
     for s in steps:
         if s.kind == "branch":
             branch_no += 1
-            branch_index[str(s.id)] = branch_no
             label = f"B{branch_no}"
             suffix = "（支线）"
         else:
@@ -797,42 +717,24 @@ async def render_task_card(db: AsyncSession, task_id: uuid.UUID) -> str:
         if s.resolution and s.resolution.get("answer"):
             answer = f"（用户答复：{str(s.resolution['answer'])[:200]}）"
         lines.append(f"[{s.status}] {label} {s.name}{suffix}{answer}")
-    header = f"主任务：{tpl.name if tpl else task.title}"
-    if tpl is not None and tpl.description:
-        header += f" — {tpl.description}"
+    header = f"主任务：{worker_display(task.worker_name)}"
+    if wdef is not None and wdef.description:
+        header += f" — {wdef.description}"
     # L2 主任务 playbook：Worker 激活时注入的权威执行指引（干什么/怎么干/遇何问题/能力路由）
     playbook_section = ""
-    if tpl is not None and tpl.playbook.strip():
-        playbook_section = f"\n## 执行指引（主任务）\n{tpl.playbook.strip()}\n"
-    # L2 当前子任务 playbook：推进到的 doing 步骤，经 template_step_id 取其模板正文
-    step_section = await _render_active_step_playbooks(db, steps)
-    body = "\n".join(lines) if lines else "（本主任务尚未定义子任务模板）"
+    if wdef is not None and wdef.playbook.strip():
+        playbook_section = f"\n## 执行指引（主任务）\n{wdef.playbook.strip()}\n"
+    # L2 当前子任务 playbook：推进到的 doing 步骤，经 worker_step_ref 读 sub_workers 文件
+    step_section = _render_active_step_playbooks(wdef, steps)
+    body = "\n".join(lines) if lines else "（本主任务尚未定义子任务）"
     out_of_scope = ""
     if task.out_of_scope:
         out_of_scope = (
-            "\n注意：用户曾在本会话中要求处理本主任务之外的请求，"
-            "请专注于当前主任务；如确认是新的主任务，应建议用户新开会话。"
+            "\n注意：用户曾明确要求在本会话处理其它主任务（越界 "
+            f"{len(task.out_of_scope)} 次），请聚焦当前主任务，必要时提示新开会话。\n"
         )
     return (
-        f"# 当前主任务\n{header}\n"
-        f"{playbook_section}"
-        f"进度：{task.progress_done}/{task.progress_total}\n"
-        f"子任务：\n{body}{step_section}{out_of_scope}"
+        f"# {header}\n{playbook_section}{step_section}\n"
+        f"## 子任务清单（进度 {task.progress_done}/{task.progress_total}）\n"
+        f"{body}\n{out_of_scope}"
     )
-
-
-async def counts_for_task_types(db: AsyncSession) -> dict[str, dict[str, int]]:
-    """模板列表用的聚合计数：模板 id → {capability_count, task_count}。"""
-    out: dict[str, dict[str, int]] = {}
-    cap_rows = await db.execute(
-        select(TaskTypeCapability.task_type_id, func.count())
-        .group_by(TaskTypeCapability.task_type_id)
-    )
-    for tid, cnt in cap_rows.all():
-        out.setdefault(str(tid), {})["capability_count"] = int(cnt)
-    task_rows = await db.execute(
-        select(Task.task_type_id, func.count()).group_by(Task.task_type_id)
-    )
-    for tid, cnt in task_rows.all():
-        out.setdefault(str(tid), {})["task_count"] = int(cnt)
-    return out

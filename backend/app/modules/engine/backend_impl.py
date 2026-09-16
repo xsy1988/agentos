@@ -296,9 +296,7 @@ class InProcessBackend:
             task = await db.get(TaskModel, uuid.UUID(task_id))
             if task is None or not achieved:
                 return 0
-            plan = await db.scalar(
-                select(PlanModel).where(PlanModel.run_id == uuid.UUID(run_id))
-            )
+            plan = await db.scalar(select(PlanModel).where(PlanModel.run_id == uuid.UUID(run_id)))
             bound: list[uuid.UUID] = []
             for it in list(plan.items) if plan else []:
                 raw = it.get("step_id")

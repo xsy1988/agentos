@@ -28,7 +28,7 @@ from app.modules.conversations.schemas import (
 )
 from app.modules.runs.models import Run
 from app.modules.tasks import service as tasks_service
-from app.modules.tasks.models import TaskType
+from app.modules.tasks.service import COMMON_WORKER, worker_display
 
 router = APIRouter(
     prefix="/conversations",
@@ -50,10 +50,10 @@ async def list_conversations(db: AsyncSession = Depends(get_db)) -> list[Convers
 async def create_conversation(
     body: ConversationCreateIn, db: AsyncSession = Depends(get_db)
 ) -> Conversation:
-    """新建会话（= 新的主任务实例，归属「通用任务集」，除非走 POST /tasks）。
+    """新建会话（= 新的主任务实例，归属内建「通用任务」，除非走 POST /tasks）。
 
     会话与主任务实例 1:1（ADR-26）：这里同时建立任务实例，让任务看板不会漏掉
-    任何会话。真正选择主任务由 `POST /tasks` 负责，它会改写 task_type_id。
+    任何会话。真正选择主任务由 `POST /tasks` 负责，它会改写 worker_name。
     """
     agent = await conv_service.resolve_agent(db, body.agent_id)
     conv = Conversation(agent_id=agent.id, title=body.title)
@@ -85,9 +85,7 @@ async def update_conversation(
 
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_conversation(
-    conversation_id: UUID, db: AsyncSession = Depends(get_db)
-) -> None:
+async def delete_conversation(conversation_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
     """删除会话：消息/任务/事件/计划随 FK CASCADE 全部级联清除。
 
     活跃任务先投 abort（尽力而为的优雅终止）：引擎若还在执行，后续写库
@@ -174,32 +172,28 @@ async def send_message(
     # 会话↔主任务实例 1:1：老会话（迁移遗漏）在此惰性补建，引擎侧无需判空分叉
     task = await tasks_service.ensure_task_for_conversation(db, conv)
 
-    # 新主任务检测（ADR-27，两条路径）：
-    # ① 零选择新建的会话归「通用任务集」：首条消息高置信命中业务 Worker 时
+    # 新主任务检测（ADR-27，两条路径）：Worker 清单来自文件注册中心（workers.registry）
+    # ① 零选择新建的会话归「通用任务」：首条消息高置信命中业务 Worker 时
     #   **自动改绑**（不弹软提示、不换会话），Agent 据此判定任务类型；
     # ② 已在某个业务 Worker 上的会话命中另一 Worker：保持软提示（用户抽板）。
     if not body.force_current_task and body.text.strip() and not body.attachment_ids:
         suggestion = await tasks_service.detect_task_switch(
-            db, body.text, current_task_type_id=task.task_type_id
+            db, body.text, current_worker_name=task.worker_name
         )
         if suggestion is not None:
-            common_id = await tasks_service.get_common_task_type_id(db)
-            current_tpl = await db.get(TaskType, task.task_type_id)
-            if task.task_type_id == common_id:
-                # 路径①：通用任务集 → 高置信 Worker，直接改绑后照常建 run。
+            if task.worker_name in ("", COMMON_WORKER):
+                # 路径①：通用任务 → 高置信 Worker，直接改绑后照常建 run。
                 # 本条消息就是判定依据，改绑后 run 的任务卡携带该 Worker 的 L1/L2。
-                await tasks_service.rebind_task_type(
-                    db, task, suggestion["task_type_id"]
-                )
+                await tasks_service.rebind_worker(db, task, suggestion["worker_name"])
             else:
                 # 路径②：业务 Worker 之间的切换交回用户抽板
                 # 提交惰性补建的 task（若有），再返回软提示
                 await db.commit()
                 return SendMessageTaskSwitch(
                     conversation_id=conv.id,
-                    suggested_task_type=TaskSwitchSuggestion(**suggestion),
+                    suggested_worker=TaskSwitchSuggestion(**suggestion),
                     pending_text=body.text,
-                    current_task_type_name=current_tpl.name if current_tpl else task.title,
+                    current_task_name=worker_display(task.worker_name),
                 )
 
     if body.force_current_task and body.text.strip():

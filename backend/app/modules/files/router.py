@@ -37,9 +37,7 @@ async def upload_file(
 ) -> FileOut:
     """上传统一入口：sha256 去重，knowledge / 消息附件复用。"""
     content = await file.read()
-    saved, dedup = await service.save_upload(
-        db, file.filename or "unnamed", content
-    )
+    saved, dedup = await service.save_upload(db, file.filename or "unnamed", content)
     return FileOut(
         id=str(saved.id),
         path=saved.path,

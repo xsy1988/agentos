@@ -26,8 +26,18 @@ def upgrade() -> None:
         sa.Column("mime", sa.String(length=128), nullable=False),
         sa.Column("size", sa.BigInteger(), nullable=False),
         sa.Column("sha256", sa.String(length=64), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_files")),
         sa.UniqueConstraint("sha256", name=op.f("uq_files_sha256")),
     )
@@ -38,8 +48,18 @@ def upgrade() -> None:
         sa.Column("ref_type", sa.String(length=16), nullable=False),
         sa.Column("ref_id", sa.UUID(), nullable=False),
         sa.Column("note", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(
             ["file_id"], ["files.id"], name=op.f("fk_file_refs_file_id_files"), ondelete="CASCADE"
         ),
@@ -59,13 +79,29 @@ def upgrade() -> None:
         sa.Column("chunk_count", sa.Integer(), nullable=False),
         sa.Column("embedding_model", sa.String(length=128), nullable=True),
         sa.Column("meta", JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["folder_id"], ["kb_folders.id"], name=op.f("fk_kb_docs_folder_id_kb_folders"), ondelete="RESTRICT"
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
         ),
         sa.ForeignKeyConstraint(
-            ["source_file_id"], ["files.id"], name=op.f("fk_kb_docs_source_file_id_files"), ondelete="SET NULL"
+            ["folder_id"],
+            ["kb_folders.id"],
+            name=op.f("fk_kb_docs_folder_id_kb_folders"),
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["source_file_id"],
+            ["files.id"],
+            name=op.f("fk_kb_docs_source_file_id_files"),
+            ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_kb_docs")),
     )
@@ -82,7 +118,12 @@ def upgrade() -> None:
         sa.Column("embedding_model", sa.String(length=128), nullable=True),
         sa.Column("dim", sa.Integer(), nullable=True),
         sa.Column("token_count", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(
             ["doc_id"], ["kb_docs.id"], name=op.f("fk_kb_chunks_doc_id_kb_docs"), ondelete="CASCADE"
         ),

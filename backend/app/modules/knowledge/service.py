@@ -52,9 +52,7 @@ async def _check_sibling_name(
 async def list_folders(db: AsyncSession) -> list[dict]:
     """平铺列表（含每目录文档数），前端按 parent_id 组树。"""
     folders = (await db.execute(select(KbFolder).order_by(KbFolder.path))).scalars().all()
-    rows = (
-        await db.execute(select(KbDoc.folder_id, func.count()).group_by(KbDoc.folder_id))
-    ).all()
+    rows = (await db.execute(select(KbDoc.folder_id, func.count()).group_by(KbDoc.folder_id))).all()
     counts: dict[UUID, int] = {fid: cnt for fid, cnt in rows}
     return [
         {

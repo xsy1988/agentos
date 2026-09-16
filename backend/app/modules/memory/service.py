@@ -60,7 +60,8 @@ async def _collect_material(target: date) -> tuple[str, list[str]]:
                     .order_by(Run.created_at)
                 )
             )
-            .scalars().all()
+            .scalars()
+            .all()
         )
         for r in runs:
             run_ids.append(str(r.id))
@@ -68,16 +69,13 @@ async def _collect_material(target: date) -> tuple[str, list[str]]:
                 f"[run {r.trigger}/{r.status}] input={(r.input or {}).get('text', '')[:200]}"
             )
         msgs = (
-            (
-                await db.execute(
-                    select(Message, Conversation)
-                    .join(Conversation, Message.conversation_id == Conversation.id)
-                    .where(Message.created_at >= start, Message.created_at < end)
-                    .order_by(Message.created_at)
-                )
+            await db.execute(
+                select(Message, Conversation)
+                .join(Conversation, Message.conversation_id == Conversation.id)
+                .where(Message.created_at >= start, Message.created_at < end)
+                .order_by(Message.created_at)
             )
-            .all()
-        )
+        ).all()
         for m, _conv in msgs:
             text = (m.content or {}).get("text") or ""
             if text:
@@ -250,7 +248,8 @@ async def get_protected_memories() -> str:
                     .order_by(MemoryFile.date.desc())
                 )
             )
-            .scalars().all()
+            .scalars()
+            .all()
         )
     parts: list[str] = []
     # platform content 自带 "# 平台记忆" 标题，不重复拼

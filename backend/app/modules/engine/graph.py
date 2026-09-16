@@ -427,8 +427,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         if skill_mds:
             system_prompt = (
                 f"{system_prompt}\n\n# 可用技能（以下技能与当前任务高度相关，"
-                "请参照其步骤与注意事项执行）\n"
-                + "\n\n---\n\n".join(skill_mds)
+                "请参照其步骤与注意事项执行）\n" + "\n\n---\n\n".join(skill_mds)
             )
         # 任务架构区（M7a，ADR-23/24）：主任务目标 + 子任务清单 + 进度。
         # 放在 protected_context.system_prompt 里随固定区一起注入、永不压缩——
@@ -632,9 +631,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         if not final.tool_calls:
             await runtime.persist_assistant_message(thread_id, run_id, final_text)
         # 压缩/补齐操作（若有）与终答消息一起归约进 checkpoint
-        out_msgs: list[AnyMessage | RemoveMessage] = (
-            (compact_ops or []) + aborted_patches + [final]
-        )
+        out_msgs: list[AnyMessage | RemoveMessage] = (compact_ops or []) + aborted_patches + [final]
         return {"messages": out_msgs, "budget_state": dict(ctx.budget)}
 
     async def tools(state: LoopState, config: RunnableConfig) -> dict:
@@ -700,9 +697,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 str(answer.get("answer") or "") if isinstance(answer, dict) else str(answer)
             )
             if task_id and step_id:
-                await runtime.backend.answer_subtask(
-                    str(task_id), step_id, answer_text, run_id
-                )
+                await runtime.backend.answer_subtask(str(task_id), step_id, answer_text, run_id)
                 await _emit_task_steps(str(task_id), run_id)
             ask_results: list[ToolMessage] = [
                 ToolMessage(
@@ -988,9 +983,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         budget["verify_retries"] = retries + 1
         # verify 自身的 LLM 消耗也记账（iteration 不前进），
         # 归属实际调用的 provider（轻量/覆盖模型）
-        await hooks.on_turn_end(
-            ctx, ctx.budget.get("iterations") or 0, usage, provider_id=pid
-        )
+        await hooks.on_turn_end(ctx, ctx.budget.get("iterations") or 0, usage, provider_id=pid)
 
         achieved = bool(verdict.get("achieved")) or retries + 1 >= VERIFY_RETRY_LIMIT
         protected = dict(state.get("protected_context") or {})

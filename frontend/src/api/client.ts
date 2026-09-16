@@ -89,7 +89,11 @@ async function request<T>(
 export const api = {
   get: <T>(path: string, params?: Record<string, string | number | boolean | undefined>) =>
     request<T>("GET", path, { params }),
-  post: <T>(path: string, body?: unknown) => request<T>("POST", path, { body }),
+  post: <T>(
+    path: string,
+    body?: unknown,
+    params?: Record<string, string | number | boolean | undefined>,
+  ) => request<T>("POST", path, { body, params }),
   put: <T>(
     path: string,
     body?: unknown,

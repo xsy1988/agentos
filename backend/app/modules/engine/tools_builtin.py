@@ -253,9 +253,7 @@ async def _probe_url(args: dict[str, Any]) -> str:
     timeout = min(float(args.get("timeout") or 10.0), 30.0)
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout, follow_redirects=True
-        ) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.request(method, url)
             elapsed_ms = int((time.monotonic() - start) * 1000)
             body_snippet = ""

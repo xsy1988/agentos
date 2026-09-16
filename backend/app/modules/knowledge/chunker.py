@@ -67,8 +67,6 @@ def _has_body(content: str, heading_path: str) -> bool:
     headings = {h.strip() for h in heading_path.split(">") if h.strip()}
     lines = [ln.strip() for ln in content.splitlines()]
     body = [
-        ln
-        for ln in lines
-        if ln and not (ln.startswith("#") and ln.lstrip("#").strip() in headings)
+        ln for ln in lines if ln and not (ln.startswith("#") and ln.lstrip("#").strip() in headings)
     ]
     return bool(body)

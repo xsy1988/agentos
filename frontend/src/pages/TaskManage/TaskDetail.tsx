@@ -1,8 +1,8 @@
 /**
- * 主任务详情页（/tasks/:taskId）：实例概览 + 子任务管理 + 所属 Worker 的 WORKER.md 编辑。
- * 「任务管理」列表点击进入；WORKER.md 是 Worker 的权威编辑载体（保存即同步 DB）。
+ * 主任务详情页（/tasks/:taskId）：实例概览 + 子任务管理。
+ * Worker 定义（WORKER.md 文件包）维护已拆到 /capabilities/workers，这里只读展示归属并提供跳转。
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Button,
   Card,
@@ -22,12 +22,11 @@ import {
   CheckOutlined,
   MessageOutlined,
   PlusOutlined,
-  ReloadOutlined,
-  SaveOutlined,
+  TeamOutlined,
 } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
-import { tasksApi, taskTypesApi } from "@/api/tasks";
+import { tasksApi } from "@/api/tasks";
 import type { TaskStepOut } from "@/api/types";
 import {
   STEP_SOURCE_LABELS,
@@ -119,88 +118,6 @@ function StepItem({
   );
 }
 
-/** WORKER.md 编辑器：主任务 Worker 的权威编辑载体（frontmatter + playbook 正文）。 */
-function WorkerFileEditor({ taskTypeId }: { taskTypeId: string }) {
-  const queryClient = useQueryClient();
-  const { data: file, isLoading } = useQuery({
-    queryKey: ["worker-file", taskTypeId],
-    queryFn: () => taskTypesApi.workerFile.get(taskTypeId),
-  });
-  const [content, setContent] = useState("");
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (file && !dirty) setContent(file.content);
-  }, [file, dirty]);
-
-  const saveMutation = useMutation({
-    mutationFn: () => taskTypesApi.workerFile.put(taskTypeId, content),
-    onSuccess: () => {
-      setDirty(false);
-      queryClient.invalidateQueries({ queryKey: ["worker-file", taskTypeId] });
-      queryClient.invalidateQueries({ queryKey: ["task-types"] });
-      antdMessage.success("WORKER.md 已保存并同步到模板");
-    },
-    onError: (e: Error) => antdMessage.error(e.message || "保存失败"),
-  });
-
-  if (isLoading) return <Spin size="small" />;
-  return (
-    <Card
-      size="small"
-      title="WORKER.md（Worker 的权威编辑载体）"
-      extra={
-        <Space size={6}>
-          <Button
-            size="small"
-            icon={<ReloadOutlined />}
-            disabled={dirty}
-            onClick={() =>
-              queryClient.invalidateQueries({ queryKey: ["worker-file", taskTypeId] })
-            }
-          >
-            从库刷新
-          </Button>
-          <Button
-            size="small"
-            type="primary"
-            icon={<SaveOutlined />}
-            disabled={!dirty}
-            loading={saveMutation.isPending}
-            onClick={() => saveMutation.mutate()}
-          >
-            保存并同步
-          </Button>
-        </Space>
-      }
-    >
-      {file?.path && (
-        <Typography.Text
-          type="secondary"
-          className="font-mono-tight"
-          style={{ fontSize: 11, display: "block", marginBottom: 8 }}
-        >
-          {file.path}
-        </Typography.Text>
-      )}
-      <Input.TextArea
-        value={content}
-        onChange={(e) => {
-          setContent(e.target.value);
-          setDirty(true);
-        }}
-        autoSize={{ minRows: 14, maxRows: 28 }}
-        className="font-mono-tight"
-        style={{ fontSize: 12 }}
-        placeholder="---\nname: …\ndescription: …\n---\n\n# playbook 正文"
-      />
-      <Typography.Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 6 }}>
-        顶部 yaml 区是元信息（L1 描述 + L3 引用），正文是 playbook（L2）。保存即解析回写数据库模板。
-      </Typography.Text>
-    </Card>
-  );
-}
-
 export default function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
   const navigate = useNavigate();
@@ -261,7 +178,7 @@ export default function TaskDetailPage() {
               icon={<ArrowLeftOutlined />}
               onClick={() => navigate("/tasks")}
             />
-            <span style={{ fontSize: 18 }}>{task.task_type_icon || "📋"}</span>
+            <span style={{ fontSize: 18 }}>{task.worker_icon || "📋"}</span>
             <Typography.Title level={4} style={{ margin: 0 }}>
               {task.title}
             </Typography.Title>
@@ -273,8 +190,9 @@ export default function TaskDetailPage() {
             )}
           </Space>
           <div className="page-action-sub">
-            模板 {task.task_type_name} · 子任务 {task.progress_done}/{task.progress_total} ·
-            执行 {task.run_ids.length} 次 · 更新 {new Date(task.updated_at).toLocaleString()}
+            Worker {task.worker_display_name} · 版本 {task.worker_version || "—"} · 子任务{" "}
+            {task.progress_done}/{task.progress_total} · 执行 {task.run_ids.length} 次 · 更新{" "}
+            {new Date(task.updated_at).toLocaleString()}
           </div>
         </div>
         <Space>
@@ -284,6 +202,18 @@ export default function TaskDetailPage() {
               onClick={() => navigate(`/chat?task=${task.id}`)}
             >
               去会话
+            </Button>
+          )}
+          {task.worker_name && task.worker_name !== "__common__" && (
+            <Button
+              icon={<TeamOutlined />}
+              onClick={() =>
+                navigate(
+                  `/capabilities/workers/${encodeURIComponent(task.worker_name)}`,
+                )
+              }
+            >
+              在 Worker 管理中打开
             </Button>
           )}
         </Space>
@@ -398,9 +328,6 @@ export default function TaskDetailPage() {
           }}
         />
       </Card>
-
-      {/* WORKER.md 编辑（所属模板） */}
-      <WorkerFileEditor taskTypeId={task.task_type_id} />
     </div>
   );
 }

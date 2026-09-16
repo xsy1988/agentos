@@ -33,9 +33,7 @@ def _storage_path(ext: str) -> Path:
 async def save_upload(db: AsyncSession, filename: str, content: bytes) -> tuple[File, bool]:
     """登记上传文件：sha256 去重（重复上传直接复用已有记录）。返回 (file, deduplicated)。"""
     sha = hashlib.sha256(content).hexdigest()
-    existing = (
-        await db.execute(select(File).where(File.sha256 == sha))
-    ).scalar_one_or_none()
+    existing = (await db.execute(select(File).where(File.sha256 == sha))).scalar_one_or_none()
     if existing is not None:
         return existing, True
 

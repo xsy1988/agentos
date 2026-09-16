@@ -24,8 +24,18 @@ def upgrade() -> None:
         sa.Column("embedding", Vector(dim=settings.embedding_dim), nullable=True),
         sa.Column("token_count", sa.Integer(), nullable=False),
         sa.Column("source_run_ids", JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_memory_files")),
         sa.UniqueConstraint("kind", "date", name=op.f("uq_memory_files_kind_date")),
     )
@@ -39,7 +49,12 @@ def upgrade() -> None:
         sa.Column("content", sa.Text(), nullable=False),
         sa.Column("url", sa.String(length=255), nullable=True),
         sa.Column("read", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.ForeignKeyConstraint(
             ["run_id"], ["runs.id"], name=op.f("fk_notifications_run_id_runs"), ondelete="SET NULL"
         ),

@@ -36,11 +36,11 @@ export default function TaskSwitchCard({
         type="warning"
         showIcon
         style={{ marginBottom: 8 }}
-        message={`这条消息看起来属于「${suggestion.suggested_task_type.task_type_name}」`}
+        message={`这条消息看起来属于「${suggestion.suggested_worker.worker_display_name}」`}
         description={
           <span style={{ fontSize: 12 }}>
-            {suggestion.suggested_task_type.reason}。当前会话正在执行「
-            {suggestion.current_task_type_name}」，一个会话只承载一个主任务；建议新开会话执行。
+            {suggestion.suggested_worker.reason}。当前会话正在执行「
+            {suggestion.current_task_name}」，一个会话只承载一个主任务；建议新开会话执行。
           </span>
         }
       />

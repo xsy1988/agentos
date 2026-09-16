@@ -63,7 +63,8 @@ async def main() -> None:
 
         # 第三轮：同 thread 新消息，验证历史延续
         await graph.ainvoke(
-            {"messages": [{"role": "user", "content": "again"}]}, {"configurable": {"thread_id": tid}}
+            {"messages": [{"role": "user", "content": "again"}]},
+            {"configurable": {"thread_id": tid}},
         )
         snap3 = await graph.aget_state({"configurable": {"thread_id": tid}})
         assert snap3.next == ("ask",), "第二次同样停在 ask"

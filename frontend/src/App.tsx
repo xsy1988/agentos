@@ -15,6 +15,8 @@ import McpServicesPage from "@/pages/Capabilities/McpServices";
 import ToolsPage from "@/pages/Capabilities/Tools";
 import PluginsPage from "@/pages/Capabilities/Plugins";
 import SkillsPage from "@/pages/Capabilities/Skills";
+import WorkersPage from "@/pages/Capabilities/Workers";
+import WorkerDetailPage from "@/pages/Capabilities/Workers/WorkerDetail";
 import MemoryPage from "@/pages/Memory";
 import AutomationPage from "@/pages/Automation";
 import SettingsPage from "@/pages/Settings";
@@ -82,15 +84,17 @@ export default function App() {
                 <Route index element={<ChatPage />} />
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="runs" element={<RunsPage />} />
-                {/* 任务管理（原任务模板）：主任务实例列表 + 详情页；旧路径重定向 */}
+                {/* 任务管理：主任务实例列表 + 详情页（Worker 定义已拆到 /capabilities/workers） */}
                 <Route path="tasks" element={<TaskManagePage />} />
                 <Route path="tasks/:taskId" element={<TaskDetailPage />} />
-                <Route path="task-types" element={<Navigate to="/tasks?tab=templates" replace />} />
+                <Route path="task-types" element={<Navigate to="/capabilities/workers" replace />} />
                 <Route path="knowledge" element={<KnowledgePage />} />
                 <Route path="knowledge/:folderId" element={<KnowledgePage />} />
                 <Route path="capabilities/mcp" element={<McpServicesPage />} />
                 <Route path="capabilities/tools" element={<ToolsPage />} />
                 <Route path="capabilities/plugins" element={<PluginsPage />} />
+                <Route path="capabilities/workers" element={<WorkersPage />} />
+                <Route path="capabilities/workers/:name" element={<WorkerDetailPage />} />
                 <Route path="capabilities/skills" element={<SkillsPage />} />
                 <Route path="memory" element={<MemoryPage />} />
                 <Route path="automation" element={<AutomationPage />} />

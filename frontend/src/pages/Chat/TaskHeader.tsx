@@ -146,10 +146,14 @@ export default function TaskHeader({
         }}
       >
         <Space size={6} style={{ flex: "none" }}>
-          <span>{task.task_type_icon || "📋"}</span>
-          <Tooltip title={`主任务模板：${task.task_type_name}`}>
+          <span>{task.worker_icon || "📋"}</span>
+          <Tooltip
+            title={`主任务 Worker：${task.worker_display_name}${
+              task.worker_version ? `（${task.worker_version}）` : ""
+            }`}
+          >
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {task.task_type_name}
+              {task.worker_display_name}
             </Typography.Text>
           </Tooltip>
           <Typography.Text strong ellipsis style={{ fontSize: 13, maxWidth: 220 }}>

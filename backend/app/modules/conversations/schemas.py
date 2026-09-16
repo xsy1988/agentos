@@ -69,11 +69,14 @@ class SendMessageRunCreated(BaseModel):
 
 
 class TaskSwitchSuggestion(BaseModel):
-    """检测到疑似新的主任务：只给建议，不落消息不建 run（ADR-27 软提示）。"""
+    """检测到疑似新的主任务：只给建议，不落消息不建 run（ADR-27 软提示）。
 
-    task_type_id: UUID
-    task_type_name: str
-    task_type_icon: str | None = None
+    worker_name = data/workers 目录名（POST /tasks 直接复用）。
+    """
+
+    worker_name: str
+    worker_display_name: str
+    worker_icon: str | None = None
     confidence: float = 0.0
     reason: str = ""
 
@@ -81,10 +84,10 @@ class TaskSwitchSuggestion(BaseModel):
 class SendMessageTaskSwitch(BaseModel):
     kind: Literal["task_switch_suggested"] = "task_switch_suggested"
     conversation_id: UUID
-    suggested_task_type: TaskSwitchSuggestion
+    suggested_worker: TaskSwitchSuggestion
     # 原样回传用户的输入，前端「新开会话并发送」时直接复用，无需用户重打
     pending_text: str
-    current_task_type_name: str
+    current_task_name: str
 
 
 SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch

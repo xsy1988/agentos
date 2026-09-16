@@ -91,15 +91,17 @@ def order_by_scope(
 
 
 async def _task_scope(db: Any, task_id: str) -> dict[str, Any] | None:
-    """主任务归属上下文：域内能力 id、通用任务集能力 id、当前主线步骤的建议能力名。"""
-    from app.modules.tasks.models import (
-        COMMON_TASK_TYPE_NAME,
-        Task,
-        TaskStep,
-        TaskType,
-        TaskTypeCapability,
-        TaskTypeStep,
-    )
+    """主任务归属上下文：域内能力 id、通用兑底能力 id、当前主线步骤的建议能力名。
+
+    Worker 定义已文件化（workers.registry）：
+    - domain_ids = 任务绑定 Worker 的 WORKER.md capabilities 名单按名解析的 capability id；
+    - common_ids = 未被任何启用 Worker 引用的能力（替代原「通用任务集」归属表）；
+    - hints = 当前主线步骤（worker_step_ref）对应 sub_worker 的 capability_hint。
+    """
+    from app.modules.capabilities.models import Capability
+    from app.modules.tasks.models import Task, TaskStep
+    from app.modules.tasks.service import get_worker_def
+    from app.modules.workers import registry
 
     try:
         task = await db.get(Task, uuid.UUID(str(task_id)))
@@ -107,35 +109,53 @@ async def _task_scope(db: Any, task_id: str) -> dict[str, Any] | None:
         return None
     if task is None:
         return None
-    common_id = await db.scalar(select(TaskType.id).where(TaskType.name == COMMON_TASK_TYPE_NAME))
-    type_ids = [task.task_type_id] + ([common_id] if common_id else [])
+
+    # 全局引用集合（启用 Worker 生效版本）：一次算出，做通用/全局分档
+    referenced_names = registry.referenced_capability_names()
+    domain_names: set[str] = set()
+    wdef = get_worker_def(task.worker_name, task.worker_version)
+    if wdef is not None:
+        domain_names = set(wdef.capabilities)
+
     rows = await db.execute(
-        select(TaskTypeCapability.task_type_id, TaskTypeCapability.capability_id).where(
-            TaskTypeCapability.task_type_id.in_(type_ids)
+        select(Capability.id, Capability.name).where(
+            Capability.name.in_(referenced_names | domain_names)
         )
     )
-    domain_ids: set[str] = set()
-    common_ids: set[str] = set()
-    for tid, cid in rows.all():
-        (domain_ids if tid == task.task_type_id else common_ids).add(str(cid))
-    raw_hints = await db.scalars(
-        select(TaskTypeStep.capability_hint)
-        .join(TaskStep, TaskStep.template_step_id == TaskTypeStep.id)
-        .where(
-            TaskStep.task_id == task.id,
-            TaskStep.kind == "main",
-            TaskStep.status.in_(("pending", "doing")),
-        )
-        .order_by(TaskStep.seq)
-        .limit(1)
+    id_by_name = {name: str(cid) for cid, name in rows.all()}
+    domain_ids: set[str] = {id_by_name[n] for n in domain_names if n in id_by_name}
+    # 通用兑底档：未被任何启用 Worker 引用的能力（原「通用任务集」归属的等价语义）
+    common_rows = await db.scalars(
+        select(Capability.id).where(~Capability.name.in_(referenced_names | domain_names))
     )
+    common_ids: set[str] = {str(cid) for cid in common_rows}
+
+    # 当前主线步骤的建议能力名：从 sub_worker 的 capability_hint 读
     hints: list[str] = []
-    for hint in raw_hints:
-        for name in hint or []:
-            if isinstance(name, str) and name not in hints:
-                hints.append(name)
+    if wdef is not None:
+        steps = list(
+            (
+                await db.scalars(
+                    select(TaskStep)
+                    .where(
+                        TaskStep.task_id == task.id,
+                        TaskStep.kind == "main",
+                        TaskStep.status.in_(("pending", "doing")),
+                    )
+                    .order_by(TaskStep.seq)
+                    .limit(1)
+                )
+            ).all()
+        )
+        if steps and steps[0].worker_step_ref:
+            sub = wdef.find_sub(steps[0].worker_step_ref)  # type: ignore[arg-type]
+            if sub is not None:
+                for name in sub.capability_hint:
+                    if isinstance(name, str) and name not in hints:
+                        hints.append(name)
     return {
-        "task_type_id": str(task.task_type_id),
+        "worker_name": task.worker_name,
+        "worker_version": task.worker_version,
         "domain_ids": domain_ids,
         "common_ids": common_ids,
         "hints": tuple(hints),
