@@ -30,6 +30,7 @@ from app.modules.runs.router import router as runs_router
 from app.modules.scheduler.router import router as scheduler_router
 from app.modules.scheduler.runtime import scheduler_runtime
 from app.modules.skills_forge.router import router as skills_router
+from app.modules.tasks.procurement_seed import seed_procurement_worker
 from app.modules.tasks.router import router as tasks_router
 from app.modules.tasks.router import task_types_router
 from app.modules.tasks.service import seed_common_task_type
@@ -43,6 +44,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await seed_default_agent()
     # 幂等 seed：builtin 占位工具（2c DoD 工具链路验证用）+ search_knowledge
     await seed_builtin_capabilities()
+    # 幂等 seed：采购报价对比 Worker + 决策面板 plugin + 桥接能力归属（决策4，§5）；
+    # 置于通用任务集 seed 之前，让采购专属能力归属本 Worker 而非兜底落 common
+    await seed_procurement_worker()
     # 幂等 seed：知识库三个默认根目录（产品/研发/生活）
     await seed_default_folders()
     # 幂等 seed：内建「通用任务集」主任务模板 + 未归属能力兜底挂载（任务架构 ADR-23/ADR-28）

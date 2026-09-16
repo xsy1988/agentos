@@ -12,6 +12,8 @@ import type {
   TaskStepOut,
   TaskTypeCapabilityOut,
   TaskTypeOut,
+  WorkerFileOut,
+  WorkerReference,
 } from "./types";
 
 export interface BoardParams {
@@ -54,6 +56,8 @@ export const taskTypesApi = {
   create: (body: {
     name: string;
     description?: string;
+    playbook?: string;
+    references?: WorkerReference[] | null;
     icon?: string | null;
     color?: string | null;
     sort_order?: number;
@@ -66,6 +70,8 @@ export const taskTypesApi = {
     body: Partial<{
       name: string;
       description: string;
+      playbook: string;
+      references: WorkerReference[] | null;
       icon: string | null;
       color: string | null;
       sort_order: number;
@@ -85,4 +91,20 @@ export const taskTypesApi = {
     }),
   unbindCapability: (id: string, capabilityId: string) =>
     api.del<void>(`/task-types/${id}/capabilities/${capabilityId}`),
+  /** WORKER.md 文件读写（stepId 省略 = 主任务文件；文件是权威编辑载体，保存即同步 DB） */
+  workerFile: {
+    get: (id: string, stepId?: string) =>
+      api.get<WorkerFileOut>(
+        `/task-types/${id}/worker-file`,
+        stepId ? { step_id: stepId } : undefined,
+      ),
+    put: (id: string, content: string, stepId?: string) =>
+      api.put<TaskTypeOut>(
+        `/task-types/${id}/worker-file`,
+        { content },
+        stepId ? { step_id: stepId } : undefined,
+      ),
+  },
+  /** 全量投影：DB 模板 → data/workers 文件树（外部编辑前对齐基线） */
+  syncFiles: () => api.post<{ synced: number; root: string }>("/task-types/sync-files"),
 };

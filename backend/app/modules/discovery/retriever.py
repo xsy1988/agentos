@@ -42,6 +42,15 @@ async def _embed_query(query: str) -> list[float] | None:
     return await embeddings.aembed_query(query)
 
 
+async def embed_text(query: str) -> list[float] | None:
+    """对外公开的文本向量化入口（复用 embedding provider）。
+
+    供任务架构「新主任务检测」（tasks.service.detect_task_switch）等模块做语义比对；
+    无可用 embedding provider 时返回 None，调用方据此静默降级（不阻断主流程）。
+    """
+    return await _embed_query(query)
+
+
 def _cap_dict(cap: Any) -> dict[str, Any]:
     """ORM → 引擎侧 dict（capability 粒度，payload 含 schema/transport 等）。"""
     return {

@@ -45,6 +45,20 @@ from app.modules.tasks.schemas import (
     TaskTypeOut,
     TaskTypeUpdateIn,
     TaskUpdateIn,
+    WorkerFileIn,
+    WorkerFileOut,
+)
+from app.modules.tasks.worker_files import (
+    import_step_content,
+    import_worker_content,
+    read_step_file,
+    read_worker_file,
+    remove_worker_files,
+    serialize_worker,
+    serialize_worker_safely,
+    step_file_path,
+    worker_dir,
+    workers_root,
 )
 
 task_types_router = APIRouter(
@@ -239,6 +253,8 @@ async def _replace_step_templates(
                 seq=i,
                 name=item.name.strip(),
                 description=item.description,
+                playbook=item.playbook,
+                references=item.references,
                 kind=item.kind,
                 optional=item.optional,
                 capability_hint=item.capability_hint,
@@ -271,6 +287,8 @@ async def create_task_type(
     tpl = TaskType(
         name=body.name,
         description=body.description,
+        playbook=body.playbook,
+        references=body.references,
         kind="business",
         icon=body.icon,
         color=body.color,
@@ -293,6 +311,8 @@ async def create_task_type(
         db.add(TaskTypeCapability(task_type_id=tpl.id, capability_id=cap_id))
     await db.commit()
     await db.refresh(tpl)
+    # WORKER.md 投影：模板落库同步生成文件（文件化管理的权威编辑载体）
+    await serialize_worker_safely(db, tpl)
     return (await _task_types_out(db, [tpl]))[0]
 
 
@@ -320,6 +340,7 @@ async def update_task_type(
         setattr(tpl, k, v)
     await db.commit()
     await db.refresh(tpl)
+    await serialize_worker_safely(db, tpl)
     return (await _task_types_out(db, [tpl]))[0]
 
 
@@ -338,6 +359,7 @@ async def delete_task_type(task_type_id: UUID, db: AsyncSession = Depends(get_db
         )
     await db.delete(tpl)  # 步骤模板/能力归属随 FK CASCADE 清除
     await db.commit()
+    remove_worker_files(tpl.id)  # WORKER.md 文件树同步删除
 
 
 @task_types_router.put("/{task_type_id}/steps", response_model=TaskTypeOut)
@@ -350,6 +372,70 @@ async def replace_step_templates(
     tpl = await _get_task_type(db, task_type_id)
     await _replace_step_templates(db, tpl, body.steps)
     await db.commit()
+    await serialize_worker_safely(db, tpl)
+    return (await _task_types_out(db, [tpl]))[0]
+
+
+# ---------- WORKER.md 文件管理（任务模板的文件化存储） ----------
+
+
+async def _get_step_template(db: AsyncSession, tpl: TaskType, step_id: UUID) -> TaskTypeStep:
+    step = await db.get(TaskTypeStep, step_id)
+    if step is None or step.task_type_id != tpl.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "子任务模板不存在")
+    return step
+
+
+@task_types_router.post("/sync-files")
+async def sync_worker_files(db: AsyncSession = Depends(get_db)) -> dict:
+    """全量投影：DB 模板 → data/workers 文件树（幂等，外部编辑前对齐基线）。"""
+    types = list((await db.scalars(select(TaskType))).all())
+    for tpl in types:
+        await serialize_worker(db, tpl)
+    return {"synced": len(types), "root": str(workers_root())}
+
+
+@task_types_router.get("/{task_type_id}/worker-file", response_model=WorkerFileOut)
+async def get_worker_file(
+    task_type_id: UUID,
+    step_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> WorkerFileOut:
+    """读 WORKER.md：不带 step_id 返回主任务文件，带则返回子任务文件。"""
+    tpl = await _get_task_type(db, task_type_id)
+    if step_id is None:
+        path = worker_dir(tpl.id) / "WORKER.md"
+        content = read_worker_file(tpl)
+    else:
+        step = await _get_step_template(db, tpl, step_id)
+        path = step_file_path(step)
+        content = read_step_file(step)
+    return WorkerFileOut(path=str(path), content=content)
+
+
+@task_types_router.put("/{task_type_id}/worker-file", response_model=TaskTypeOut)
+async def put_worker_file(
+    task_type_id: UUID,
+    body: WorkerFileIn,
+    step_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> TaskTypeOut:
+    """编辑保存 WORKER.md：写文件并解析回写 DB（文件是权威编辑载体，保存即同步）。"""
+    tpl = await _get_task_type(db, task_type_id)
+    try:
+        if step_id is None:
+            import_worker_content(tpl, body.content)
+            path = worker_dir(tpl.id) / "WORKER.md"
+        else:
+            step = await _get_step_template(db, tpl, step_id)
+            import_step_content(step, body.content)
+            path = step_file_path(step)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body.content, encoding="utf-8")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    await db.commit()
+    await db.refresh(tpl)
     return (await _task_types_out(db, [tpl]))[0]
 
 
@@ -526,6 +612,8 @@ async def task_board(
                     id=items[0].task_type_id,
                     name=items[0].task_type_name,
                     description="（模板已停用或删除）",
+                    playbook="",
+                    references=None,
                     kind="business",
                     icon=items[0].task_type_icon,
                     color=items[0].task_type_color,

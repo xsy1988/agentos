@@ -13,7 +13,12 @@ class StepTemplateIn(BaseModel):
     """子任务模板条目（PUT /task-types/{id}/steps 整表替换用）。"""
 
     name: str = Field(min_length=1, max_length=255)
+    # L1 简要描述
     description: str = Field(default="", max_length=4000)
+    # L2 playbook 正文：推进到该子任务时载入
+    playbook: str = Field(default="", max_length=50000)
+    # L3 引用资源：子 WORKER.md / 卡片模板 / 数据契约等（按需读取）
+    references: list[dict] | None = None
     kind: Literal["main", "branch"] = "main"
     optional: bool = False
     capability_hint: list[str] | None = None
@@ -21,7 +26,12 @@ class StepTemplateIn(BaseModel):
 
 class TaskTypeCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    # L1 简要描述：一句话讲清「什么场景用它」
     description: str = Field(default="", max_length=4000)
+    # L2 playbook 正文：Worker 激活时随任务卡注入永不压缩区
+    playbook: str = Field(default="", max_length=50000)
+    # L3 引用资源（按需读取）
+    references: list[dict] | None = None
     icon: str | None = Field(default=None, max_length=32)
     color: str | None = Field(default=None, max_length=16)
     sort_order: int = 0
@@ -44,6 +54,8 @@ class TaskTypeUpdateIn(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=4000)
+    playbook: str | None = Field(default=None, max_length=50000)
+    references: list[dict] | None = None
     icon: str | None = Field(default=None, max_length=32)
     color: str | None = Field(default=None, max_length=16)
     sort_order: int | None = None
@@ -64,6 +76,8 @@ class StepTemplateOut(BaseModel):
     seq: int
     name: str
     description: str
+    playbook: str
+    references: list[dict] | None
     kind: str
     optional: bool
     capability_hint: list[str] | None
@@ -85,6 +99,8 @@ class TaskTypeOut(BaseModel):
     id: UUID
     name: str
     description: str
+    playbook: str
+    references: list[dict] | None
     kind: str
     icon: str | None
     color: str | None
@@ -101,6 +117,19 @@ class TaskTypeOut(BaseModel):
 
 class CapabilityBindIn(BaseModel):
     capability_ids: list[UUID] = Field(min_length=1, max_length=200)
+
+
+class WorkerFileOut(BaseModel):
+    """WORKER.md 文件内容（主任务或子任务，含相对路径供展示）。"""
+
+    path: str
+    content: str
+
+
+class WorkerFileIn(BaseModel):
+    """编辑保存：整文件内容（frontmatter + playbook 正文）。"""
+
+    content: str = Field(min_length=1, max_length=200_000)
 
 
 # ---------- 任务实例（L2 实例层） ----------

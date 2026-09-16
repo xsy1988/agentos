@@ -259,6 +259,34 @@ class InProcessBackend:
             await db.commit()
             return step is not None
 
+    async def resolve_subtask(
+        self,
+        task_id: str,
+        step_id: str,
+        *,
+        action: str,
+        data: Any = None,
+        applied: list | None = None,
+        run_id: str,
+    ) -> bool:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            task = await db.get(TaskModel, uuid.UUID(task_id))
+            if task is None:
+                return False
+            step = await tasks_service.resolve_branch_decision(
+                db,
+                task,
+                uuid.UUID(step_id),
+                action=action,
+                data=data,
+                applied=applied,
+                run_id=uuid.UUID(run_id),
+            )
+            await db.commit()
+            return step is not None
+
     async def finalize_task_plan(self, task_id: str, run_id: str, *, achieved: bool) -> int:
         from sqlalchemy import select
 

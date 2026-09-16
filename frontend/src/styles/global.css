@@ -4,7 +4,7 @@
  */
 /* @import 必须位于所有规则之前（含 @tailwind 展开的规则），
    否则被浏览器静默丢弃（曾致 hljs/katex 样式长期未加载） */
-@import "highlight.js/styles/github-dark.css";
+@import "highlight.js/styles/github.css";
 @import "katex/dist/katex.min.css";
 
 @tailwind base;
@@ -16,26 +16,33 @@
    随 algorithm（dark/light）动态切换。 */
 :root {
   --ant-color-bg-container: var(--ant-colorBgContainer);
+  --ant-color-border: var(--ant-colorBorder);
   --ant-color-border-secondary: var(--ant-colorBorderSecondary);
   --ant-color-error: var(--ant-colorError);
   --ant-color-fill-quaternary: var(--ant-colorFillQuaternary);
   --ant-color-fill-tertiary: var(--ant-colorFillTertiary);
+  --ant-color-fill-secondary: var(--ant-colorFillSecondary);
   --ant-color-primary: var(--ant-colorPrimary);
   --ant-color-success: var(--ant-colorSuccess);
   --ant-color-text: var(--ant-colorText);
   --ant-color-text-secondary: var(--ant-colorTextSecondary);
   --ant-color-text-tertiary: var(--ant-colorTextTertiary);
+  --ant-color-text-quaternary: var(--ant-colorTextQuaternary);
   --ant-color-warning: var(--ant-colorWarning);
 }
 
-/* ---- 工作台风格全局调整 ---- */
+/* ---- 工作台风格全局调整（统一浅色，Kimi/WorkBuddy 式） ---- */
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f5f6fa;
+  color: rgba(0, 0, 0, 0.88);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* 滚动条：细+深色友好 */
+/* 滚动条：细 + 浅色友好 */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -44,11 +51,11 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.35);
+  background: rgba(15, 23, 42, 0.18);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.55);
+  background: rgba(15, 23, 42, 0.32);
 }
 
 /* 等宽字体辅助类 */
@@ -138,29 +145,31 @@ body {
   color: var(--ant-color-text);
 }
 
-/* 代码块：外层容器（MarkdownRenderer 的 .md-code-wrap 提供头部条） */
+/* 代码块：外层容器（MarkdownRenderer 的 .md-code-wrap 提供头部条）。
+   白底浅色主题：github-dark 时 hljs-section 等深色 token（如 #1f6feb）
+   在深底上几乎不可读，改白底后全部 token 均为深色可读 */
 .markdown-body .md-code-wrap {
   margin: 0.8em 0;
   border-radius: 8px;
-  border: 1px solid rgba(128, 128, 128, 0.22);
+  border: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.2));
   overflow: hidden;
-  background: #0d1117; /* 代码区固定深色（hljs 主题为 github-dark，亮色主题下同样成立） */
+  background: #ffffff;
 }
 .markdown-body .md-code-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 5px 12px;
-  background: #161b22;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.18);
-  color: rgba(230, 237, 243, 0.55);
+  background: #f6f8fa;
+  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.18));
+  color: var(--ant-color-text-tertiary, rgba(0, 0, 0, 0.45));
   font-size: 11px;
   font-family: "JetBrains Mono", "Fira Code", "SF Mono", Menlo, Consolas, monospace;
 }
 .markdown-body .md-code-copy {
   border: none;
   background: transparent;
-  color: rgba(230, 237, 243, 0.55);
+  color: var(--ant-color-text-secondary, rgba(0, 0, 0, 0.65));
   cursor: pointer;
   font-size: 11px;
   padding: 2px 6px;
@@ -171,11 +180,11 @@ body {
   transition: color 0.15s, background 0.15s;
 }
 .markdown-body .md-code-copy:hover {
-  color: rgba(230, 237, 243, 0.9);
-  background: rgba(110, 118, 129, 0.25);
+  color: var(--ant-color-text, rgba(0, 0, 0, 0.88));
+  background: rgba(128, 128, 128, 0.14);
 }
 .markdown-body .md-code-copy.copied {
-  color: #3fb950;
+  color: #237804;
 }
 .markdown-body .md-code-wrap pre {
   margin: 0;
@@ -194,8 +203,8 @@ body {
 .markdown-body > pre {
   border-radius: 8px;
   padding: 12px 14px;
-  background: #0d1117;
-  border: 1px solid rgba(128, 128, 128, 0.22);
+  background: #ffffff;
+  border: 1px solid var(--ant-color-border-secondary, rgba(128, 128, 128, 0.2));
 }
 
 /* 表格：圆角容器 + 表头加重 + 斑马纹 + 行 hover，去竖线更现代 */
@@ -247,6 +256,214 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   padding: 2px 0;
+}
+
+/* 任务看板平铺列表项：卡片化 + hover 浮起 + 选中高亮（交互态全部走 CSS 类，
+   避免内联样式优先级盖过 hover 规则的陷阱） */
+.board-task-item {
+  margin: 0 8px 3px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s,
+    transform 0.15s;
+}
+.board-task-item:hover {
+  background: #fff;
+  border-color: var(--ant-color-border-secondary, rgba(5, 5, 5, 0.08));
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+.board-task-item.active {
+  background: #fff;
+  border-color: rgba(79, 110, 247, 0.35);
+  box-shadow: inset 3px 0 0 var(--ant-color-primary), 0 2px 8px rgba(79, 110, 247, 0.08);
+}
+
+/* 看板 item 精简（仅名称/icon/进度条常显）：
+   操作按钮与辅助信息 hover/选中才展开 —— 纯 CSS 控制，勿用内联 visibility */
+.board-task-actions {
+  visibility: hidden;
+}
+.board-task-item:hover .board-task-actions,
+.board-task-item.active .board-task-actions {
+  visibility: visible;
+}
+.board-task-meta {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+.board-task-item:hover .board-task-meta,
+.board-task-item.active .board-task-meta {
+  display: flex;
+}
+.board-task-type {
+  font-size: 11px;
+  color: var(--ant-color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 看板 item 标题前状态 icon（WorkBuddy 式）：待确认橙叹号/已完成绿勾/
+   进行中蓝转圈/失败红叉，细节进 tooltip，视觉保持轻量 */
+.board-task-status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  line-height: 1;
+}
+.board-tag-mini {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  margin-inline-end: 0;
+}
+
+/* 执行过程收纳面板（Kimi 式）：收起态一行摘要，点击展开 */
+.exec-trace {
+  border-radius: 8px;
+  border: 1px dashed var(--ant-color-border-secondary, rgba(5, 5, 5, 0.1));
+  background: rgba(79, 110, 247, 0.02);
+  overflow: hidden;
+}
+.exec-trace-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.exec-trace-header:hover {
+  background: rgba(79, 110, 247, 0.05);
+}
+.exec-trace-body {
+  border-top: 1px solid var(--ant-color-border-secondary, rgba(5, 5, 5, 0.06));
+  padding: 6px 12px;
+}
+
+/* Chat 空态引导（Kimi 式居中大字） */
+.chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+}
+.chat-empty-title {
+  font-size: 22px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+}
+.chat-empty-sub {
+  font-size: 13px;
+  color: var(--ant-color-text-tertiary, rgba(0, 0, 0, 0.45));
+}
+
+/* 提交反馈：正在思考指示（Kimi 式，首个事件到达前的空窗期占位） */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 2px 4px;
+}
+.thinking-text {
+  font-size: 13px;
+  color: var(--ant-color-text-secondary);
+}
+.thinking-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ant-color-text-quaternary);
+  animation: thinking-bounce 1.2s infinite ease-in-out;
+}
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes thinking-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* 左侧导航：固定品牌区（不随选中页切换文案），分组菜单 */
+.sidebar-brand {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--ant-color-border-secondary, rgba(5, 5, 5, 0.06));
+}
+.sidebar-brand-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #4f6ef7, #7c3aed);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex: none;
+}
+.sidebar-brand-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+  white-space: nowrap;
+}
+.sidebar-brand-sub {
+  font-size: 10px;
+  color: var(--ant-color-text-quaternary);
+  white-space: nowrap;
+  margin-top: 1px;
+}
+.sidebar-group-title {
+  padding: 10px 16px 4px;
+  font-size: 10px;
+  color: var(--ant-color-text-quaternary);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.sidebar-menu.ant-menu-inline {
+  border-inline-end: 0 !important;
+}
+
+/* 列表页操作行：标题/副文案在左，主按钮在右（消除右上角孤悬按钮） */
+.page-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.page-action-sub {
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
 }
 
 /* 会话列表项 hover 时显示重命名/删除操作（默认隐藏；不能用内联 style 隐藏——

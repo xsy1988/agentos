@@ -3,7 +3,10 @@
 统一 payload 结构按 type 解释：
 - tool：payload.builtin（内置占位）或 payload.schema（OpenAI 函数签名）
 - skill：payload.skill_md（SKILL.md 全文，yaml 头 name/description/version）
-- mcp/plugin：payload.transport(stdio/http) + launch/url + env + secret_env
+- mcp：payload.transport(stdio/http) + launch/url + env + secret_env
+- plugin：可纯前端（展示类），payload.frontend 声明前端清单（§3.5）——
+  mode=iframe{url,sandbox,allowlist_origin} 或 server_driven{schema}；
+  也可携带后端 transport（同 mcp）。frontend 与 transport 至少其一。
 """
 
 from datetime import datetime

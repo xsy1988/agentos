@@ -128,6 +128,44 @@ export interface CapabilityOut {
   created_at: string;
   updated_at: string;
 }
+
+// ---- plugin 前端渲染统一规范（§3.5）----
+/** plugin 前端清单（payload.frontend）：平台中只有 plugin 携带前端页面，由侧边栏渲染。 */
+export interface FrontendManifest {
+  /** iframe=外部 plugin 自带 Web 页；server_driven=平台原生渲染 JSON UI schema */
+  mode: "iframe" | "server_driven";
+  /** iframe：plugin 前端页地址（http(s)） */
+  url?: string;
+  /** iframe：sandbox 授权（最小化） */
+  sandbox?: string;
+  /** iframe：允许的 src origin（postMessage 目标校验） */
+  allowlist_origin?: string;
+  /** server_driven：JSON UI schema（字段/表格/动作） */
+  schema?: Record<string, unknown>;
+}
+/** 侧边栏渲染描述符：interactive_decision 卡 open_sidebar 时构造，指向 plugin 前端。 */
+export interface SidebarDescriptor {
+  title?: string;
+  /** 目标 plugin 能力 id（未内联 frontend 时据此查清单） */
+  plugin_capability_id?: string;
+  /** 卡片可直接内联清单（省一次能力查询） */
+  frontend?: FrontendManifest;
+  /** 初始化数据：待处理数据/主题/语言等（握手时经 WORKER_CONTEXT 下发） */
+  init_data?: Record<string, unknown>;
+  /** 宽度提示：0~0.5 占屏比例（≤半屏） */
+  width_hint?: number;
+  step_id?: string;
+  idempotency_key?: string;
+  run_id?: string;
+}
+/** 统一结构化回传契约（两模式一致）：→ 写入子任务 resolution → 引擎续跑。 */
+export interface SidebarResult {
+  action: "submit" | "cancel";
+  /** 回传主体：数组或对象（选/删/改后的结果） */
+  data?: unknown;
+  /** 已落库的写入类 mcp 结果 */
+  applied?: Array<{ capability: string; result: unknown }>;
+}
 export interface CapabilityToolOut {
   id: string;
   capability_id: string;
@@ -267,11 +305,17 @@ export interface FileOut {
 }
 
 // ---- 任务架构：主任务模板（L1 定义层） ----
+/** L3 引用资源条目（子 WORKER.md / 卡片模板 / plugin 清单 / 数据契约等，按需拉取）。 */
+export type WorkerReference = Record<string, unknown>;
 export interface StepTemplateOut {
   id: string;
   seq: number;
   name: string;
   description: string;
+  /** L2 playbook 正文（推进到该子任务时载入） */
+  playbook: string;
+  /** L3 引用资源（按需读取） */
+  references: WorkerReference[] | null;
   kind: "main" | "branch";
   optional: boolean;
   capability_hint: string[] | null;
@@ -279,14 +323,25 @@ export interface StepTemplateOut {
 export interface StepTemplateIn {
   name: string;
   description?: string;
+  playbook?: string;
+  references?: WorkerReference[] | null;
   kind?: "main" | "branch";
   optional?: boolean;
   capability_hint?: string[] | null;
+}
+/** WORKER.md 文件内容（主任务或子任务 Worker 的权威编辑载体） */
+export interface WorkerFileOut {
+  path: string;
+  content: string;
 }
 export interface TaskTypeOut {
   id: string;
   name: string;
   description: string;
+  /** L2 playbook 正文（Worker 激活时随任务卡注入） */
+  playbook: string;
+  /** L3 引用资源（按需读取） */
+  references: WorkerReference[] | null;
   /** business 业务主任务 / common 通用任务集（内建，不可删除） */
   kind: string;
   icon: string | null;

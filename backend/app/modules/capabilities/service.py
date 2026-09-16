@@ -105,6 +105,93 @@ BUILTIN_SEED: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "probe_url",
+        "description": "依赖预检：探测某个服务/API 是否可达（GET/HEAD 请求），"
+        "返回可达性、状态码、延迟。任务开始前应先检查依赖项，不通则告知用户并停止。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "要探测的服务地址（如 http://localhost:8100/health）",
+                },
+                "method": {
+                    "type": "string",
+                    "description": "HTTP 方法 GET 或 HEAD，默认 GET",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "超时秒数（默认 10，最大 30）",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+    # ---- 采购报价对比 Agent 桥接能力（决策4：外部服务，异步桥接范式，§5）----
+    {
+        "name": "procurement_trigger",
+        "description": "触发采购报价对比 Agent 解析报价单（外部服务异步执行，立即返回 task_id）。"
+        "传入报价单文本或文件引用；解析耗时较长，随后用 procurement_status 轮询进度。",
+        "risk_level": "write",
+        "params": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "报价单文本（与 report_ref 二选一）"},
+                "report_ref": {
+                    "type": "string",
+                    "description": "报价单文件引用/路径（与 text 二选一）",
+                },
+            },
+        },
+    },
+    {
+        "name": "procurement_status",
+        "description": "轮询采购报价解析任务的状态与九段流水线进度"
+        "（传 procurement_trigger 返回的 task_id）。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "采购解析任务 id"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "procurement_decisions",
+        "description": "拉取采购任务的待决策面（供应商建档/工艺确认/项目绑定/数据纠错），"
+        "返回的每个决策面 schema 与交互决策卡/侧边栏对齐，供 request_decision 抛卡使用。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "采购解析任务 id"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "procurement_submit_decision",
+        "description": "把用户在侧边栏处理完的结构化结果写回采购 Agent（落库）。"
+        "传决策 id 与回传数据。",
+        "risk_level": "write",
+        "params": {
+            "type": "object",
+            "properties": {
+                "decision_id": {"type": "string", "description": "待决策面的 id"},
+                "data": {"type": "object", "description": "侧边栏结构化回传的数据（选/删/改结果）"},
+            },
+            "required": ["decision_id"],
+        },
+    },
+    {
+        "name": "procurement_report",
+        "description": "拉取采购报价对比报告与 AI 综合分析（产出可经知识库管道入库供跨任务检索）。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string", "description": "采购解析任务 id"}},
+            "required": ["task_id"],
+        },
+    },
 ]
 
 
@@ -140,6 +227,53 @@ async def seed_builtin_capabilities() -> None:
 # ---------- payload 规范校验 ----------
 
 
+def _validate_frontend_manifest(frontend: Any) -> str | None:
+    """校验 plugin 的前端清单（payload.frontend，设计方案 §3.5）。
+
+    平台中只有 plugin 携带前端页面，由侧边栏渲染。None/缺省 = 无前端（合法，
+    纯后端 plugin）；有则必须是 dict 且 mode ∈ {iframe, server_driven}：
+    - iframe（推荐外部 plugin）：url 必须 http(s)；sandbox/allowlist_origin 可选
+    - server_driven（推荐平台原生）：schema 必须是 dict（JSON UI schema）
+    """
+    if frontend is None:
+        return None
+    if not isinstance(frontend, dict):
+        return "payload.frontend 必须是对象"
+    mode = frontend.get("mode")
+    if mode == "iframe":
+        url = frontend.get("url")
+        if not isinstance(url, str) or not url.startswith("http"):
+            return "frontend.mode=iframe 需要 frontend.url（http(s)://…）"
+        return None
+    if mode == "server_driven":
+        if not isinstance(frontend.get("schema"), dict):
+            return "frontend.mode=server_driven 需要 frontend.schema（JSON UI schema 对象）"
+        return None
+    return "frontend.mode 必须是 iframe 或 server_driven"
+
+
+def _validate_transport(payload: dict[str, Any]) -> str | None:
+    """校验 mcp/plugin 的后端 transport（stdio/http）+ env。"""
+    transport = payload.get("transport")
+    if transport not in ("stdio", "http"):
+        return "mcp/plugin 类型需要 payload.transport（stdio/http）"
+    if transport == "stdio":
+        if not isinstance(payload.get("command"), str) or not payload["command"].strip():
+            return "stdio 传输需要 payload.command（启动命令）"
+        args = payload.get("args", [])
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            return "payload.args 必须是字符串数组"
+    else:
+        if not isinstance(payload.get("url"), str) or not payload["url"].startswith("http"):
+            return "http 传输需要 payload.url（http(s)://…）"
+    env = payload.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        return "payload.env 必须是 {str: str}"
+    return None
+
+
 def validate_payload(type_: str, payload: dict[str, Any]) -> str | None:
     """按 type 校验 payload 结构，返回错误文案（None = 通过）。"""
     if type_ == "tool":
@@ -156,24 +290,25 @@ def validate_payload(type_: str, payload: dict[str, Any]) -> str | None:
         if _parse_skill_yaml_header(skill_md) is None:
             return "skill_md 的 yaml 头不完整（需要 --- 包围的 name/description）"
         return None
-    if type_ in ("mcp", "plugin"):
-        transport = payload.get("transport")
-        if transport not in ("stdio", "http"):
-            return "mcp/plugin 类型需要 payload.transport（stdio/http）"
-        if transport == "stdio":
-            if not isinstance(payload.get("command"), str) or not payload["command"].strip():
-                return "stdio 传输需要 payload.command（启动命令）"
-            args = payload.get("args", [])
-            if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-                return "payload.args 必须是字符串数组"
-        else:
-            if not isinstance(payload.get("url"), str) or not payload["url"].startswith("http"):
-                return "http 传输需要 payload.url（http(s)://…）"
-        env = payload.get("env", {})
-        if not isinstance(env, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in env.items()
-        ):
-            return "payload.env 必须是 {str: str}"
+    if type_ == "plugin":
+        # plugin 可纯前端（展示类，无后端进程），也可携带后端 transport；
+        # 两者至少有其一：有 frontend 则校验清单，有 transport 则校验后端。
+        frontend_err = _validate_frontend_manifest(payload.get("frontend"))
+        if frontend_err is not None:
+            return frontend_err
+        has_frontend = isinstance(payload.get("frontend"), dict)
+        has_transport = payload.get("transport") in ("stdio", "http")
+        if not has_frontend and not has_transport:
+            return "plugin 类型需要 payload.frontend（前端清单）或 payload.transport（stdio/http）"
+        if has_transport:
+            transport_err = _validate_transport(payload)
+            if transport_err is not None:
+                return transport_err
+        return None
+    if type_ == "mcp":
+        transport_err = _validate_transport(payload)
+        if transport_err is not None:
+            return transport_err
         return None
     return f"未知能力类型: {type_}"
 

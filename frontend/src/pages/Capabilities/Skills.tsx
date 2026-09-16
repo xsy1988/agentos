@@ -70,7 +70,11 @@ function RegisteredSkills() {
 
   return (
     <div>
-      <div style={{ marginBottom: 12, display: "flex", justifyContent: "flex-end" }}>
+      <div className="page-action-bar">
+        <div>
+          <Typography.Text strong>已注册技能</Typography.Text>
+          <div className="page-action-sub">可直接添加，或批准沉淀提案后自动转入</div>
+        </div>
         <Button
           type="primary"
           icon={<PlusOutlined />}
@@ -244,7 +248,7 @@ function ProposalItem({
             style={{
               marginTop: 8,
               padding: 12,
-              border: "1px solid rgba(128,128,128,0.25)",
+              border: "1px solid var(--ant-color-border)",
               borderRadius: 6,
               maxHeight: 400,
               overflow: "auto",

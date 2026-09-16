@@ -48,7 +48,7 @@ export default function CommandPalette() {
 
   const commands: Command[] = [
     { label: "新会话", icon: <MessageOutlined />, group: "对话", action: () => navigate("/chat") },
-    { label: "主任务模板", icon: <ProjectOutlined />, group: "任务", action: () => navigate("/task-types") },
+    { label: "任务管理", icon: <ProjectOutlined />, group: "任务", action: () => navigate("/tasks") },
     { label: "执行记录", icon: <ScheduleOutlined />, group: "任务", action: () => navigate("/runs") },
     { label: "知识库", icon: <BookOutlined />, group: "知识库", action: () => navigate("/knowledge") },
     { label: "MCP 服务", icon: <ThunderboltOutlined />, group: "能力", action: () => navigate("/capabilities/mcp") },
@@ -89,7 +89,7 @@ export default function CommandPalette() {
         dataSource={Object.entries(groups)}
         renderItem={([group, cmds]) => (
           <>
-            <List.Item style={{ padding: "4px 12px", background: "rgba(128,128,128,0.06)" }}>
+            <List.Item style={{ padding: "4px 12px", background: "var(--ant-color-fill-quaternary)" }}>
               <Typography.Text type="secondary" style={{ fontSize: 11 }}>
                 {group}
               </Typography.Text>

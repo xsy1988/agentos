@@ -12,7 +12,8 @@ import { CloseOutlined } from "@ant-design/icons";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
-import { EventItem } from "@/pages/Chat/MessageStream";
+import PluginHost from "@/components/PluginHost";
+import { EventItem, isConfirmationResolved, mergeToolEvents } from "@/pages/Chat/MessageStream";
 import type { RunOut, RunEventOut } from "@/api/types";
 
 const TERMINAL_STATUSES = ["done", "failed", "cancelled", "aborted", "timeout"];
@@ -74,7 +75,13 @@ function RunDetail({ runId }: { runId: string }) {
     return Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
   }, [apiEvents, liveEvents]);
 
-  const meta: CSSProperties = { fontSize: 11, color: "rgba(128,128,128,0.8)" };
+  // 时间线展示用：合并同一次工具调用与结果（message_delta 已累积不展示）
+  const mergedEvents = useMemo(
+    () => mergeToolEvents(events.filter((e) => e.event_type !== "message_delta")),
+    [events],
+  );
+
+  const meta: CSSProperties = { fontSize: 11, color: "var(--ant-color-text-secondary)" };
 
   const inputText = (run?.input?.text as string) ?? "";
   const budgetUsed = (run?.budget_used ?? {}) as Record<string, unknown>;
@@ -108,7 +115,7 @@ function RunDetail({ runId }: { runId: string }) {
             marginTop: 8,
             padding: "6px 10px",
             borderRadius: 6,
-            background: "rgba(128,128,128,0.08)",
+            background: "var(--ant-color-fill-quaternary)",
             fontSize: 12,
             color: "var(--ant-color-text-secondary)",
             display: "-webkit-box",
@@ -179,7 +186,7 @@ function RunDetail({ runId }: { runId: string }) {
                           ? "var(--ant-color-success)"
                           : t.status === "doing"
                             ? "var(--ant-color-primary)"
-                            : "rgba(128,128,128,0.5)",
+                            : "var(--ant-color-text-quaternary)",
                     }}
                   >
                     {t.status === "done" ? "☑" : t.status === "doing" ? "◐" : "○"}
@@ -200,18 +207,25 @@ function RunDetail({ runId }: { runId: string }) {
         </div>
       )}
 
-      {/* 事件时间线 */}
+      {/* 事件时间线（同一次工具调用与结果已合并为一条） */}
       <div style={{ marginTop: 12 }}>
         <Typography.Text strong style={{ fontSize: 12 }}>
-          执行过程（{events.filter((e) => e.event_type !== "message_delta").length} 条）
+          执行过程（{mergedEvents.length} 条）
         </Typography.Text>
         <div style={{ marginTop: 4 }}>
           {isLoading ? (
             <Spin size="small" />
           ) : (
-            events
-              .filter((e) => e.event_type !== "message_delta")
-              .map((e) => <EventItem key={e.seq} event={e} />)
+            mergedEvents.map((e) => (
+                <EventItem
+                  key={e.seq}
+                  event={e}
+                  resolved={
+                    e.event_type === "confirmation_request" &&
+                    isConfirmationResolved(events, e.seq)
+                  }
+                />
+              ))
           )}
         </div>
       </div>
@@ -222,6 +236,19 @@ function RunDetail({ runId }: { runId: string }) {
 export default function ContextPanel() {
   const activeRunId = useSSEStore((s) => s.activeRunId);
   const toggleContextPanel = useUIStore((s) => s.toggleContextPanel);
+  // 活跃的 plugin 前端侧边栏（§3.5）：有则渲染 PluginHost，否则展示 run 详情
+  const sidebar = useUIStore((s) => s.sidebar);
+  const closeSidebar = useUIStore((s) => s.closeSidebar);
+
+  if (sidebar) {
+    return (
+      <PluginHost
+        descriptor={sidebar}
+        fallbackRunId={activeRunId}
+        onClose={closeSidebar}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: "12px", height: "100%", overflow: "auto" }}>

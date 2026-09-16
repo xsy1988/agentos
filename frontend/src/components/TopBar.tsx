@@ -1,11 +1,10 @@
 /**
- * 顶栏：⌘K 搜索 | 通知铃铛 | 三盏状态灯 | 深色切换 | 用户菜单。
+ * 顶栏：⌘K 搜索 | 通知铃铛 | 三盏状态灯 | 任务详情面板开关 | 用户菜单。
+ * 统一浅色主题，无深浅切换。
  */
 import { Input, Tooltip, Dropdown, Avatar, Button } from "antd";
 import {
   SearchOutlined,
-  BulbOutlined,
-  BulbFilled,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   LogoutOutlined,
@@ -18,7 +17,7 @@ import StatusLights from "@/components/StatusLights";
 import NotificationBell from "@/components/NotificationBell";
 
 export default function TopBar() {
-  const { dark, toggleDark, toggleSidebar, sidebarCollapsed, setCommandPaletteOpen, contextPanelOpen, toggleContextPanel } = useUIStore();
+  const { toggleSidebar, sidebarCollapsed, setCommandPaletteOpen, contextPanelOpen, toggleContextPanel } = useUIStore();
   const { user, logout } = useAuthStore();
 
   const userMenu = {
@@ -76,14 +75,6 @@ export default function TopBar() {
             onClick={toggleContextPanel}
             size="small"
             style={contextPanelOpen ? { color: "var(--ant-color-primary)" } : undefined}
-          />
-        </Tooltip>
-        <Tooltip title={dark ? "切换浅色" : "切换深色"}>
-          <Button
-            type="text"
-            icon={dark ? <BulbOutlined /> : <BulbFilled />}
-            onClick={toggleDark}
-            size="small"
           />
         </Tooltip>
         <Dropdown menu={userMenu} placement="bottomRight">

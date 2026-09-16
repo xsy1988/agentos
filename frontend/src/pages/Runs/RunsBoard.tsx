@@ -101,7 +101,7 @@ export default function RunsBoard({
               gap: 6,
               marginBottom: 8,
               paddingBottom: 6,
-              borderBottom: "1px solid rgba(128,128,128,0.2)",
+              borderBottom: "1px solid var(--ant-color-border-secondary)",
             }}
           >
             <Tag color={col.color}>{col.items.length}</Tag>

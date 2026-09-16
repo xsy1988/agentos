@@ -96,11 +96,60 @@ DECLARE_SUBTASK_SCHEMA: dict[str, Any] = {
     },
 }
 
+REQUEST_DECISION_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "request_decision",
+        "description": (
+            "遇到需要用户在**富交互界面**里处理（选/删/改一批数据）才能继续的决策点时"
+            "调用（例如确认/新增供应商、确认工艺处理方案、绑定项目、数据纠错）。调用后"
+            "本次执行立即暂停，聊天流抛出一张**交互决策卡**；用户点击「去处理」会在右侧"
+            "侧边栏打开对应 plugin 前端页面，处理完把结果结构化回传后执行自动继续。"
+            "与 ask_user 的区别：ask_user 只要一句文本答复，request_decision 需要用户"
+            "在侧边栏里编辑/选择数据。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "决策卡标题，例如「确认供应商建档」",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "一句话说明为何需要用户处理，例如「识别到 3 个未管理供应商」",
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["info", "warn", "danger"],
+                    "description": "卡片强调级别，默认 info",
+                },
+                "body": {
+                    "type": "object",
+                    "description": "卡片主体数据（字段/列表/表格），供用户在卡面预览待处理内容",
+                },
+                "plugin": {
+                    "type": "string",
+                    "description": (
+                        "承载侧边栏前端的 plugin 能力名（须是 type=plugin 且声明了 frontend 清单"
+                        "的能力）；留空则卡片只展示 body，不弹侧边栏"
+                    ),
+                },
+                "init_data": {
+                    "type": "object",
+                    "description": "传给 plugin 前端的初始化数据（待处理数据/上下文）",
+                },
+            },
+            "required": ["title"],
+        },
+    },
+}
+
 
 def _meta_tools() -> list[dict[str, Any]]:
     """元工具条目（不占 tool_budget 预算）。
 
-    ask_user / declare_subtask 是任务架构（ADR-24）的执行面：支线子任务的产生
+    ask_user / declare_subtask / request_decision 是任务架构（ADR-24）的执行面：支线子任务的产生
     不依赖某个具体 MCP/插件的装配结果，必须任何会话都可用，故做成常驻元工具。
     """
     return [
@@ -121,6 +170,13 @@ def _meta_tools() -> list[dict[str, Any]]:
         {
             "name": "declare_subtask",
             "schema": DECLARE_SUBTASK_SCHEMA,
+            "kind": "meta",
+            "risk_level": "read",
+            "source": "meta",
+        },
+        {
+            "name": "request_decision",
+            "schema": REQUEST_DECISION_SCHEMA,
             "kind": "meta",
             "risk_level": "read",
             "source": "meta",

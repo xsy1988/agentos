@@ -224,10 +224,17 @@ class EngineRuntime:
                 self._spawn_run_task(str(run_id), self._process_run(str(run_id)))
         elif et == "confirmation":
             run_id = event.get("target_run_id")
-            answer = str(event["payload"].get("answer", ""))
-            # approved/rejected 是计划与高危工具确认；其余非空文本是支线子任务答复（ADR-24）
-            if run_id and answer:
-                self._spawn_run_task(str(run_id), self._resume_run(str(run_id), answer))
+            payload = event.get("payload") or {}
+            answer = str(payload.get("answer", ""))
+            # 侧边栏 plugin 前端的统一结构化回传（§3.5）：data/applied 存在时以 dict 恢复，
+            # 供 request_decision 消费；否则沿用字符串答复（approved/rejected/支线文本，ADR-24）
+            data = payload.get("data")
+            applied = payload.get("applied")
+            if run_id and (answer or data is not None):
+                resume_value: Any = answer
+                if data is not None or applied is not None:
+                    resume_value = {"answer": answer, "data": data, "applied": applied}
+                self._spawn_run_task(str(run_id), self._resume_run(str(run_id), resume_value))
         elif et == "abort":
             run_id = event.get("target_run_id")
             if run_id:
@@ -361,8 +368,12 @@ class EngineRuntime:
             )
             await self.emit_event(run_id, "run_status", {"status": "failed"})
 
-    async def _resume_run(self, run_id: str, answer: str) -> None:
-        """confirmation 入口：从 interrupt 检查点恢复（Command(resume=answer)）。"""
+    async def _resume_run(self, run_id: str, answer: Any) -> None:
+        """confirmation 入口：从 interrupt 检查点恢复（Command(resume=answer)）。
+
+        answer 可为字符串（approved/rejected/支线文本答复）或 dict（侧边栏结构化
+        回传 {answer, data, applied}，§3.5）——原样注入 Command(resume=...)，由对应 interrupt 消费。
+        """
         try:
             run = await self._load_run(run_id)
             if run is None or run.status != "paused_awaiting_confirm":
@@ -372,10 +383,11 @@ class EngineRuntime:
             if run_id not in self._run_ctx:
                 self._build_ctx(run)
             await self._set_run_status(run_id, "running")
+            resumed_with = answer.get("answer", "") if isinstance(answer, dict) else answer
             await self.emit_event(
                 run_id,
                 "run_status",
-                {"status": "running", "resumed_with": answer[:200]},
+                {"status": "running", "resumed_with": str(resumed_with)[:200]},
             )
             await self._invoke_and_finalize(
                 run_id,
@@ -548,6 +560,9 @@ class EngineRuntime:
                 await emit_task_steps(self, task_id, run_id)
             except Exception:  # noqa: BLE001 —— 任务回写失败不能影响 run 落库
                 logger.exception("run %s 任务回写失败", run_id)
+        elif task_id:
+            # 非正常终态（如用户拒绝计划 → cancelled）：收敛挂起的待确认支线
+            await self._reconcile_awaiting_steps(run_id)
         await self.hooks.on_run_end(ctx, status, result)
         await self.emit_event(run_id, "run_status", {"status": status})
         self._run_ctx.pop(run_id, None)
@@ -569,6 +584,37 @@ class EngineRuntime:
         await self.emit_event(run_id, "run_status", {"status": "failed"})
         self._run_ctx.pop(run_id, None)
 
+    async def _reconcile_awaiting_steps(self, run_id: str) -> None:
+        """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。
+
+        run 已结束没人会再答复，不收敛则看板永久误报「待确认」。
+        正常 done 的 run 不走此处（由答复回填/进度重算自然处理）。
+        """
+        try:
+            from app.modules.tasks import service as tasks_service
+            from app.modules.tasks.models import Task
+
+            async with session_factory() as db:
+                run = await db.get(Run, UUID(run_id))
+                if run is None:
+                    return
+                task_id = (run.input or {}).get("task_id")
+                if not task_id and run.conversation_id:
+                    task_id = await self.backend.ensure_task_id(str(run.conversation_id))
+                if not task_id:
+                    return
+                task = await db.get(Task, UUID(str(task_id)))
+                if task is None:
+                    return
+                closed = await tasks_service.reconcile_orphaned_awaits(
+                    db, task, run_id=UUID(run_id)
+                )
+                await db.commit()
+                if closed:
+                    logger.info("run %s 终态收敛 %d 个待确认支线 → blocked", run_id, closed)
+        except Exception:  # noqa: BLE001 —— 收敛失败不影响终态落库
+            logger.exception("run %s 待确认支线收敛失败", run_id)
+
     async def _set_run_status(self, run_id: str, status: str, error: dict | None = None) -> None:
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
@@ -579,6 +625,9 @@ class EngineRuntime:
                 if status in TERMINAL_RUN_STATUSES:
                     run.finished_at = datetime.now(UTC)
                 await db.commit()
+        # 非正常终态（failed/cancelled/aborted/timeout）：收敛挂起的待确认支线
+        if status in ("failed", "cancelled", "aborted", "timeout"):
+            await self._reconcile_awaiting_steps(run_id)
 
 
 # 单例（main.py lifespan 中 start/stop）

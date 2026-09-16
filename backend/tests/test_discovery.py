@@ -7,7 +7,11 @@
 
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 
-from app.modules.discovery.assembler import local_view
+from app.modules.discovery.assembler import (
+    REQUEST_DECISION_SCHEMA,
+    _meta_tools,
+    local_view,
+)
 from app.modules.engine.graph import _normalize_tool_responses
 
 
@@ -57,3 +61,23 @@ def test_local_view_applies_remove_and_append() -> None:
     ops = [RemoveMessage(id="3"), m2p, HumanMessage(content="new")]
     view = local_view([m1, m2, m3], ops)
     assert [(m.id, m.content) for m in view] == [("1", "a"), ("2", "b2"), (None, "new")]
+
+
+def test_request_decision_is_resident_meta_tool() -> None:
+    """request_decision（决策2/§3.6）作为常驻元工具注册，不占 tool_budget。"""
+    names = {t["name"] for t in _meta_tools()}
+    assert {"search_more_tools", "ask_user", "declare_subtask", "request_decision"} <= names
+    rd = next(t for t in _meta_tools() if t["name"] == "request_decision")
+    assert rd["kind"] == "meta"
+    assert rd["risk_level"] == "read"
+    assert rd["schema"] is REQUEST_DECISION_SCHEMA
+
+
+def test_request_decision_schema_shape() -> None:
+    """schema 契约：title 必填，携带 summary/severity/body/plugin/init_data。"""
+    fn = REQUEST_DECISION_SCHEMA["function"]
+    assert fn["name"] == "request_decision"
+    props = fn["parameters"]["properties"]
+    assert fn["parameters"]["required"] == ["title"]
+    assert props["severity"]["enum"] == ["info", "warn", "danger"]
+    assert {"title", "summary", "severity", "body", "plugin", "init_data"} <= set(props)

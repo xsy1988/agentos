@@ -119,7 +119,7 @@ export default function TaskHeader({
           </Typography.Text>
         </Space>
         {step.description && (
-          <div style={{ fontSize: 12, color: "rgba(128,128,128,0.9)", marginTop: 2 }}>
+          <div style={{ fontSize: 12, color: "var(--ant-color-text-secondary)", marginTop: 2 }}>
             {step.description}
           </div>
         )}
@@ -138,7 +138,7 @@ export default function TaskHeader({
       <div
         style={{
           flex: "none",
-          borderBottom: "1px solid rgba(128,128,128,0.2)",
+          borderBottom: "1px solid var(--ant-color-border-secondary)",
           padding: "6px 16px",
           display: "flex",
           alignItems: "center",

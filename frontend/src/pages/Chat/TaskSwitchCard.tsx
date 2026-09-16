@@ -47,7 +47,7 @@ export default function TaskSwitchCard({
       <div
         style={{
           fontSize: 12,
-          color: "rgba(128,128,128,0.9)",
+          color: "var(--ant-color-text-secondary)",
           marginBottom: 8,
           maxHeight: 80,
           overflow: "auto",

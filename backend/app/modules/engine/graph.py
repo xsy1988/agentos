@@ -622,6 +622,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 "thought",
                 {"tool_calls": [{"name": c["name"], "args": c["args"]} for c in final.tool_calls]},
             )
+            # 轮次分隔：工具轮已流出的 message_delta 是「过程说明」而非终答，
+            # 前端据此分段（中间文本随过程展示，不拼进最终回复）。
+            # 实测曾有 run 把 6000+ 条中间轮 delta 全量拼进一个回复。
+            await runtime.emit_event(run_id, "message_reset", {})
 
         final_text = "".join(chunks)
         # 无 tool_calls 的终答才落库（工具轮的中间 AIMessage 不单独落消息表）
@@ -716,6 +720,119 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     )
                 )
             return {"messages": ask_results, "budget_state": dict(ctx.budget)}
+
+        # 0b) 交互决策支线（决策2/§3.6 interactive_decision）：需要用户在侧边栏
+        # plugin 前端里选/删/改一批数据才能继续。同 ask_user 纪律：登记支线 →
+        # interrupt 抛交互决策卡（带 sidebar 描述符）→ 结构化回传回填 resolution。
+        # 本轮其余工具调用一律不执行：用户处理结果可能改变它们的参数，交给下一轮。
+        decision_calls = [c for c in calls if c["name"] == "request_decision"]
+        if decision_calls:
+            first = decision_calls[0]
+            args = dict(first["args"])
+            title = str(args.get("title") or "").strip() or "交互决策"
+            summary = str(args.get("summary") or "").strip()
+            severity = str(args.get("severity") or "info").strip()
+            if severity not in ("info", "warn", "danger"):
+                severity = "info"
+            raw_body = args.get("body")
+            body: dict[str, Any] = raw_body if isinstance(raw_body, dict) else {}
+            raw_init = args.get("init_data")
+            init_data: dict[str, Any] = raw_init if isinstance(raw_init, dict) else {}
+            plugin_name = str(args.get("plugin") or "").strip()
+            task_id = conf.get("task_id")
+            step_id = None
+            if task_id:
+                info = await runtime.backend.raise_subtask(
+                    str(task_id), run_id, name=title, description=summary
+                )
+                step_id = (info or {}).get("step_id")
+                await _emit_task_steps(str(task_id), run_id)
+            idempotency_key = f"{run_id}:{step_id or title}"
+            # 侧边栏描述符（§3.5）：plugin 能力名 → frontend 清单内联，省一次前端查询；
+            # 留空 plugin 则不弹侧边栏（卡片只展示 body，用户可直接跳过）。
+            sidebar: dict[str, Any] | None = None
+            if plugin_name:
+                cap = await runtime.backend.get_capability(plugin_name)
+                if cap and cap.get("type") == "plugin":
+                    ctx_init = dict(init_data)
+                    if task_id:
+                        ctx_init.setdefault("task_id", str(task_id))
+                    sidebar = {
+                        "title": title,
+                        "plugin_capability_id": cap.get("id"),
+                        "frontend": (cap.get("payload") or {}).get("frontend"),
+                        "init_data": ctx_init,
+                        "width_hint": 0.5,
+                        "step_id": step_id,
+                        "idempotency_key": idempotency_key,
+                    }
+            answer = interrupt(
+                {
+                    "reason": "interactive_decision",
+                    "payload": {
+                        "card_type": "interactive_decision",
+                        "title": title,
+                        "summary": summary,
+                        "severity": severity,
+                        "body": body,
+                        "actions": [
+                            {
+                                "key": "open",
+                                "label": "去处理",
+                                "kind": "open_sidebar",
+                                "style": "primary",
+                            },
+                            {"key": "skip", "label": "跳过", "kind": "reject"},
+                        ],
+                        "sidebar": sidebar,
+                        "step_id": step_id,
+                        "idempotency_key": idempotency_key,
+                        "kind": "branch",
+                    },
+                }
+            )
+            # 解析统一结构化回传（§3.5）：dict{answer, data, applied} 或裸字符串
+            if isinstance(answer, dict):
+                raw_action = str(answer.get("answer") or "").strip().lower()
+                data = answer.get("data")
+                applied = answer.get("applied")
+            else:
+                raw_action = str(answer).strip().lower()
+                data = None
+                applied = None
+            action = "cancel" if raw_action in ("cancel", "rejected", "skip") else "submit"
+            if task_id and step_id:
+                await runtime.backend.resolve_subtask(
+                    str(task_id),
+                    step_id,
+                    action=action,
+                    data=data,
+                    applied=applied,
+                    run_id=run_id,
+                )
+                await _emit_task_steps(str(task_id), run_id)
+            if action == "cancel":
+                observation = f"用户跳过了该决策（{title}），未作处理，请按 playbook 兜底继续。"
+            else:
+                data_text = (
+                    json.dumps(data, ensure_ascii=False)[:4000]
+                    if data is not None
+                    else "（无附加数据）"
+                )
+                observation = f"用户已在侧边栏处理「{title}」，结构化回传：{data_text}"
+            decision_results: list[ToolMessage] = [
+                ToolMessage(content=observation, tool_call_id=str(first["id"]))
+            ]
+            for c in calls:
+                if c["id"] == first["id"]:
+                    continue
+                decision_results.append(
+                    ToolMessage(
+                        content="（本次因等待用户交互决策而中断，该调用未执行，请在下一轮重新发起）",
+                        tool_call_id=str(c["id"]),
+                    )
+                )
+            return {"messages": decision_results, "budget_state": dict(ctx.budget)}
 
         # 1) 风险预查（幂等读 state，重放安全）
         risky = [

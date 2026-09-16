@@ -25,8 +25,10 @@ def test_loop_state_keys() -> None:
 
 
 def test_event_types_frozen() -> None:
+    # message_reset：工具轮与终答轮的分隔标记（流式分段，w4）
     assert set(EVENT_TYPES) == {
         "message_delta",
+        "message_reset",
         "thought",
         "tool_call",
         "tool_result",

@@ -87,7 +87,11 @@ function TimersTab() {
 
   return (
     <div>
-      <div style={{ marginBottom: 12, textAlign: "right" }}>
+      <div className="page-action-bar">
+        <div>
+          <Typography.Text strong>定时任务</Typography.Text>
+          <div className="page-action-sub">按 cron 周期触发 Agent 执行</div>
+        </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
           新建定时任务
         </Button>

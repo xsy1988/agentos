@@ -108,7 +108,11 @@ function AgentsTab() {
 
   return (
     <div>
-      <div style={{ marginBottom: 12, textAlign: "right" }}>
+      <div className="page-action-bar">
+        <div>
+          <Typography.Text strong>Agent 实例</Typography.Text>
+          <div className="page-action-sub">人格 / 预算 / 模型绑定，对话默认使用启用中的 Agent</div>
+        </div>
         <Button
           type="primary"
           icon={<PlusOutlined />}
@@ -333,7 +337,11 @@ function ModelsTab() {
 
   return (
     <div>
-      <div style={{ marginBottom: 12, textAlign: "right" }}>
+      <div className="page-action-bar">
+        <div>
+          <Typography.Text strong>模型接入</Typography.Text>
+          <div className="page-action-sub">LLM / Embedding 提供方，密钥只进不出</div>
+        </div>
         <Space>
           <Tooltip title="从 LLM_Gateway 拉取模型清单：既有模型迁移为网关路由，新模型自动创建（模型统一由网关管理）">
             <Button

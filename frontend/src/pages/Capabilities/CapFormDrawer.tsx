@@ -81,19 +81,49 @@ function buildPayload(type: CapType, values: Record<string, unknown>): Record<st
       ),
     };
   }
-  // mcp / plugin
+  // mcp / plugin 共用的后端 env
   const env: Record<string, string> = {};
   const envPairs = (values.env_pairs as Array<{ key: string; value: string }>) || [];
   envPairs.forEach((p) => {
     if (p.key) env[p.key] = p.value;
   });
-  const payload: Record<string, unknown> = { transport: values.transport };
-  if (values.transport === "stdio") {
-    payload.command = values.command;
-    payload.args = ((values.args as string) || "").split(/\s+/).filter(Boolean);
-    if (Object.keys(env).length) payload.env = env;
-  } else {
-    payload.url = values.url;
+  const withTransport = (payload: Record<string, unknown>) => {
+    payload.transport = values.transport;
+    if (values.transport === "stdio") {
+      payload.command = values.command;
+      payload.args = ((values.args as string) || "").split(/\s+/).filter(Boolean);
+      if (Object.keys(env).length) payload.env = env;
+    } else {
+      payload.url = values.url;
+    }
+    return payload;
+  };
+  if (type === "mcp") {
+    // mcp 无前端页面，仅后端 transport
+    return withTransport({});
+  }
+  // plugin：按接入形态组装——前端清单（§3.5）与/或后端 transport
+  const form = String(values.plugin_form ?? "frontend");
+  const payload: Record<string, unknown> = {};
+  if (form === "frontend" || form === "both") {
+    const mode = String(values.frontend_mode ?? "iframe");
+    if (mode === "iframe") {
+      const frontend: Record<string, unknown> = { mode, url: values.frontend_url };
+      if (values.frontend_origin) frontend.allowlist_origin = values.frontend_origin;
+      if (values.frontend_sandbox) frontend.sandbox = values.frontend_sandbox;
+      payload.frontend = frontend;
+    } else {
+      let schema: unknown = {};
+      try {
+        schema = values.frontend_schema ? JSON.parse(values.frontend_schema as string) : {};
+      } catch {
+        throw new Error("前端 JSON UI schema 解析失败");
+      }
+      payload.frontend = { mode, schema };
+    }
+  }
+  if (form === "backend" || form === "both") {
+    withTransport(payload);
   }
   return payload;
 }
@@ -112,6 +142,10 @@ export default function CapFormDrawer({
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [transport, setTransport] = useState<"stdio" | "http">("stdio");
+  // plugin 接入形态：仅前端（展示类）/ 仅后端（处理类）/ 两者
+  const [pluginForm, setPluginForm] = useState<"frontend" | "backend" | "both">("frontend");
+  // plugin 前端渲染模式（§3.5）
+  const [frontendMode, setFrontendMode] = useState<"iframe" | "server_driven">("iframe");
   const [smokeResult, setSmokeResult] = useState<CapabilityCreatedOut | null>(null);
   const isEdit = cap !== null;
 
@@ -142,9 +176,27 @@ export default function CapFormDrawer({
         skill_body: type === "skill" ? parseSkillBody(String(payload.skill_md || "")) : undefined,
       });
       setTransport((payload.transport as "stdio" | "http") || "stdio");
+      if (type === "plugin") {
+        const fe = payload.frontend as Record<string, unknown> | undefined;
+        const pf: "frontend" | "backend" | "both" =
+          fe && payload.transport ? "both" : fe ? "frontend" : "backend";
+        const fm = (fe?.mode as "iframe" | "server_driven") || "iframe";
+        form.setFieldsValue({
+          plugin_form: pf,
+          frontend_mode: fm,
+          frontend_url: fe?.url as string | undefined,
+          frontend_origin: fe?.allowlist_origin as string | undefined,
+          frontend_sandbox: fe?.sandbox as string | undefined,
+          frontend_schema: fe?.schema ? JSON.stringify(fe.schema, null, 2) : undefined,
+        });
+        setPluginForm(pf);
+        setFrontendMode(fm);
+      }
     } else {
       form.resetFields();
       setTransport("stdio");
+      setPluginForm("frontend");
+      setFrontendMode("iframe");
     }
   }, [open, cap, form, type]);
 
@@ -252,7 +304,13 @@ export default function CapFormDrawer({
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ version: "0.1.0", risk_level: "read", transport: "stdio" }}
+          initialValues={{
+            version: "0.1.0",
+            risk_level: "read",
+            transport: "stdio",
+            plugin_form: "frontend",
+            frontend_mode: "iframe",
+          }}
         >
           <Form.Item
             name="name"
@@ -304,7 +362,60 @@ export default function CapFormDrawer({
             </Form.Item>
           )}
 
-          {(type === "mcp" || type === "plugin") && (
+          {type === "plugin" && (
+            <>
+              <Form.Item name="plugin_form" label="接入形态">
+                <Radio.Group onChange={(e) => setPluginForm(e.target.value)}>
+                  <Radio.Button value="frontend">仅前端（展示类）</Radio.Button>
+                  <Radio.Button value="backend">仅后端（处理类）</Radio.Button>
+                  <Radio.Button value="both">前端 + 后端</Radio.Button>
+                </Radio.Group>
+              </Form.Item>
+              {pluginForm !== "backend" && (
+                <>
+                  <Form.Item name="frontend_mode" label="前端渲染模式">
+                    <Radio.Group onChange={(e) => setFrontendMode(e.target.value)}>
+                      <Radio.Button value="iframe">iframe（外部页）</Radio.Button>
+                      <Radio.Button value="server_driven">server_driven（原生）</Radio.Button>
+                    </Radio.Group>
+                  </Form.Item>
+                  {frontendMode === "iframe" ? (
+                    <>
+                      <Form.Item
+                        name="frontend_url"
+                        label="前端页 URL"
+                        rules={[{ required: true, message: "iframe 模式需要前端页 URL" }]}
+                      >
+                        <Input placeholder="https://purchase-agent/decision" />
+                      </Form.Item>
+                      <Form.Item name="frontend_origin" label="允许 origin（postMessage 校验，可选）">
+                        <Input placeholder="https://purchase-agent" />
+                      </Form.Item>
+                      <Form.Item name="frontend_sandbox" label="sandbox（可选，留空用默认最小授权）">
+                        <Input placeholder="allow-scripts allow-forms allow-same-origin" />
+                      </Form.Item>
+                    </>
+                  ) : (
+                    <Form.Item
+                      name="frontend_schema"
+                      label="JSON UI schema（平台原生渲染，选/删/改一张表）"
+                      rules={[{ required: true, message: "server_driven 模式需要 JSON UI schema" }]}
+                    >
+                      <Input.TextArea
+                        rows={8}
+                        style={{ fontFamily: "monospace", fontSize: 12 }}
+                        placeholder={
+                          '{"table":{"columns":[{"key":"name","title":"供应商","editable":true}],"rows":[],"selectable":true,"deletable":true}}'
+                        }
+                      />
+                    </Form.Item>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
+          {(type === "mcp" || (type === "plugin" && pluginForm !== "frontend")) && (
             <>
               <Form.Item name="transport" label="传输方式">
                 <Radio.Group onChange={(e) => setTransport(e.target.value)}>

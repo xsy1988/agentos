@@ -4,12 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConfigProvider, theme as antdTheme, App as AntdApp } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { useAuthStore } from "@/store/auth";
-import { useUIStore } from "@/store/ui";
 import MainLayout from "@/layouts/MainLayout";
 import LoginPage from "@/pages/Login";
 import ChatPage from "@/pages/Chat";
 import RunsPage from "@/pages/Runs";
-import TaskTypesPage from "@/pages/TaskTypes";
+import TaskManagePage from "@/pages/TaskManage";
+import TaskDetailPage from "@/pages/TaskManage/TaskDetail";
 import KnowledgePage from "@/pages/Knowledge";
 import McpServicesPage from "@/pages/Capabilities/McpServices";
 import ToolsPage from "@/pages/Capabilities/Tools";
@@ -38,7 +38,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const { dark } = useUIStore();
   const { fetchMe, user, loading } = useAuthStore();
 
   useEffect(() => {
@@ -58,12 +57,13 @@ export default function App() {
         locale={zhCN}
         theme={{
           cssVar: true,
-          algorithm: dark
-            ? antdTheme.darkAlgorithm
-            : antdTheme.defaultAlgorithm,
+          // 统一浅色主题（Kimi/WorkBuddy 式）：不再提供深浅切换
+          algorithm: antdTheme.defaultAlgorithm,
           token: {
-            borderRadius: 6,
+            borderRadius: 8,
             fontSize: 14,
+            colorPrimary: "#4f6ef7",
+            colorBgLayout: "#f5f6fa",
           },
         }}
       >
@@ -82,7 +82,10 @@ export default function App() {
                 <Route index element={<ChatPage />} />
                 <Route path="chat" element={<ChatPage />} />
                 <Route path="runs" element={<RunsPage />} />
-                <Route path="task-types" element={<TaskTypesPage />} />
+                {/* 任务管理（原任务模板）：主任务实例列表 + 详情页；旧路径重定向 */}
+                <Route path="tasks" element={<TaskManagePage />} />
+                <Route path="tasks/:taskId" element={<TaskDetailPage />} />
+                <Route path="task-types" element={<Navigate to="/tasks?tab=templates" replace />} />
                 <Route path="knowledge" element={<KnowledgePage />} />
                 <Route path="knowledge/:folderId" element={<KnowledgePage />} />
                 <Route path="capabilities/mcp" element={<McpServicesPage />} />

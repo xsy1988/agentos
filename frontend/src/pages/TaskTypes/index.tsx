@@ -37,6 +37,7 @@ import type { CapabilityOut, StepTemplateIn, TaskTypeOut } from "@/api/types";
 const EMPTY_TEMPLATE = {
   name: "",
   description: "",
+  playbook: "",
   icon: "📋",
   color: "",
   sort_order: 0,
@@ -210,6 +211,7 @@ function TaskTypeDrawer({
   const [basic, setBasic] = useState({
     name: taskType?.name ?? EMPTY_TEMPLATE.name,
     description: taskType?.description ?? EMPTY_TEMPLATE.description,
+    playbook: taskType?.playbook ?? EMPTY_TEMPLATE.playbook,
     icon: taskType?.icon ?? EMPTY_TEMPLATE.icon,
     color: taskType?.color ?? EMPTY_TEMPLATE.color,
     sort_order: taskType?.sort_order ?? EMPTY_TEMPLATE.sort_order,
@@ -219,6 +221,8 @@ function TaskTypeDrawer({
     (taskType?.steps ?? []).map((s) => ({
       name: s.name,
       description: s.description,
+      playbook: s.playbook ?? "",
+      references: s.references ?? null,
       kind: s.kind,
       optional: s.optional,
       capability_hint: s.capability_hint ?? null,
@@ -284,6 +288,7 @@ function TaskTypeDrawer({
     setBasic({
       name: taskType.name,
       description: taskType.description,
+      playbook: taskType.playbook ?? "",
       icon: taskType.icon ?? EMPTY_TEMPLATE.icon,
       color: taskType.color ?? EMPTY_TEMPLATE.color,
       sort_order: taskType.sort_order,
@@ -293,6 +298,8 @@ function TaskTypeDrawer({
       taskType.steps.map((s) => ({
         name: s.name,
         description: s.description,
+        playbook: s.playbook ?? "",
+        references: s.references ?? null,
         kind: s.kind,
         optional: s.optional,
         capability_hint: s.capability_hint ?? null,
@@ -337,11 +344,22 @@ function TaskTypeDrawer({
             onChange={(e) => setBasic({ ...basic, name: e.target.value })}
           />
         </Form.Item>
-        <Form.Item label="目标说明（注入任务卡，新建任务时展示）">
+        <Form.Item label="目标说明（L1，注入任务卡，新建任务时展示）">
           <Input.TextArea
             rows={2}
             value={basic.description}
             onChange={(e) => setBasic({ ...basic, description: e.target.value })}
+          />
+        </Form.Item>
+        <Form.Item label="执行指引 playbook（L2，Worker 激活时注入任务卡，指导 Agent 怎么干）">
+          <Input.TextArea
+            rows={5}
+            value={basic.playbook}
+            placeholder={
+              "干什么（目标与产出）/ 怎么干（步骤顺序、输入输出）/ 会遇到什么问题 / 如何处理（ask_user 或 declare_subtask）/ 何时调哪个 mcp·tool·plugin"
+            }
+            style={{ fontFamily: "monospace", fontSize: 12 }}
+            onChange={(e) => setBasic({ ...basic, playbook: e.target.value })}
           />
         </Form.Item>
         <Space size={12} align="start">
@@ -428,6 +446,17 @@ function TaskTypeDrawer({
                 onClick={() => setSteps(steps.filter((_, k) => k !== i))}
               />
             </Space>
+            <Input.TextArea
+              rows={2}
+              style={{ marginTop: 6, fontFamily: "monospace", fontSize: 12 }}
+              placeholder="子任务 playbook（L2，可选：这一步怎么干、遇何问题、调哪个能力）"
+              value={s.playbook ?? ""}
+              onChange={(e) =>
+                setSteps(
+                  steps.map((x, k) => (k === i ? { ...x, playbook: e.target.value } : x)),
+                )
+              }
+            />
           </Card>
         ))}
       </div>
@@ -436,7 +465,9 @@ function TaskTypeDrawer({
         type="dashed"
         icon={<PlusOutlined />}
         style={{ marginTop: 8 }}
-        onClick={() => setSteps([...steps, { name: "", kind: "main", description: "" }])}
+        onClick={() =>
+          setSteps([...steps, { name: "", kind: "main", description: "", playbook: "" }])
+        }
       >
         添加子任务
       </Button>

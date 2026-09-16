@@ -154,12 +154,150 @@ async def _legal_crawl_status(args: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ---- 采购报价对比 Agent 桥接（决策4：外部服务，平台只做薄编排，§5）----
+# 采购 Agent 是独立外部服务（FastAPI+SQLite+异步+SSE，自带九段流水线与四类决策 REST），
+# 不并入平台。平台经标准外部 Worker 集成契约 REST 桥接：触发即返回 task_id（异步范式，
+# 同法规爬虫）+ 状态轮询 + 决策面拉取 + 决策回写 + 报告。服务不可用时返回友好提示、
+# 不抛异常（run 不因外部服务下线而崩）。
+
+
+def _procurement_base() -> str:
+    """采购 Agent REST 基址（procurement_agent_base_url 可覆盖）。"""
+    from app.core.config import settings
+
+    return settings.procurement_agent_base_url.rstrip("/")
+
+
+async def _procurement_request(
+    method: str, path: str, *, json_body: dict[str, Any] | None = None, timeout: float = 20.0
+) -> str:
+    """采购 Agent REST 统一请求 + 友好降级（外部服务下线不崩 run）。"""
+    import httpx
+
+    url = f"{_procurement_base()}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.request(method, url, json=json_body)
+            resp.raise_for_status()
+            if "application/json" in resp.headers.get("content-type", ""):
+                return json.dumps(resp.json(), ensure_ascii=False)
+            return resp.text[:8000]
+    except httpx.HTTPError as e:
+        return (
+            f"采购 Agent 服务不可用（{method} {url}）：{e}。"
+            "请确认外部服务已启动，并检查 procurement_agent_base_url 配置。"
+        )
+
+
+async def _procurement_trigger(args: dict[str, Any]) -> str:
+    """write 级：异步触发报价单解析，立即返回 task_id（不等完成，同法规爬虫范式）。"""
+    text = str(args.get("text") or "").strip()
+    report_ref = str(args.get("report_ref") or "").strip()
+    if not text and not report_ref:
+        return "参数错误：需提供 text（报价单文本）或 report_ref（报价单文件引用）之一。"
+    return await _procurement_request(
+        "POST", "/worker/trigger", json_body={"text": text, "report_ref": report_ref}, timeout=30.0
+    )
+
+
+async def _procurement_status(args: dict[str, Any]) -> str:
+    """read 级：轮询采购解析任务状态（九段流水线进度）。"""
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return "参数错误：task_id 不能为空。"
+    return await _procurement_request("GET", f"/worker/status/{task_id}")
+
+
+async def _procurement_decisions(args: dict[str, Any]) -> str:
+    """read 级：拉取待决策面（供应商建档/工艺确认/项目绑定/数据纠错），schema 与卡片/侧边栏对齐。"""
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return "参数错误：task_id 不能为空。"
+    return await _procurement_request("GET", f"/worker/decisions/{task_id}")
+
+
+async def _procurement_submit_decision(args: dict[str, Any]) -> str:
+    """write 级：把侧边栏结构化回传写回采购 Agent（落库）。"""
+    decision_id = str(args.get("decision_id") or "").strip()
+    if not decision_id:
+        return "参数错误：decision_id 不能为空。"
+    return await _procurement_request(
+        "POST", f"/worker/decisions/{decision_id}", json_body={"data": args.get("data")}
+    )
+
+
+async def _procurement_report(args: dict[str, Any]) -> str:
+    """read 级：拉取对比报告/AI 综合分析（产出可经知识库管道入库供跨任务检索）。"""
+    task_id = str(args.get("task_id") or "").strip()
+    if not task_id:
+        return "参数错误：task_id 不能为空。"
+    return await _procurement_request("GET", f"/worker/report/{task_id}")
+
+
+async def _probe_url(args: dict[str, Any]) -> str:
+    """read 级：依赖预检通用工具（任务架构规范「第零步依赖预检」）。
+
+    GET/HEAD 探测任意 URL：报告可达性/状态码/延迟/响应体摘要。超时与网络
+    错误不抛异常（返回结构化失败信息），run 不因探测目标下线而崩。
+    """
+    import time
+
+    import httpx
+
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return "参数错误：url 不能为空。"
+    method = str(args.get("method") or "GET").strip().upper()
+    if method not in ("GET", "HEAD"):
+        method = "GET"
+    timeout = min(float(args.get("timeout") or 10.0), 30.0)
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True
+        ) as client:
+            resp = await client.request(method, url)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            body_snippet = ""
+            if method == "GET" and "application/json" in resp.headers.get("content-type", ""):
+                body_snippet = resp.text[:500]
+            return json.dumps(
+                {
+                    "reachable": True,
+                    "url": url,
+                    "status_code": resp.status_code,
+                    "elapsed_ms": elapsed_ms,
+                    "content_type": resp.headers.get("content-type", ""),
+                    "body_snippet": body_snippet,
+                },
+                ensure_ascii=False,
+            )
+    except httpx.HTTPError as e:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return json.dumps(
+            {
+                "reachable": False,
+                "url": url,
+                "error": f"{type(e).__name__}: {e}",
+                "elapsed_ms": elapsed_ms,
+                "hint": "目标服务未启动、地址错误或网络不可达；请确认依赖服务状态。",
+            },
+            ensure_ascii=False,
+        )
+
+
 BUILTIN_TOOLS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
     "echo": _echo,
     "dangerous_demo": _dangerous_demo,
     "search_knowledge": _search_knowledge,
     "run_legal_crawl": _run_legal_crawl,
     "legal_crawl_status": _legal_crawl_status,
+    "probe_url": _probe_url,
+    "procurement_trigger": _procurement_trigger,
+    "procurement_status": _procurement_status,
+    "procurement_decisions": _procurement_decisions,
+    "procurement_submit_decision": _procurement_submit_decision,
+    "procurement_report": _procurement_report,
 }
 
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -109,12 +110,18 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     if run.status != "paused_awaiting_confirm":
         raise HTTPException(status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）")
+    # 统一结构化回传（§3.5）：data/applied 仅在存在时随 answer 一并投给引擎
+    inbox_payload: dict[str, Any] = {"answer": body.answer}
+    if body.data is not None:
+        inbox_payload["data"] = body.data
+    if body.applied is not None:
+        inbox_payload["applied"] = body.applied
     await db.execute(
         text(
             "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "
             "VALUES ('confirmation', :rid, CAST(:p AS jsonb), 'new')"
         ),
-        {"rid": run.id, "p": json.dumps({"answer": body.answer})},
+        {"rid": run.id, "p": json.dumps(inbox_payload, ensure_ascii=False)},
     )
     await db.execute(text("SELECT pg_notify('inbox_events', :rid)"), {"rid": str(run.id)})
     await db.commit()

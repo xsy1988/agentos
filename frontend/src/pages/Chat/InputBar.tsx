@@ -196,7 +196,7 @@ export default function InputBar({
     <div
       style={{
         padding: "12px 16px 6px",
-        borderTop: "1px solid rgba(128,128,128,0.2)",
+        borderTop: "1px solid var(--ant-color-border-secondary)",
       }}
       onDragOver={(e) => {
         e.preventDefault();
@@ -230,7 +230,7 @@ export default function InputBar({
                   gap: 6,
                   padding: "4px 8px",
                   borderRadius: 6,
-                  background: "rgba(128,128,128,0.12)",
+                  background: "var(--ant-color-fill-secondary)",
                   maxWidth: 280,
                 }}
               >
@@ -257,7 +257,7 @@ export default function InputBar({
                   <LoadingOutlined style={{ fontSize: 12 }} />
                 ) : (
                   <DeleteOutlined
-                    style={{ fontSize: 12, cursor: "pointer", color: "rgba(128,128,128,0.8)" }}
+                    style={{ fontSize: 12, cursor: "pointer", color: "var(--ant-color-text-secondary)" }}
                     onClick={() => removeAttachment(a.key)}
                   />
                 )}
@@ -323,47 +323,46 @@ export default function InputBar({
                 icon={<PaperClipOutlined />}
                 onClick={() => fileInputRef.current?.click()}
                 disabled={disabled}
-                style={{ color: "rgba(128,128,128,0.9)" }}
+                style={{ color: "var(--ant-color-text-secondary)" }}
               />
             </Tooltip>
-            <Tooltip title="本次对话使用的模型；「跟随 Agent」即使用 Agent 管理中绑定的模型">
-              <Select
-                size="small"
-                variant="borderless"
-                className="model-select"
-                style={{ minWidth: 160, maxWidth: 240 }}
-                // 下拉宽度独立于触发器：触发器窄（弱化），下拉要能看全模型名
-                popupMatchSelectWidth={320}
-                value={modelId ?? "follow-agent"}
-                onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
-                options={[
-                  { value: "follow-agent", label: "跟随 Agent 默认", model_name: "" },
-                  ...llms.map((m) => ({
-                    value: m.id,
-                    label: m.name,
-                    model_name: m.model_name,
-                  })),
-                ]}
-                // 下拉项两行：名称 + model_name 小字辅助行（长名称不截断，模型标识可辨识）。
-                // optionRender 回调参数是 FlattenOptionData 包装，自定义字段在 data 下。
-                optionRender={(option) => {
-                  const { label, model_name } = (
-                    option.data ?? option
-                  ) as {
-                    label?: ReactNode;
-                    model_name?: string;
-                  };
-                  return (
-                    <div className="model-option">
-                      <div className="model-option-name">{label}</div>
-                      {model_name ? (
-                        <div className="model-option-sub">{model_name}</div>
-                      ) : null}
-                    </div>
-                  );
-                }}
-              />
-            </Tooltip>
+            {/* 模型选择器不加 Tooltip：切模型时弹出提示气泡反而打扰 */}
+            <Select
+              size="small"
+              variant="borderless"
+              className="model-select"
+              style={{ minWidth: 160, maxWidth: 240 }}
+              // 下拉宽度独立于触发器：触发器窄（弱化），下拉要能看全模型名
+              popupMatchSelectWidth={320}
+              value={modelId ?? "follow-agent"}
+              onChange={(v: string) => setModelId(v === "follow-agent" ? undefined : v)}
+              options={[
+                { value: "follow-agent", label: "跟随 Agent 默认", model_name: "" },
+                ...llms.map((m) => ({
+                  value: m.id,
+                  label: m.name,
+                  model_name: m.model_name,
+                })),
+              ]}
+              // 下拉项两行：名称 + model_name 小字辅助行（长名称不截断，模型标识可辨识）。
+              // optionRender 回调参数是 FlattenOptionData 包装，自定义字段在 data 下。
+              optionRender={(option) => {
+                const { label, model_name } = (
+                  option.data ?? option
+                ) as {
+                  label?: ReactNode;
+                  model_name?: string;
+                };
+                return (
+                  <div className="model-option">
+                    <div className="model-option-name">{label}</div>
+                    {model_name ? (
+                      <div className="model-option-sub">{model_name}</div>
+                    ) : null}
+                  </div>
+                );
+              }}
+            />
           </Space>
 
           {disabled && runId ? (
@@ -390,7 +389,7 @@ export default function InputBar({
         style={{
           textAlign: "center",
           fontSize: 11,
-          color: "rgba(128,128,128,0.55)",
+          color: "var(--ant-color-text-tertiary)",
           marginTop: 6,
         }}
       >

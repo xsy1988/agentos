@@ -23,9 +23,12 @@ from app.modules.conversations.schemas import (
     MessageOut,
     SendMessageOut,
     SendMessageRunCreated,
+    SendMessageTaskSwitch,
+    TaskSwitchSuggestion,
 )
 from app.modules.runs.models import Run
 from app.modules.tasks import service as tasks_service
+from app.modules.tasks.models import TaskType
 
 router = APIRouter(
     prefix="/conversations",
@@ -170,6 +173,35 @@ async def send_message(
 
     # 会话↔主任务实例 1:1：老会话（迁移遗漏）在此惰性补建，引擎侧无需判空分叉
     task = await tasks_service.ensure_task_for_conversation(db, conv)
+
+    # 新主任务检测（ADR-27，两条路径）：
+    # ① 零选择新建的会话归「通用任务集」：首条消息高置信命中业务 Worker 时
+    #   **自动改绑**（不弹软提示、不换会话），Agent 据此判定任务类型；
+    # ② 已在某个业务 Worker 上的会话命中另一 Worker：保持软提示（用户抽板）。
+    if not body.force_current_task and body.text.strip() and not body.attachment_ids:
+        suggestion = await tasks_service.detect_task_switch(
+            db, body.text, current_task_type_id=task.task_type_id
+        )
+        if suggestion is not None:
+            common_id = await tasks_service.get_common_task_type_id(db)
+            current_tpl = await db.get(TaskType, task.task_type_id)
+            if task.task_type_id == common_id:
+                # 路径①：通用任务集 → 高置信 Worker，直接改绑后照常建 run。
+                # 本条消息就是判定依据，改绑后 run 的任务卡携带该 Worker 的 L1/L2。
+                await tasks_service.rebind_task_type(
+                    db, task, suggestion["task_type_id"]
+                )
+            else:
+                # 路径②：业务 Worker 之间的切换交回用户抽板
+                # 提交惰性补建的 task（若有），再返回软提示
+                await db.commit()
+                return SendMessageTaskSwitch(
+                    conversation_id=conv.id,
+                    suggested_task_type=TaskSwitchSuggestion(**suggestion),
+                    pending_text=body.text,
+                    current_task_type_name=current_tpl.name if current_tpl else task.title,
+                )
+
     if body.force_current_task and body.text.strip():
         # 用户选择「仍在本会话继续」：留痕，供任务卡提示模型聚焦当前主任务
         await tasks_service.append_out_of_scope(db, task, body.text)

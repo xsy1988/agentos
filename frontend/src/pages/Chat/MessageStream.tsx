@@ -2,7 +2,7 @@
  * 消息流（前端设计 §3.1 主区）。
  * 历史消息 + 实时 SSE 事件 + 流式 Agent 回复。
  */
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Typography, Tag, Collapse, Tooltip, Space, Image, Button } from "antd";
 import {
@@ -12,6 +12,9 @@ import {
   RobotOutlined,
   PaperClipOutlined,
   ProfileOutlined,
+  LoadingOutlined,
+  DownOutlined,
+  RightOutlined,
 } from "@ant-design/icons";
 import { conversationsApi } from "@/api/conversations";
 import { filesApi } from "@/api/files";
@@ -76,7 +79,7 @@ function AttachmentImage({ att }: { att: MsgAttachment }) {
   }
   if (!url) {
     return (
-      <div style={{ width: 96, height: 96, borderRadius: 6, background: "rgba(255,255,255,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11 }}>
+      <div style={{ width: 96, height: 96, borderRadius: 6, background: "var(--ant-color-fill-quaternary)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "var(--ant-color-text-tertiary)" }}>
         加载中…
       </div>
     );
@@ -104,16 +107,49 @@ function AttachmentList({ atts }: { atts: MsgAttachment[] }) {
   );
 }
 
-// 从 SSE 事件流累积 message_delta → 完整文本（后端 payload 字段为 text）
-function accumulateDeltas(events: RunEventOut[]): string {
-  let text = "";
+/** 事件流按「轮次」分段（需求 4/5）：一轮 = 模型输出文本 + 随后的工具/思考执行。
+ * 边界规则：过程事件（thought/tool_*)之后出现的新文本开启新一轮；后端的
+ * message_reset 是显式轮次标记（旧数据没有它也能正确分段）。
+ * 最后一个无过程事件的轮的文本即终答（流式渲染主体）；其余轮文本是过程说明。 */
+interface RunRound {
+  text: string;
+  traceEvents: RunEventOut[];
+}
+
+function splitRounds(events: RunEventOut[]): RunRound[] {
+  const rounds: RunRound[] = [];
+  let cur: RunRound = { text: "", traceEvents: [] };
   for (const e of events) {
     if (e.event_type === "message_delta") {
       const delta = (e.payload.text ?? e.payload.delta) as string;
-      if (delta) text += delta;
+      if (!delta) continue;
+      // 过程事件之后的文本 = 新一轮模型输出（上一轮已随工具执行收口）
+      if (cur.traceEvents.length > 0) {
+        rounds.push(cur);
+        cur = { text: "", traceEvents: [] };
+      }
+      cur.text += delta;
+    } else if (e.event_type === "message_reset") {
+      continue; // 显式标记：分段由「过程事件后出现新文本」规则覆盖，无需处理
+    } else if (TRACE_TYPES.has(e.event_type)) {
+      cur.traceEvents.push(e);
     }
+    // 其余事件（plan/confirm/status/error）由调用方单独处理
   }
-  return text;
+  if (cur.text || cur.traceEvents.length > 0) rounds.push(cur);
+  return rounds;
+}
+
+/** 中间轮模型输出（过程说明）：弱化排版，不与终答混排 */
+function RoundText({ text }: { text: string }) {
+  return (
+    <Typography.Paragraph
+      type="secondary"
+      style={{ fontSize: 13, whiteSpace: "pre-wrap", margin: "0 0 4px" }}
+    >
+      {text}
+    </Typography.Paragraph>
+  );
 }
 
 // 预算使用：从 run 落库的 budget_used 读（SSE 无 budget_used 事件；
@@ -194,7 +230,57 @@ function MessageItem({ msg }: { msg: MessageOut }) {
   );
 }
 
-export function EventItem({ event }: { event: RunEventOut }) {
+/** 确认事件是否已被用户处理：其后出现过 run_status(running)（confirm 恢复）即已处理。 */
+export function isConfirmationResolved(events: RunEventOut[], seq: number): boolean {
+  return events.some(
+    (x) =>
+      x.seq > seq &&
+      x.event_type === "run_status" &&
+      (x.payload.status as string) === "running",
+  );
+}
+
+/** 同一次工具调用与其结果合并为一条事件：分开展示「🛠 调用 / ✅ 结果」两条是噪音，
+ * 同一次调用本就是同一个可展开单元。规则：按工具名先进先出配对，结果挂进
+ * 对应 tool_call 的 payload（result/ok/elapsed_ms）；配不上对的调用保持无结果
+ * （执行中/丢失），配不上对的结果保留原事件单独渲染。
+ * 返回浅拷贝，不改 SSE store 里的原事件对象。 */
+export function mergeToolEvents(events: RunEventOut[]): RunEventOut[] {
+  const pending = new Map<string, RunEventOut[]>();
+  const out: RunEventOut[] = [];
+  for (const e of events) {
+    if (e.event_type === "tool_call") {
+      const name = String(e.payload.tool_name ?? e.payload.name ?? "unknown");
+      const clone = { ...e, payload: { ...e.payload } };
+      const queue = pending.get(name) ?? [];
+      queue.push(clone);
+      pending.set(name, queue);
+      out.push(clone);
+    } else if (e.event_type === "tool_result") {
+      const name = String(e.payload.name ?? e.payload.tool_name ?? "");
+      const target = pending.get(name)?.shift();
+      if (target) {
+        target.payload.result = e.payload.result ?? e.payload.content ?? "";
+        target.payload.ok = e.payload.ok ?? true;
+        if (e.payload.elapsed_ms != null) target.payload.elapsed_ms = e.payload.elapsed_ms;
+      } else {
+        out.push({ ...e, payload: { ...e.payload } });
+      }
+    } else {
+      out.push(e);
+    }
+  }
+  return out;
+}
+
+export function EventItem({
+  event,
+  resolved,
+}: {
+  event: RunEventOut;
+  /** confirmation_request 已被用户确认（run 已恢复）：标签翻转为已确认 */
+  resolved?: boolean;
+}) {
   const { event_type, payload } = event;
 
   if (event_type === "message_delta") return null; // 已累积渲染
@@ -274,7 +360,7 @@ export function EventItem({ event }: { event: RunEventOut }) {
             const text = t.text ?? t.task ?? "";
             return (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-                <span style={{ color: done ? "var(--ant-color-success)" : "rgba(128,128,128,0.5)" }}>
+                <span style={{ color: done ? "var(--ant-color-success)" : "var(--ant-color-text-quaternary)" }}>
                   {done ? "☑" : "○"}
                 </span>
                 <span style={{ textDecoration: done ? "line-through" : "none" }}>
@@ -289,8 +375,15 @@ export function EventItem({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "tool_call") {
+    // 调用与结果合并展示（mergeToolEvents 已把配对的 tool_result 挂进 payload）：
+    // 展开一个单元就能看到「参数 → 结果」全貌；无 result 字段 = 执行中或结果丢失
     const name = (payload.tool_name ?? payload.name ?? "unknown") as string;
     const args = payload.args ?? payload.arguments;
+    const result = payload.result as string | undefined;
+    const ok = (payload.ok as boolean) ?? true;
+    const elapsed = payload.elapsed_ms as number | undefined;
+    const resultStr =
+      result === undefined ? "" : typeof result === "string" ? result : JSON.stringify(result, null, 2);
     return (
       <Collapse
         size="small"
@@ -299,19 +392,59 @@ export function EventItem({ event }: { event: RunEventOut }) {
           key: "1",
           label: (
             <Space size={6}>
-              <ToolOutlined style={{ color: "var(--ant-color-text-secondary)" }} />
+              <ToolOutlined
+                style={{
+                  color: result === undefined
+                    ? "var(--ant-color-text-secondary)"
+                    : ok
+                      ? "var(--ant-color-success)"
+                      : "var(--ant-color-error)",
+                }}
+              />
               <Typography.Text style={{ fontSize: 12 }} className="font-mono-tight">
                 {name}
               </Typography.Text>
+              {result !== undefined && (
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  {ok ? "已完成" : "出错"}
+                  {typeof elapsed === "number" ? ` · ${(elapsed / 1000).toFixed(1)}s` : ""}
+                </Typography.Text>
+              )}
             </Space>
           ),
           children: (
-            <pre
-              className="font-mono-tight"
-              style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap" }}
-            >
-              {JSON.stringify(args, null, 2)}
-            </pre>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  调用参数
+                </Typography.Text>
+                <pre
+                  className="font-mono-tight"
+                  style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap" }}
+                >
+                  {JSON.stringify(args, null, 2)}
+                </pre>
+              </div>
+              {result !== undefined && (
+                <div>
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    执行结果
+                  </Typography.Text>
+                  <pre
+                    className="font-mono-tight"
+                    style={{
+                      fontSize: 12,
+                      margin: 0,
+                      whiteSpace: "pre-wrap",
+                      maxHeight: 200,
+                      overflow: "auto",
+                    }}
+                  >
+                    {resultStr.slice(0, 2000)}
+                  </pre>
+                </div>
+              )}
+            </div>
           ),
         }]}
       />
@@ -376,6 +509,15 @@ export function EventItem({ event }: { event: RunEventOut }) {
 
   if (event_type === "confirmation_request") {
     const reason = payload.reason as string;
+    if (resolved) {
+      return (
+        <Tooltip title="你已处理此确认，Agent 已继续执行">
+          <Tag color="success" style={{ marginBottom: 4, fontSize: 11 }}>
+            {reason === "high_risk_tool" ? "高危操作已确认" : "计划已确认"}
+          </Tag>
+        </Tooltip>
+      );
+    }
     return (
       <Tooltip title="Agent 已暂停，等待你在下方确认">
         <Tag color={reason === "high_risk_tool" ? "error" : "warning"} style={{ marginBottom: 4, fontSize: 11 }}>
@@ -428,14 +570,193 @@ export function EventItem({ event }: { event: RunEventOut }) {
   return null;
 }
 
-function LiveRun({ runId, replied }: { runId: string; replied?: boolean }) {
-  // replied：历史消息已含本 run 的 assistant 回复（终态后 messages 刷新到达）。
-  // 此时隐藏流式气泡交给 MessageItem，避免同一回复双渲染；
-  // 执行过程事件（thought/tool_call 等）历史里没有，继续展示。
-  const { eventsByRun } = useSSEStore();
-  const events = eventsByRun[runId] ?? [];
+// 执行过程事件类型：收纳进 ExecutionTrace 折叠面板（Kimi 式，默认收起）
+const TRACE_TYPES = new Set([
+  "thought",
+  "tool_call",
+  "tool_result",
+  "context_assembly",
+  "context_compacted",
+  "budget_warning",
+]);
 
-  const accumulated = accumulateDeltas(events);
+// 终态 run 集合：这些 run 的执行过程属于「历史」，可随时从事件表回放
+const TERMINAL_RUN_STATUSES = new Set(["done", "failed", "cancelled", "aborted", "timeout"]);
+
+/** 执行计划卡：只渲染最新一份（plan_updated 在单个 run 内会多次发射——
+ *  planner 首发 + 每次子任务状态变化 emit_task_steps 再发，逐事件渲染
+ *  会导致一屏多张重复卡，bug 根因即在此）。取最后一条，单卡随事件更新。 */
+function PlanCard({ payload }: { payload: Record<string, unknown> }) {
+  const tasks = (payload.items ?? payload.tasks ?? []) as {
+    seq?: number;
+    task?: string;
+    text?: string;
+    done?: boolean;
+    status?: string;
+    kind?: string;
+  }[];
+  const progress = payload.progress as { done?: number; total?: number } | undefined;
+  if (tasks.length === 0) return null;
+  return (
+    <div
+      style={{
+        marginBottom: 8,
+        padding: "8px 12px",
+        borderRadius: 8,
+        background: "rgba(22,119,255,0.05)",
+        borderLeft: "3px solid var(--ant-color-primary)",
+      }}
+    >
+      <Space size={6} style={{ marginBottom: 4 }}>
+        <ScheduleOutlined style={{ color: "var(--ant-color-primary)" }} />
+        <Typography.Text strong style={{ fontSize: 13 }}>
+          执行计划
+        </Typography.Text>
+        {progress && progress.total ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {progress.done ?? 0}/{progress.total}
+          </Typography.Text>
+        ) : null}
+      </Space>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {tasks.map((t, i) => {
+          const done = t.done ?? t.status === "done";
+          const text = t.text ?? t.task ?? "";
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+              <span style={{ color: done ? "var(--ant-color-success)" : "var(--ant-color-text-quaternary)" }}>
+                {done ? "☑" : "○"}
+              </span>
+              <span
+                style={{
+                  textDecoration: done ? "line-through" : "none",
+                  color: done ? "var(--ant-color-text-tertiary)" : undefined,
+                }}
+              >
+                {t.seq ? `${t.seq}. ` : ""}{t.kind === "branch" ? "[支线] " : ""}{text}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** 执行过程收纳面板：收起态一行摘要，展开后逐条渲染 EventItem。 */
+function ExecutionTrace({ events, running }: { events: RunEventOut[]; running: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (events.length === 0) return null;
+  const toolCalls = events.filter((e) => e.event_type === "tool_call").length;
+  const thoughts = events.filter((e) => e.event_type === "thought").length;
+  return (
+    <div className="exec-trace" style={{ marginBottom: 8 }}>
+      <div className="exec-trace-header" onClick={() => setOpen((v) => !v)}>
+        <Space size={6}>
+          {running ? (
+            <LoadingOutlined spin style={{ color: "var(--ant-color-primary)" }} />
+          ) : (
+            <ToolOutlined style={{ color: "var(--ant-color-text-tertiary)" }} />
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            执行过程
+          </Typography.Text>
+          {toolCalls > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              · {toolCalls} 次工具调用
+            </Typography.Text>
+          )}
+          {thoughts > 0 && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              · {thoughts} 轮思考
+            </Typography.Text>
+          )}
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {open ? "收起" : "展开"}
+          </Typography.Text>
+          {open ? <DownOutlined style={{ fontSize: 10 }} /> : <RightOutlined style={{ fontSize: 10 }} />}
+        </Space>
+      </div>
+      {open && (
+        <div className="exec-trace-body" style={{ padding: "4px 0 4px 12px" }}>
+          {events.map((e) => (
+            <EventItem key={e.seq} event={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 历史 run 的执行过程块：终态 run 的事件也已落库（GET /runs/{id}/events），
+ * 刷新/切页再进会话仍能看到当时的思考与工具调用（不再随内存丢失）。
+ * 按轮次分段展示：中间轮的过程说明 + 每轮独立的执行过程收纳块；
+ * 终答文本由消息流里的 assistant 消息渲染（hasReply 时不重复展示）。 */
+/** 落库 assistant 消息的纯文本（双渲染去重的比对基准） */
+function messageText(m: MessageOut): string {
+  const c = m.content as unknown;
+  if (typeof c === "string") return c;
+  const t = (c as Record<string, unknown> | null)?.text;
+  return typeof t === "string" ? t : "";
+}
+
+/**
+ * 轮次文本是否已作为落库 assistant 消息渲染过：开头 60 字符被某条
+ * 已渲染消息包含即视为重复（旧数据无 message_reset 时轮文本会拼接下轮
+ * 开头，取前缀比对可容）。命中则过程区不再重复灰字，防双渲染。
+ */
+function repliedHit(text: string, repliedTexts: string[]): boolean {
+  const head = text.trim().slice(0, 60);
+  if (!head) return false;
+  return repliedTexts.some((m) => m.includes(head));
+}
+
+function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: string[] }) {
+  const { data: events = [] } = useQuery({
+    queryKey: ["run-events", runId],
+    queryFn: () => runsApi.events(runId),
+    staleTime: 5 * 60_000,
+  });
+  const rounds = splitRounds(events);
+  // hasReply：该 run 的终答已作为消息渲染（防终答双渲染）；中间轮文本
+  // 已落库（如 verify 重试产生多条消息）同样要去重
+  const hasReply = repliedTexts.length > 0;
+  const lastIdx = rounds.length - 1;
+  const anything = rounds.some(
+    (r, i) =>
+      r.traceEvents.length > 0 ||
+      (i === lastIdx ? !hasReply && !!r.text : !!r.text && !repliedHit(r.text, repliedTexts)),
+  );
+  if (!anything) return null;
+  return (
+    <>
+      {rounds.map((r, i) => (
+        <Fragment key={i}>
+          {r.traceEvents.length > 0 && r.text && !repliedHit(r.text, repliedTexts) && (
+            <RoundText text={r.text} />
+          )}
+          {r.traceEvents.length > 0 && (
+            <ExecutionTrace events={mergeToolEvents(r.traceEvents)} running={false} />
+          )}
+          {/* 无回复消息的终答残留（如 failed）：也展示出来 */}
+          {i === lastIdx && r.traceEvents.length === 0 && !hasReply && r.text && (
+            <RoundText text={r.text} />
+          )}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[] }) {
+  // replied：历史消息已含本 run 的 assistant 回复（终态后 messages 刷新到达）。
+  // 此时隐藏流式气泡交给 MessageItem，避免同一回复双渲染；中间轮文本
+  // 已落库（verify 重试等多终答场景）同样去重。
+  const replied = repliedTexts.length > 0;
+  const { eventsByRun, statusByRun } = useSSEStore();
+  const events = eventsByRun[runId] ?? [];
+  const sseStatus = statusByRun[runId];
+  const running = sseStatus === "live" || sseStatus === "connecting" || sseStatus == null;
 
   // 同时拉取 run 详情：预算指示读 budget_used 落库值
   const { data: run } = useQuery({
@@ -445,19 +766,48 @@ function LiveRun({ runId, replied }: { runId: string; replied?: boolean }) {
   });
   const budget = extractBudgetUsed(run);
 
+  // 分流渲染（按轮次分段）：每轮「过程说明文本 + 执行过程收纳」；
+  // 执行计划单卡 + 错误/待确认醒目保留；终答轮文本流式渲染
+  const rounds = splitRounds(events);
+  const lastRound = rounds[rounds.length - 1];
+  // 终答轮：最后一个无过程事件的轮；有过程事件的末轮文本是过程说明（工具还在跑）
+  const replyText = lastRound && lastRound.traceEvents.length === 0 ? lastRound.text : "";
+  const planEvent = [...events].reverse().find((e) => e.event_type === "plan_updated");
+  const notableEvents = events.filter(
+    (e) => e.event_type === "error" || e.event_type === "confirmation_request",
+  );
+
+  // 提交后空窗期反馈（Kimi 式）：不能只看 events.length —— 后端首发事件往往是
+  // run_status(running)（不在收纳类型里），到达后“无事件”条件即失效，而首个
+  // thought 要等 LLM 首轮返回（可能几十秒）才出现，主区会完全空窗。
+  // 改为看「无实质反馈」：任何轮次内容/计划一个都没有时保持“正在思考”。
+  const waiting = running && !replied && rounds.length === 0 && !planEvent;
+
   return (
     <div style={{ marginBottom: 12 }}>
-      {/* 预算指示 */}
+      {/* 提交反馈：正在思考动效（首个事件到达前） */}
+      {waiting && (
+        <div className="thinking-indicator">
+          <span className="thinking-text">正在思考</span>
+          <span className="thinking-dots">
+            <i />
+            <i />
+            <i />
+          </span>
+        </div>
+      )}
+
+      {/* 预算指示：小字弱化，不抢占视觉 */}
       {budget && (
         <div
           style={{
             display: "flex",
             alignItems: "center",
             gap: 12,
-            marginBottom: 8,
-            padding: "4px 8px",
+            marginBottom: 4,
+            padding: "2px 8px",
             fontSize: 11,
-            color: "rgba(128,128,128,0.7)",
+            color: "var(--ant-color-text-tertiary)",
           }}
         >
           <span>迭代 {budget.iterations}/{budget.max}</span>
@@ -470,18 +820,40 @@ function LiveRun({ runId, replied }: { runId: string; replied?: boolean }) {
         </div>
       )}
 
-      {/* SSE 事件渲染 */}
-      {events
-        .filter((e) => e.event_type !== "message_delta")
-        .map((e) => (
-          <EventItem key={e.seq} event={e} />
-        ))}
+      {/* 每轮分段：过程说明（弱化，已落库的跳过）+ 本轮执行过程收纳（调用/结果已合并） */}
+      {rounds.map((r, i) => (
+        <Fragment key={i}>
+          {r.traceEvents.length > 0 && r.text && !repliedHit(r.text, repliedTexts) && (
+            <RoundText text={r.text} />
+          )}
+          {r.traceEvents.length > 0 && (
+            <ExecutionTrace
+              events={mergeToolEvents(r.traceEvents)}
+              running={running && i === rounds.length - 1}
+            />
+          )}
+        </Fragment>
+      ))}
+      
+      {/* 执行计划：只渲染最新一份，随 plan_updated 实时更新 */}
+      {planEvent && <PlanCard payload={planEvent.payload} />}
 
-      {/* 流式 Agent 回复：历史消息未接管时才渲染（终态交接，防双渲染）。
-          assistant 全宽文档式，与 MessageItem 一致 */}
-      {accumulated && !replied && (
+      {/* 错误与待确认：醒目展示，不收纳；已被用户处理的确认翻转为已确认 */}
+      {notableEvents.map((e) => (
+        <EventItem
+          key={e.seq}
+          event={e}
+          resolved={
+            e.event_type === "confirmation_request" && isConfirmationResolved(events, e.seq)
+          }
+        />
+      ))}
+
+      {/* 流式 Agent 回复（仅终答轮文本，中间轮已随执行过程分段展示）：
+          历史消息未接管时才渲染（终态交接，防双渲染）。assistant 全宽文档式 */}
+      {replyText && !replied && (
         <div className="msg-doc" style={{ marginBottom: 12 }}>
-          <MarkdownRenderer content={accumulated} />
+          <MarkdownRenderer content={replyText} />
           <span className="cursor-blink">▎</span>
         </div>
       )}
@@ -492,9 +864,12 @@ function LiveRun({ runId, replied }: { runId: string; replied?: boolean }) {
 export default function MessageStream({
   convId,
   activeRun,
+  optimistic,
 }: {
   convId: string;
   activeRun: ActiveRun | null;
+  /** 乐观用户消息（发送即上屏）：真实消息落库后自动接管，避免双渲染 */
+  optimistic?: { text: string; key: string } | null;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -503,6 +878,13 @@ export default function MessageStream({
   const { data: messages = [] } = useQuery({
     queryKey: ["messages", convId],
     queryFn: () => conversationsApi.messages(convId),
+  });
+  // 本会话全部 run（含终态）：历史执行过程穿插渲染的数据源（需求 4）。
+  // 历史事件不可变，staleTime 放宽降低重复拉取
+  const { data: convRuns = [] } = useQuery({
+    queryKey: ["runs", "conv", convId],
+    queryFn: () => runsApi.list({ conversation_id: convId, limit: 100 }),
+    staleTime: 60_000,
   });
   // 向前翻页的更早消息（本地叠加，不进 react-query 缓存：切会话即弃）
   const [older, setOlder] = useState<MessageOut[]>([]);
@@ -522,7 +904,7 @@ export default function MessageStream({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+  }, [messages, activeRun, optimistic]);
 
   // prepend 后保持视口停在原内容处（滚动容器是父级 overflow:auto 的 div）
   useEffect(() => {
@@ -568,17 +950,72 @@ export default function MessageStream({
           </Button>
         </div>
       )}
-      {all.map((msg) => (
-        <MessageItem key={msg.id} msg={msg} />
-      ))}
+      {all.map((msg, idx) => {
+        // 终态历史 run 的思考/工具调用穿插在消息间（需求 3/4）：挂在触发它的
+        // 用户消息之后、下一条用户消息之前——多次触发就分多段展开，各自收起。
+        // 注意用 >=：run 与触发它的用户消息在同一事务创建，时间戳完全相同
+        const nextUser = all.slice(idx + 1).find((m) => m.role === "user");
+        const historyRuns =
+          msg.role === "user"
+            ? convRuns.filter(
+                (r) =>
+                  r.id !== activeRun?.runId &&
+                  TERMINAL_RUN_STATUSES.has(r.status) &&
+                  r.created_at >= msg.created_at &&
+                  (!nextUser || r.created_at < nextUser.created_at),
+              )
+            : [];
+        return (
+          <Fragment key={msg.id}>
+            <MessageItem msg={msg} />
+            {historyRuns.map((r) => (
+              <RunTraceBlock
+                key={r.id}
+                runId={r.id}
+                repliedTexts={all
+                  .filter((m) => m.role === "assistant" && m.run_id === r.id)
+                  .map(messageText)}
+              />
+            ))}
+          </Fragment>
+        );
+      })}
+
+      {/* 乐观用户消息：提交即上屏（Kimi 式即时反馈）；真实消息落库到达后自动隐藏。
+          半透明微降表示“发送中”，接管后完全态 */}
+      {optimistic &&
+        !messages.some(
+          (m) =>
+            m.role === "user" &&
+            ((m.content as Record<string, unknown>).text ?? "") === optimistic.text,
+        ) && (
+          <div
+            key={optimistic.key}
+            style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}
+          >
+            <div
+              className="msg-bubble"
+              style={{
+                maxWidth: "80%",
+                padding: "8px 14px",
+                borderRadius: 8,
+                background: "var(--ant-color-primary)",
+                color: "#fff",
+                opacity: 0.75,
+              }}
+            >
+              <div style={{ whiteSpace: "pre-wrap", fontSize: 14 }}>{optimistic.text}</div>
+            </div>
+          </div>
+        )}
 
       {/* 实时运行事件：终态后保留（执行过程历史消息不存，刷新前可查） */}
       {activeRun && (
         <LiveRun
           runId={activeRun.runId}
-          replied={all.some(
-            (m) => m.role === "assistant" && m.run_id === activeRun.runId,
-          )}
+          repliedTexts={all
+            .filter((m) => m.role === "assistant" && m.run_id === activeRun.runId)
+            .map(messageText)}
         />
       )}
 

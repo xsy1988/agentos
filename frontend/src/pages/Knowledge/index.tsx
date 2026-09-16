@@ -467,7 +467,7 @@ function FolderDetail({ folderId }: { folderId: string }) {
             >
               <div style={{ flex: 1, overflow: "hidden" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <FileOutlined style={{ color: "rgba(128,128,128,0.8)" }} />
+                  <FileOutlined style={{ color: "var(--ant-color-text-secondary)" }} />
                   <Typography.Text ellipsis style={{ fontSize: 13 }}>
                     {doc.title}
                   </Typography.Text>

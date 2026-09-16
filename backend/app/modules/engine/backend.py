@@ -8,9 +8,10 @@
 
 from typing import Any, Protocol
 
-# 九类事件的合法值（模块详细设计 §1.1.7）
+# 九类事件的合法值（模块详细设计 §1.1.7）+ message_reset（轮次分隔，见 graph agent 节点）
 EVENT_TYPES = (
     "message_delta",
+    "message_reset",
     "thought",
     "tool_call",
     "tool_result",
@@ -93,6 +94,19 @@ class EngineBackend(Protocol):
         self, task_id: str, step_id: str, answer: str, run_id: str
     ) -> bool:
         """回填用户答复并把支线置 done。"""
+        ...
+
+    async def resolve_subtask(
+        self,
+        task_id: str,
+        step_id: str,
+        *,
+        action: str,
+        data: Any = None,
+        applied: list | None = None,
+        run_id: str,
+    ) -> bool:
+        """回填侧边栏结构化回传（§3.5）：action=submit 置 done / cancel 置 skipped。"""
         ...
 
     async def finalize_task_plan(

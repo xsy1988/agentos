@@ -264,7 +264,7 @@ export default function RunTimeline({
   return (
     <div style={{ display: "flex", gap: 12, height: "100%" }}>
       {/* 左侧：run 选择列表 */}
-      <div style={{ width: 240, overflow: "auto", borderRight: "1px solid rgba(128,128,128,0.2)" }}>
+      <div style={{ width: 240, overflow: "auto", borderRight: "1px solid var(--ant-color-border-secondary)" }}>
         <List
           size="small"
           dataSource={recentRuns}
@@ -301,7 +301,7 @@ export default function RunTimeline({
             alignItems: "center",
             gap: 8,
             padding: "4px 8px",
-            borderBottom: "1px solid rgba(128,128,128,0.2)",
+            borderBottom: "1px solid var(--ant-color-border-secondary)",
           }}
         >
           <Space size={4}>

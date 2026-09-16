@@ -4,8 +4,10 @@
  * 布局：任务看板（左，替代原会话流水，ADR-23） | 任务条 + 消息流（SSE）+ 输入栏
  * 关键能力：SSE 流式渲染、思考/工具折叠态、任务进度、支线子任务确认、新主任务软提示、断线重连
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Layout, Alert, message as antdMessage } from "antd";
+import { MessageOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { conversationsApi } from "@/api/conversations";
 import { runsApi } from "@/api/runs";
@@ -18,7 +20,7 @@ import TaskBoard from "./TaskBoard";
 import TaskHeader from "./TaskHeader";
 import MessageStream from "./MessageStream";
 import InputBar from "./InputBar";
-import ConfirmCard from "./ConfirmCard";
+import CardRenderer from "./CardRenderer";
 import TaskSwitchCard from "./TaskSwitchCard";
 
 const { Sider, Content } = Layout;
@@ -39,9 +41,12 @@ export default function ChatPage() {
   // 新主任务软提示（ADR-27）：不落消息不建 run，等用户拍板
   const [suggestion, setSuggestion] = useState<SendMessageTaskSwitch | null>(null);
   const [switching, setSwitching] = useState(false);
+  // 乐观用户消息（发送即上屏）：Kimi 式即时反馈，真实消息落库后 MessageStream 自动接管
+  const [optimistic, setOptimistic] = useState<{ text: string; key: string } | null>(null);
   const queryClient = useQueryClient();
   const { setActiveRun: setCtxRun, reconnecting } = useSSEStore();
   const openContextPanel = useUIStore((s) => s.openContextPanel);
+  const openSidebar = useUIStore((s) => s.openSidebar);
 
   // SSE 回调：处理确认中断（后端事件名为 confirmation_request，
   // payload 结构 {reason: plan_review|high_risk_tool, payload: {...}}）
@@ -69,6 +74,9 @@ export default function ChatPage() {
         setActiveRun((prev) =>
           prev ? { ...prev, status } : null,
         );
+        // 侧边栏 plugin 前端直接经 runsApi.confirm 回传（不经本页 handleConfirm），
+        // 故靠 run_status 恢复运行时清除确认卡（paused 态保留，等用户处理）
+        if (status !== "paused_awaiting_confirm") setConfirming(null);
         // 终态时刷新消息列表
         if (["done", "failed", "aborted", "timeout"].includes(status)) {
           if (activeConvId) {
@@ -95,24 +103,34 @@ export default function ChatPage() {
     forceCurrentTask?: boolean,
   ) => {
     if (!activeConvId) return;
-    const result = await conversationsApi.sendMessage(
-      activeConvId,
-      text,
-      modelProviderId,
-      attachmentIds,
-      confirmUpload,
-      forceCurrentTask,
-    );
+    // 乐观上屏：不等后端落库，消息立即出现在消息流（提交卡死感反馈的核心）
+    setOptimistic({ text, key: `optimistic-${Date.now()}` });
+    let result;
+    try {
+      result = await conversationsApi.sendMessage(
+        activeConvId,
+        text,
+        modelProviderId,
+        attachmentIds,
+        confirmUpload,
+        forceCurrentTask,
+      );
+    } catch (e) {
+      // 发送失败：撤回乐观气泡并向上抛（InputBar 捕获后保留输入内容/处理 428 确认门）
+      setOptimistic(null);
+      throw e;
+    }
     // 软提示：不落消息不建 run，弹提示卡由用户决定（ADR-27）
     if (result.kind === "task_switch_suggested") {
+      setOptimistic(null); // 消息未落库，内容由提示卡的 pending_text 展示
       setSuggestion(result);
       return;
     }
     setSuggestion(null);
     setActiveRun({ runId: result.run_id, status: "running" });
     setCtxRun(result.run_id);
-    // 发送消息 = 具体事件：自动展开右栏任务详情
-    openContextPanel();
+    // 任务详情侧边栏不自动打开（仅用户点「任务详情/详情」才开）：
+    // 自动弹出抢占主区视线，用户抱怨过；执行反馈已在消息流内联呈现
     // 用户消息立即上屏：不等 run 终态（run 可能停在等待确认，届时才刷新就太晚）
     queryClient.invalidateQueries({ queryKey: ["messages", activeConvId] });
     // 会话列表排序（last_message_at）同步刷新
@@ -136,37 +154,30 @@ export default function ChatPage() {
   };
 
   // 看板选中任务：进入该任务实例的会话（会话 id 在 task.conversation 上）。
-  // 若最近有暂停待确认的 run，一并恢复关注。
+  // 若最近有未终态 run（running / 待确认），一并恢复关注 —— 否则切走再切回，
+  // 执行中的 run 会凭空消失（LiveRun 不渲染、SSE 断开），像是“信息被清空”。
   const handleSelectTask = useCallback(
     async (task: TaskOut, runId?: string | null) => {
       setActiveTaskId(task.id);
       setSuggestion(null);
+      setOptimistic(null);
       const convId = task.conversation?.id ?? null;
       if (!convId) return;
       setActiveConvId(convId);
-      setActiveRun(runId ? { runId, status: "running" } : null);
       setConfirming(null);
-      if (runId) {
-        setCtxRun(runId);
-        openContextPanel();
-      }
-      try {
-        const paused = await runsApi.list({
-          conversation_id: convId,
-          status: "paused_awaiting_confirm",
-          limit: 1,
-        });
-        if (paused.length > 0) {
-          setActiveRun({ runId: paused[0].id, status: "paused_awaiting_confirm" });
-          setCtxRun(paused[0].id);
-          openContextPanel();
-        }
-      } catch {
-        // 恢复失败不阻断任务浏览
+      // 恢复未终态 run：优先显式 runId，其次看板返回的 active_run_id
+      // （后端 NON_TERMINAL_RUN_STATUSES：pending / running / paused_awaiting_confirm）。
+      // 恢复后 useSSE 以 after=0 重放全部事件，执行过程/确认卡都能重建。
+      const resumeRunId = runId ?? task.active_run_id ?? null;
+      if (resumeRunId) {
+        setActiveRun({ runId: resumeRunId, status: "running" });
+        setCtxRun(resumeRunId);
+      } else {
+        setActiveRun(null);
       }
       queryClient.invalidateQueries({ queryKey: ["task", task.id] });
     },
-    [setCtxRun, openContextPanel, queryClient],
+    [setCtxRun, queryClient],
   );
 
   // 提示卡「新开会话并发送」：用建议模板新建任务实例并带上原消息
@@ -187,7 +198,6 @@ export default function ChatPage() {
       if (res.run_id) {
         setActiveRun({ runId: res.run_id, status: "running" });
         setCtxRun(res.run_id);
-        openContextPanel();
       } else {
         setActiveRun(null);
       }
@@ -216,19 +226,33 @@ export default function ChatPage() {
         setActiveRun(null);
         setConfirming(null);
         setSuggestion(null);
+        setOptimistic(null);
         setCtxRun(null);
       }
     },
     [activeTaskId, setCtxRun],
   );
 
+  // 深链 /chat?task=<id>（任务管理页「去会话」）：选中该任务并进入其会话，
+  // 消费后 replace 清参，避免刷新/后退时重复触发
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const taskParam = searchParams.get("task");
+    if (!taskParam) return;
+    tasksApi
+      .get(taskParam)
+      .then((t) => handleSelectTask(t))
+      .catch(() => antdMessage.error("任务不存在或已被删除"))
+      .finally(() => setSearchParams({}, { replace: true }));
+  }, [searchParams, setSearchParams, handleSelectTask]);
+
   return (
     <Layout style={{ height: "100%", background: "transparent" }}>
       <Sider
-        width={260}
+        width={272}
         style={{
           background: "var(--ant-color-bg-container)",
-          borderRight: "1px solid rgba(128,128,128,0.2)",
+          borderRight: "1px solid var(--ant-color-border-secondary)",
           overflow: "auto",
           height: "100%",
         }}
@@ -255,6 +279,7 @@ export default function ChatPage() {
               <MessageStream
                 convId={activeConvId}
                 activeRun={activeRun}
+                optimistic={optimistic}
               />
             </div>
             {suggestion && (
@@ -266,10 +291,12 @@ export default function ChatPage() {
               />
             )}
             {confirming && (
-              <ConfirmCard
+              <CardRenderer
                 payload={confirming.payload}
+                runId={confirming.runId}
                 onConfirm={(answer) => handleConfirm(answer ?? "approved")}
                 onReject={() => handleConfirm("rejected")}
+                onOpenSidebar={openSidebar}
               />
             )}
             <InputBar
@@ -279,17 +306,15 @@ export default function ChatPage() {
             />
           </>
         ) : (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <span style={{ color: "rgba(128,128,128,0.5)" }}>
-              从左侧任务看板选择任务，或「新建主任务」开始
-            </span>
+          <div className="chat-empty" style={{ flex: 1 }}>
+            <MessageOutlined style={{ fontSize: 40, color: "var(--ant-color-primary)", opacity: 0.35 }} />
+            <div className="chat-empty-title">开始一段新的对话</div>
+            <div className="chat-empty-sub">
+              点击左侧「新建会话」，直接描述你要做的事
+            </div>
+            <div className="chat-empty-sub" style={{ fontSize: 12 }}>
+              Agent 会根据你的消息自动判定任务类型，无需预先选择
+            </div>
           </div>
         )}
       </Content>

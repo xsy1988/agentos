@@ -49,7 +49,7 @@ export default function NotificationBell() {
           justifyContent: "space-between",
           alignItems: "center",
           padding: "4px 8px",
-          borderBottom: "1px solid rgba(128,128,128,0.2)",
+          borderBottom: "1px solid var(--ant-color-border-secondary)",
         }}
       >
         <Typography.Text strong>通知中心</Typography.Text>

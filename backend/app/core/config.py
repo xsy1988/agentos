@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # 真实上游密钥由网关集中管理（providers.yaml），平台只持有网关 key
     llm_gateway_base_url: str = "http://localhost:18080/v1"
     llm_gateway_api_key: str = "local-demo-key"
+    # 采购报价对比 Agent（决策4：保持外部服务，平台经标准 REST 契约薄桥接，§5）；
+    # 其决策页作为 plugin 前端（iframe）由侧边栏加载，基址同源
+    procurement_agent_base_url: str = "http://localhost:8100"
 
 
 settings = Settings()
