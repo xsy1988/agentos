@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     # 采购报价对比 Agent（决策4：保持外部服务，平台经标准 REST 契约薄桥接，§5）；
     # 其决策页作为 plugin 前端（iframe）由侧边栏加载，基址同源
     procurement_agent_base_url: str = "http://localhost:8100"
+    # 第三方开发者开放注册接口（/api/v1/open）静态令牌；None = 开放接口停用（503）
+    open_api_token: str | None = None
 
 
 settings = Settings()

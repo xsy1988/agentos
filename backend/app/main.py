@@ -26,6 +26,7 @@ from app.modules.knowledge.service import seed_default_folders
 from app.modules.memory.router import router as memory_router
 from app.modules.models_module.router import router as models_router
 from app.modules.notifications.router import router as notifications_router
+from app.modules.open_api.router import router as open_api_router
 from app.modules.runs.router import router as runs_router
 from app.modules.scheduler.router import router as scheduler_router
 from app.modules.scheduler.runtime import scheduler_runtime
@@ -79,6 +80,8 @@ app.include_router(notifications_router, prefix=API_PREFIX)
 app.include_router(skills_router, prefix=API_PREFIX)
 app.include_router(workers_router, prefix=API_PREFIX)
 app.include_router(tasks_router, prefix=API_PREFIX)
+# 第三方开发者开放注册接口（静态令牌鉴权，与用户 JWT 体系隔离）
+app.include_router(open_api_router, prefix=API_PREFIX)
 
 
 @app.get("/health")

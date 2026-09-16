@@ -449,6 +449,50 @@ def create_worker(
     return meta
 
 
+def _write_sub_workers(vdir: Path, sub_workers: list[dict[str, Any]] | None) -> None:
+    """把子任务清单逐个写成 sub_workers/<名>/WORKER.md。"""
+    for st in sub_workers or []:
+        sub_dir = vdir / "sub_workers" / str(st["name"])
+        sub_dir.mkdir(exist_ok=True)
+        sub_dir.joinpath("WORKER.md").write_text(
+            dump_md(
+                {
+                    "name": st["name"],
+                    "seq": st.get("seq", 0),
+                    "kind": st.get("kind", "main"),
+                    "optional": bool(st.get("optional", False)),
+                    "description": st.get("description", ""),
+                    "capability_hint": st.get("capability_hint") or [],
+                },
+                st.get("playbook", ""),
+            ),
+            encoding="utf-8",
+        )
+
+
+def _dump_worker_md(
+    name: str,
+    description: str,
+    icon: str | None,
+    color: str | None,
+    capabilities: list[str] | None,
+    references: list[dict] | None,
+    playbook: str,
+) -> str:
+    """主 WORKER.md：有 playbook 用正文，无则落脚手架模板。"""
+    if playbook:
+        front: dict[str, Any] = {"name": name, "description": description}
+        if icon:
+            front["icon"] = icon
+        if color:
+            front["color"] = color
+        front["capabilities"] = capabilities or []
+        if references:
+            front["references"] = references
+        return dump_md(front, playbook)
+    return _dump_main_md(name, description, icon, color, capabilities, references)
+
+
 def ensure_worker(
     name: str,
     *,
@@ -469,44 +513,54 @@ def ensure_worker(
     vdir = d / "v1"
     (vdir / "sub_workers").mkdir(parents=True)
     (vdir / "references").mkdir()
-    if playbook:
-        front: dict[str, Any] = {"name": name, "description": description}
-        if icon:
-            front["icon"] = icon
-        if color:
-            front["color"] = color
-        front["capabilities"] = capabilities or []
-        if references:
-            front["references"] = references
-        (vdir / "WORKER.md").write_text(dump_md(front, playbook), encoding="utf-8")
-    else:
-        (vdir / "WORKER.md").write_text(
-            _dump_main_md(name, description, icon, color, capabilities, references),
-            encoding="utf-8",
-        )
-    for st in sub_workers or []:
-        sub_dir = vdir / "sub_workers" / str(st["name"])
-        sub_dir.mkdir(exist_ok=True)
-        sub_dir.joinpath("WORKER.md").write_text(
-            dump_md(
-                {
-                    "name": st["name"],
-                    "seq": st.get("seq", 0),
-                    "kind": st.get("kind", "main"),
-                    "optional": bool(st.get("optional", False)),
-                    "description": st.get("description", ""),
-                    "capability_hint": st.get("capability_hint") or [],
-                },
-                st.get("playbook", ""),
-            ),
-            encoding="utf-8",
-        )
+    (vdir / "WORKER.md").write_text(
+        _dump_worker_md(name, description, icon, color, capabilities, references, playbook),
+        encoding="utf-8",
+    )
+    _write_sub_workers(vdir, sub_workers)
     _write_manifest(name, {"enabled": True})
     invalidate(name)
     logger.info("Worker 文件包已 seed：%s", d)
     meta = get_meta(name)
     assert meta is not None
     return meta
+
+
+def publish_version(
+    name: str,
+    *,
+    description: str = "",
+    icon: str | None = None,
+    color: str | None = None,
+    capabilities: list[str] | None = None,
+    references: list[dict] | None = None,
+    playbook: str = "",
+    sub_workers: list[dict[str, Any]] | None = None,
+) -> str:
+    """基于当前生效版本构建 vN+1，并整体覆写为新内容（开放 API 演进注册用）。
+
+    与 ensure_worker 的区别：ensure_worker 只在「不存在」时落 v1（幂等保护）；
+    publish_version 面向已存在 Worker 的版本演进——历史版本原样保留（版本纪律），
+    新版本主 WORKER.md 与 sub_workers 以本次提交为准（旧子任务目录清空重建，
+    references/ 与 tests/ 文件原样继承）。
+    """
+    meta = get_meta(name)
+    if meta is None:
+        raise WorkerError(f"Worker「{name}」不存在")
+    if meta.effective_version is None:
+        raise WorkerError(f"Worker「{name}」没有可复制的版本")
+    version = build_version(name)
+    vdir = version_dir(name, version)
+    (vdir / "WORKER.md").write_text(
+        _dump_worker_md(name, description, icon, color, capabilities, references, playbook),
+        encoding="utf-8",
+    )
+    shutil.rmtree(vdir / "sub_workers", ignore_errors=True)
+    (vdir / "sub_workers").mkdir(parents=True)
+    _write_sub_workers(vdir, sub_workers)
+    invalidate(name)
+    logger.info("Worker「%s」已发布新版本 %s（开放 API）", name, version)
+    return version
 
 
 def build_version(name: str) -> str:
