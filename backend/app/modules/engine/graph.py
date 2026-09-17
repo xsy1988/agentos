@@ -924,7 +924,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
-        updated_cache: dict[str, Any] | None = None
+        # 同轮多次 search_more_tools：局部累积（P1-7），节点出口一次写回
+        acc_cache: dict[str, Any] = dict(state.get("capability_cache") or {})
+        cache_dirty = False
         # 3a) 外部等待拆分（P0-4）：派发类建单工具不在本节点出网——登记等待行后由
         # await_gate 挂起等回调。判定放在 hooks.on_tool_call 之前：恢复重放不重复计账
         # （等待时长与等待轮次都不计入 iterations/tool_calls）。
@@ -976,6 +978,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             elif meta["kind"] == "meta":
                 if meta["name"] == "search_more_tools":
                     from app.modules.discovery.assembler import (
+                        merge_tools_cache,
                         run_search_more_tools,
                     )
 
@@ -983,13 +986,19 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                         run_search_more_tools(
                             dict(c["args"]),
                             conf["agent_id"],
-                            state.get("capability_cache") or {},
+                            acc_cache,
                             conf.get("task_id"),
                         ),
                         source="engine",
                     )
                     if ok:
-                        content, updated_cache = res
+                        content, delta = res
+                        merged = merge_tools_cache(acc_cache, delta.get("new_tools") or [])
+                        # 只在真的并入新工具时才置脏，避免无谓的检查点差异
+                        cache_dirty = cache_dirty or (
+                            len(merged.get("tools") or []) != len(acc_cache.get("tools") or [])
+                        )
+                        acc_cache = merged
                 elif meta["name"] == "declare_subtask":
                     title = str(c["args"].get("title") or "").strip()
                     desc = str(c["args"].get("description") or "").strip()
@@ -1072,8 +1081,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             # 恒返回（含空列表）：await_gate 消费后必须清空，否则陈旧值会再次触发等待
             "pending_awaits": deferred,
         }
-        if updated_cache is not None:
-            out["capability_cache"] = updated_cache
+        if cache_dirty:
+            out["capability_cache"] = acc_cache
         # 连续失败熔断（第二道闸）：本批结果已全部落妥再抛，检查点里不留悬空 tool_calls
         if streak >= limit:
             raise ToolFailureLoopError(

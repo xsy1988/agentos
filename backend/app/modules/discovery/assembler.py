@@ -386,33 +386,51 @@ async def assemble_tools(
     return {"tools": plan["tools"] + _meta_tools(), "skills": skills, "tool_plan": plan}
 
 
+def merge_tools_cache(cache: dict[str, Any], new_tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """把新增工具并入缓存（按 name 去重、保持既有顺序）。
+
+    P1-7：同一轮内可能连续多次 `search_more_tools`，增量语义让调用方按累计缓存
+    合并写回，避免"后一次结果覆盖前一次"。
+    """
+    tools = list((cache or {}).get("tools") or [])
+    seen = {t["name"] for t in tools}
+    for item in new_tools:
+        if item["name"] in seen:
+            continue
+        seen.add(item["name"])
+        tools.append(item)
+    return {**(cache or {}), "tools": tools}
+
+
 async def run_search_more_tools(
     args: dict[str, Any], agent_id: str, cache: dict[str, Any], task_id: str | None = None
 ) -> tuple[str, dict[str, Any]]:
-    """元工具执行：检索 → 文本报告 + 命中工具并入 capability_cache。
+    """元工具执行：检索 → 文本报告 + **新增**工具（增量，P1-7）。
 
-    返回 (给模型看的观察文本, 更新后的 capability_cache)。
+    返回 `(给模型看的观察文本, {"new_tools": [...]})`——增量而非整体缓存，
+    调用方用 `merge_tools_cache` 按累计结果合并（同轮多次搜索不互相覆盖）。
     """
     from app.modules.discovery.retriever import retrieve_capabilities
 
     query = str(args.get("query") or "")
     res = await retrieve_capabilities(query, agent_id, task_id=task_id)
-    tools = list((cache or {}).get("tools") or [])
-    seen = {t["name"] for t in tools}
+    existing = list((cache or {}).get("tools") or [])
+    seen = {t["name"] for t in existing}
+    new_tools: list[dict[str, Any]] = []
     lines: list[str] = []
     for cap in res["semantic"]:
         for item in await expand_capability(cap, cap.get("scope") or "search"):
             if item["name"] in seen:
                 continue
             seen.add(item["name"])
-            tools.append(item)
+            new_tools.append(item)
             desc = str(item["schema"]["function"].get("description") or "")[:80]
             lines.append(f"- {item['name']}：{desc}")
-    if not lines:
-        return "未检索到新的可用工具。", cache
+    if not new_tools:
+        return "未检索到新的可用工具。", {"new_tools": []}
     return (
         "检索到以下工具，已加入可用工具列表（下一轮可直接调用）：\n" + "\n".join(lines),
-        {"tools": tools},
+        {"new_tools": new_tools},
     )
 
 
