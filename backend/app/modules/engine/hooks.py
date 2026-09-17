@@ -27,6 +27,9 @@ class RunContext:
         # 本 run 预算上限（runs.budget 快照）：max_iterations / max_tokens_per_run /
         # timeout_seconds 等。M2-2c 扩展字段（兼容冻结协议的增量扩展，见 ADR-10）
         self.limits: dict[str, int] = {}
+        # 本轮 prompt 的 token 估算（P1-2 增量）：agent 节点在 on_turn_start 之前写入，
+        # 预算钩子据此在**发起模型调用前**判断是否会超限。0 = 未估算（钩子跳过前置闸）。
+        self.prompt_tokens_est: int = 0
 
 
 class HookError(Exception):

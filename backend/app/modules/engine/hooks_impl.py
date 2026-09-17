@@ -142,7 +142,13 @@ class MeteringHook:
 
 
 class BudgetHook:
-    """预算熔断：四道闸中的两道在钩子里（迭代 / token），超时与循环检测另两道见下。"""
+    """预算熔断：四道闸中的两道在钩子里（迭代 / token），超时与循环检测另两道见下。
+
+    P1-2 把 token 闸拆成**前置 + 事后**两段：
+    - `on_turn_start` 用 `ctx.prompt_tokens_est`（本轮 prompt 估算）+ 已用预判——
+      会超限就直接拒绝本轮，**不发起模型调用**（花不出去的钱才是省下来的钱）；
+    - `on_turn_end` 仍是事后闸，作为估算偏差的兜底（真实 usage 到手后立即结算）。
+    """
 
     def __init__(self, emit: EmitFn) -> None:
         self._emit = emit
@@ -161,6 +167,36 @@ class BudgetHook:
         )
         raise BudgetExceededError(gate, detail)
 
+    def _used_tokens(self, ctx: RunContext) -> int:
+        return (ctx.budget.get("input_tokens") or 0) + (ctx.budget.get("output_tokens") or 0)
+
+    async def on_turn_start(self, ctx: RunContext, iteration: int) -> None:
+        """前置闸：本轮 prompt 估算 + 已用 > 上限 → 拒绝本轮（不调用模型）。"""
+        max_tokens = ctx.limits.get("max_tokens_per_run") or 0
+        if max_tokens <= 0 or ctx.prompt_tokens_est <= 0:
+            return
+        used = self._used_tokens(ctx)
+        est = ctx.prompt_tokens_est
+        if used + est > max_tokens:
+            await self._emit(
+                ctx.run_id,
+                "budget_warning",
+                {
+                    "gate": "token_preflight",
+                    "detail": (
+                        f"本轮 prompt 估算 {est} token，已用 {used}，合计将超上限 {max_tokens}；"
+                        f"已拒绝本轮，未发起模型调用"
+                    ),
+                    "budget_used": dict(ctx.budget),
+                    "limits": dict(ctx.limits),
+                    "prompt_tokens_est": est,
+                },
+            )
+            raise BudgetExceededError(
+                "token_preflight",
+                f"预算不足：已用 {used} + 本轮估算 {est} > 上限 {max_tokens}（前置拒绝）",
+            )
+
     async def on_turn_end(
         self, ctx: RunContext, iteration: int, usage: dict[str, int], provider_id: str | None = None
     ) -> None:
@@ -171,7 +207,7 @@ class BudgetHook:
             await self._trip(ctx, "max_iterations", f"已达迭代上限 {max_iter}")
         max_tokens = ctx.limits.get("max_tokens_per_run") or 0
         if max_tokens > 0:
-            used = (ctx.budget.get("input_tokens") or 0) + (ctx.budget.get("output_tokens") or 0)
+            used = self._used_tokens(ctx)
             if used > max_tokens:
                 await self._trip(ctx, "token_limit", f"token 实耗 {used} 超上限 {max_tokens}")
 

@@ -44,6 +44,27 @@ def compute_deadline(started_at: datetime, timeout_seconds: int) -> datetime:
     return started_at + timedelta(seconds=timeout_seconds)
 
 
+def resolve_max_tokens_per_run(
+    budget: dict | None,
+    agent_max_tokens: int | None = None,
+    default: int = 0,
+) -> int:
+    """token 上限解析链：run.budget 快照 → Agent 配置 → 平台缺省（方案 §5 P1-2）。
+
+    与超时解析链同构，差别在"未配置"的语义：
+    - `None` / 缺失 = 未表态 → 取 platform 缺省（有界，不再是"不限"）；
+    - 显式 `0` = 明确不限（逃生舱，运维临时排查用，不鼓励长期如此）；
+    - 负数按"不限"处理（配置笔误不放大成负数账）。
+
+    运行中改 Agent 配置不影响已创建的 run（budget 是创建时固化的快照）。
+    """
+    for candidate in ((budget or {}).get("max_tokens_per_run"), agent_max_tokens):
+        if candidate is None:
+            continue
+        return max(0, int(candidate))
+    return max(0, int(default))
+
+
 def remaining_seconds(deadline_at: datetime, now: datetime) -> float:
     """到截止点还剩多少秒；≤ 0 表示执行预算已耗尽，不应再调用图。"""
     return (deadline_at - now).total_seconds()

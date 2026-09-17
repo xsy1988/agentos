@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     # 平台对外可达基址：外部服务回调 await 结果时用的地址前缀
     # （开发默认本机；容器/部署环境必须配成外部服务能访问的实际地址）
     platform_base_url: str = "http://localhost:8000"
+    # run token 上限缺省值（方案 §5 P1-2）：解析链 = runs.budget 快照 > Agent 配置 >
+    # 此值。Agent 未配置（NULL）即继承此缺省，不再等价于"不限"；显式写 0 才是"不限"
+    # （逃生舱，仅建议临时排查用）。
+    # 定 1_000_000 的理由：这是**跑飞保护**不是成本旋钮——每轮都要重发历史，25 轮 ×
+    # 中等上下文（~4 万 token）已接近百万量级，配额给小了会把正常长任务掐死；
+    # 真要控成本请在 Agent 上显式配 max_tokens_per_run。
+    run_default_max_tokens: int = 1_000_000
+    # 模型调用缺省限流（方案 §5 P1-2）：provider.limits 未配置时兜底；0 = 不限。
+    # 显式配了 limits 的 provider 以自身配置为准（字段同名，语义一致）。
+    model_default_rate_limit_rps: float = 0.0
+    model_default_rate_limit_tpm: int = 0
+    # 限流单次最长等待（秒）：超过则放行并记日志——限流是保护措施，
+    # 不该把 run 变成无限等待（真限死了上游也会返回错误，比静默挂住好排查）
+    model_rate_limit_max_wait_seconds: float = 60.0
     # 并发 run 上限（方案 §5 P1-1）：超出即拒绝准入并给明确反馈，不静默排队。
     # 只闸"新 run"，恢复/确认（既有 run 的续跑）不受限——续跑被丢弃会留下
     # 永远悬停的等待行，比短暂超并发更糟

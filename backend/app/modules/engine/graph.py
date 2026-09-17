@@ -52,6 +52,7 @@ from app.modules.engine.hooks import (
     ToolResultInfo,
 )
 from app.modules.engine.state import LoopState
+from app.modules.engine.tokens import estimate_messages_tokens
 from app.modules.engine.tool_outcome import (
     ToolError,
     classify_exception,
@@ -60,6 +61,7 @@ from app.modules.engine.tool_outcome import (
     next_failure_streak,
     normalize,
 )
+from app.modules.models_module.ratelimit import rate_limiter
 
 # verify 回环上限（设计 §1.1.1：验证不达标带反馈回环，计数限 3 次）
 VERIFY_RETRY_LIMIT = 3
@@ -307,6 +309,15 @@ async def _get_internal_llm(
     return llm, agent_cfg.get("provider_id")
 
 
+async def _llm_invoke(llm: Any, provider_id: str | None, messages: list[Any]) -> Any:
+    """内部短调用的模型调用入口（P1-2）：先按 provider.limits 申请额度再调用。
+
+    所有非流式短调用（分类/规划/验收）走这里，限流只有一处实现。
+    """
+    await rate_limiter.acquire(provider_id, estimate_messages_tokens(messages))
+    return await llm.ainvoke(messages)
+
+
 async def emit_task_steps(runtime: Any, task_id: str, run_id: str) -> None:
     """把主任务当前步骤作为计划事件推给前端（计划状态区与看板同源）。
 
@@ -391,7 +402,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 usage: dict[str, int] = {}
                 try:
                     hint = "（消息附带图片）" if has_image else ""
-                    resp = await llm.ainvoke(
+                    resp = await _llm_invoke(
+                        llm,
+                        pid,
                         [
                             SystemMessage(
                                 content="把用户输入分为三类，只输出一个词，不要解释：\n"
@@ -401,7 +414,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                                 "complex=多步骤拆解、跨工具编排或含写操作副作用"
                             ),
                             HumanMessage(content=f"{text[:500]}{hint}"),
-                        ]
+                        ],
                     )
                     if getattr(resp, "usage_metadata", None):
                         usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
@@ -542,14 +555,16 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         task_text = _human_text(msgs[-1].content) if msgs else ""
         usage: dict[str, int] = {}
         try:
-            resp = await llm.ainvoke(
+            resp = await _llm_invoke(
+                llm,
+                pid,
                 [
                     SystemMessage(
                         content="你是任务规划器。把用户任务拆成 1-5 步执行计划。"
                         '只输出 JSON：{"steps": ["步骤1", "步骤2"]}'
                     ),
                     HumanMessage(content=task_text[:2000]),
-                ]
+                ],
             )
             obj = _extract_json(str(resp.content))
             steps = obj.get("steps") if obj else None
@@ -618,6 +633,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             if light is not None:
                 llm, turn_pid = light
         state_msgs = list(state.get("messages") or [])
+        # provider.limits 限流（P1-2）：本轮的压缩调用与主调用同一 provider，
+        # 按 prompt 估算申请一次额度（额度按 token 计，重复申请等于双重扣费）
+        await rate_limiter.acquire(turn_pid, estimate_messages_tokens(state_msgs))
         # L1/L2 压缩（估算用量 ≥ 阈值触发；保护名单不在消息区，天然安全）
         from app.modules.discovery.assembler import compact_messages, local_view
 
@@ -645,6 +663,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         messages.extend(state_msgs)
 
         iteration = (ctx.budget.get("iterations") or 0) + 1
+        # 前置闸（P1-2）：把本轮 prompt 估算交给预算钩子——超限在钩子里抛错，
+        # 此时尚未发起任何模型调用（压缩调用已在上面按限流申请过，不在此额内）
+        ctx.prompt_tokens_est = estimate_messages_tokens(messages)
         await hooks.on_turn_start(ctx, iteration)
 
         tools_meta = (state.get("capability_cache") or {}).get("tools") or []
@@ -1274,7 +1295,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         verify_error: dict[str, Any] | None = None
         raw_verdict: str | None = None
         try:
-            resp = await llm.ainvoke(
+            resp = await _llm_invoke(
+                llm,
+                pid,
                 [
                     SystemMessage(
                         content="你是任务验收员。判断针对任务的最终回复是否达成目标。"
@@ -1283,7 +1306,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     HumanMessage(
                         content=f"任务：{task_text[:1000]}\n\n最终回复：{final_reply[:2000]}"
                     ),
-                ]
+                ],
             )
             raw_verdict = str(resp.content)
             if getattr(resp, "usage_metadata", None):

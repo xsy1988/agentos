@@ -424,9 +424,9 @@ class EngineRuntime:
         # 只清理自己的登记位：同一 run 被重复派发时，先完成的任务不得把后一个
         # 任务从计数里"抹掉"（P1-1 的活跃数就是在这张表上读的）
         task.add_done_callback(
-            lambda t: self._run_tasks.pop(run_id, None)
-            if self._run_tasks.get(run_id) is t
-            else None
+            lambda t: (
+                self._run_tasks.pop(run_id, None) if self._run_tasks.get(run_id) is t else None
+            )
         )
 
     # ---------- run 执行 ----------
@@ -745,7 +745,10 @@ class EngineRuntime:
         budget = run.budget or {}
         ctx.limits = {
             "max_iterations": int(budget.get("max_iterations") or 25),
-            "max_tokens_per_run": int(budget.get("max_tokens_per_run") or 0),
+            # token 上限解析链（P1-2）：快照 > Agent 配置 > 平台缺省；0 = 明确不限
+            "max_tokens_per_run": timing.resolve_max_tokens_per_run(
+                budget, default=settings.run_default_max_tokens
+            ),
             # 与时长账本同一解析链，audit 里看到的即实际生效的（P0-1）
             "timeout_seconds": timing.resolve_timeout_seconds(
                 budget, default=settings.run_default_timeout_seconds

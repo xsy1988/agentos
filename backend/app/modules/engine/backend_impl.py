@@ -47,6 +47,8 @@ class InProcessBackend:
                         "base_url": provider.base_url,
                         "model_name": provider.model_name,
                         "params": provider.params,
+                        # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                        "limits": dict(provider.limits or {}),
                         "api_key_encrypted": (
                             bytes(provider.api_key_encrypted)
                             if provider.api_key_encrypted
@@ -72,6 +74,8 @@ class InProcessBackend:
                 "base_url": provider.base_url,
                 "model_name": provider.model_name,
                 "params": provider.params,
+                # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                "limits": dict(provider.limits or {}),
                 "api_key_encrypted": (
                     bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
                 ),
@@ -103,6 +107,8 @@ class InProcessBackend:
                 "base_url": provider.base_url,
                 "model_name": provider.model_name,
                 "params": provider.params,
+                # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                "limits": dict(provider.limits or {}),
                 "api_key_encrypted": (
                     bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
                 ),

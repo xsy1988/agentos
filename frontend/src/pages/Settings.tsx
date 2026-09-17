@@ -282,6 +282,17 @@ function ModelsTab() {
       if (Object.keys(prevParams).length > 0 || values.vision || values.lightweight) {
         body.params = params;
       }
+      // 限流（P1-2）：rate_limit_rps / rate_limit_tpm，空 = 不限；保留 limits 其余键
+      const limits: Record<string, unknown> = {
+        ...((editing?.limits as Record<string, unknown> | undefined) ?? {}),
+      };
+      for (const key of ["rate_limit_rps", "rate_limit_tpm"]) {
+        const v = values[key];
+        if (v === undefined || v === null || v === "") delete limits[key];
+        else limits[key] = v;
+      }
+      if (editing) body.limits = limits;
+      else if (Object.keys(limits).length > 0) body.limits = limits;
       if (editing) return modelsApi.update(editing.id, body);
       return modelsApi.create(body);
     },
@@ -331,6 +342,8 @@ function ModelsTab() {
       api_key: "",
       vision: !!(m.params as Record<string, unknown> | undefined)?.vision,
       lightweight: !!(m.params as Record<string, unknown> | undefined)?.lightweight,
+      rate_limit_rps: (m.limits as Record<string, unknown> | undefined)?.rate_limit_rps,
+      rate_limit_tpm: (m.limits as Record<string, unknown> | undefined)?.rate_limit_tpm,
     });
     setModalOpen(true);
   };
@@ -502,6 +515,22 @@ function ModelsTab() {
               ]}
             />
           </Form.Item>
+          <Space size="small" style={{ width: "100%" }}>
+            <Form.Item
+              name="rate_limit_rps"
+              label="限流：请求/秒"
+              tooltip="每分钟最多发起多少次模型调用（令牌桶）。留空或 0 = 不限；填错会把 run 拖慢，故有下限提示"
+            >
+              <InputNumber min={0} step={0.5} style={{ width: 160 }} placeholder="留空 = 不限" />
+            </Form.Item>
+            <Form.Item
+              name="rate_limit_tpm"
+              label="限流：token/分钟"
+              tooltip="按每轮 prompt 估算消耗 token 配额。留空或 0 = 不限"
+            >
+              <InputNumber min={0} step={1000} style={{ width: 180 }} placeholder="留空 = 不限" />
+            </Form.Item>
+          </Space>
         </Form>
       </FormDrawer>
     </div>

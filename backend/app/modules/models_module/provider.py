@@ -47,11 +47,17 @@ def get_chat_model(
     """
     if not isinstance(provider, dict):
         provider = {
+            "id": str(provider.id),
             "impl": provider.impl,
             "base_url": provider.base_url,
             "model_name": provider.model_name,
             "params": provider.params,
+            "limits": provider.limits or {},
         }
+    # limits 登记进限流器（P1-2）：构造模型时登记，调用侧只需传 provider_id
+    from app.modules.models_module.ratelimit import rate_limiter
+
+    rate_limiter.remember(provider)
     params: dict = provider.get("params") or {}
     match provider["impl"]:
         case "openai_compatible":
