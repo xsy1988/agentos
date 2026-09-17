@@ -22,7 +22,7 @@ import json
 import os
 import subprocess
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +234,142 @@ async def _procurement_report(args: dict[str, Any]) -> str:
     return await _procurement_request("GET", f"/worker/report/{task_id}")
 
 
+async def _now_datetime(args: dict[str, Any]) -> str:
+    """read 级：查询当前时间（农历 + 公历 + 星期几，本地时区）。"""
+    from datetime import datetime
+
+    from app.modules.engine.lunar import format_datetime
+
+    await asyncio.sleep(0)  # 保持执行器统一 await 语义
+    return format_datetime(datetime.now())
+
+
+# ---- 天气查询（Open-Meteo 公开接口，无需密钥）----
+
+# WMO weather code → 中文描述（Open-Meteo daily.weather_code）
+_WMO_WEATHER_CN: dict[int, str] = {
+    0: "晴",
+    1: "基本晴",
+    2: "多云",
+    3: "阴",
+    45: "雾",
+    48: "雾凇",
+    51: "轻毛毛雨",
+    53: "毛毛雨",
+    55: "浓毛毛雨",
+    56: "冻毛毛雨",
+    57: "浓冻毛毛雨",
+    61: "小雨",
+    63: "中雨",
+    65: "大雨",
+    66: "冻雨",
+    67: "强冻雨",
+    71: "小雪",
+    73: "中雪",
+    75: "大雪",
+    77: "雪粒",
+    80: "小阵雨",
+    81: "阵雨",
+    82: "强阵雨",
+    85: "小阵雪",
+    86: "阵雪",
+    95: "雷暴",
+    96: "雷暴伴冰雹",
+    99: "强雷暴伴冰雹",
+}
+
+
+def _weather_desc(code: int) -> str:
+    return _WMO_WEATHER_CN.get(code, f"未知天气（代码 {code}）")
+
+
+def _parse_weather_date(s: str) -> tuple[date | None, str | None]:
+    """解析 date 参数：空/今天 → 当天；明天/后天；YYYY-MM-DD / YYYYMMDD。"""
+    s = s.strip()
+    if not s or s == "今天":
+        return date.today(), None
+    if s == "明天":
+        return date.today() + timedelta(days=1), None
+    if s == "后天":
+        return date.today() + timedelta(days=2), None
+    with contextlib.suppress(ValueError):
+        return date.fromisoformat(s), None
+    if len(s) == 8 and s.isdigit():
+        with contextlib.suppress(ValueError):
+            return date(int(s[:4]), int(s[4:6]), int(s[6:8])), None
+    return None, f"日期格式错误：{s}（支持 今天/明天/后天/YYYY-MM-DD）"
+
+
+def _format_weather_result(g: dict[str, Any], d: date, daily: dict[str, Any]) -> str:
+    """拼装单日天气结果：城市（行政区·国家） 日期：天气；气温；降水量；降水概率；最大风速。"""
+    region = " · ".join(x for x in (g.get("admin1"), g.get("country")) if x)
+    loc = str(g.get("name", "?")) + (f"（{region}）" if region else "")
+    times = daily.get("time") or []
+    if d.isoformat() not in times:
+        return f"{loc} {d}：无该日期的天气数据（Open-Meteo 仅覆盖约前后 92 天）"
+    i = times.index(d.isoformat())
+
+    def v(key: str) -> Any:
+        arr = daily.get(key) or []
+        return arr[i] if i < len(arr) else None
+
+    parts = [f"{loc} {d}：{_weather_desc(int(v('weather_code') or 0))}"]
+    tmin, tmax = v("temperature_2m_min"), v("temperature_2m_max")
+    if tmin is not None and tmax is not None:
+        parts.append(f"气温 {tmin}~{tmax}℃")
+    if (p := v("precipitation_sum")) is not None:
+        parts.append(f"降水量 {p} mm")
+    if (pp := v("precipitation_probability_max")) is not None:
+        parts.append(f"降水概率 {pp}%")
+    if (w := v("wind_speed_10m_max")) is not None:
+        parts.append(f"最大风速 {w} km/h")
+    return "；".join(parts)
+
+
+async def _query_weather(args: dict[str, Any]) -> str:
+    """read 级：查询指定城市与日期的天气（Open-Meteo 公开接口，无需密钥）。"""
+    import httpx
+
+    city = str(args.get("city") or "").strip()
+    if not city:
+        return "参数错误：city 不能为空。"
+    d, err = _parse_weather_date(str(args.get("date") or ""))
+    if err or d is None:
+        return err or "参数错误：date 无法解析。"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            geo = await client.get(
+                "https://geocoding-api.open-meteo.com/v1/search",
+                params={"name": city, "count": 1, "language": "zh", "format": "json"},
+            )
+            geo.raise_for_status()
+            results = geo.json().get("results") or []
+            if not results:
+                return f"未找到城市：{city}（请检查城市名，如「北京」「上海」「Hangzhou」）"
+            g = results[0]
+            resp = await client.get(
+                "https://api.open-meteo.com/v1/forecast",
+                params={
+                    "latitude": g["latitude"],
+                    "longitude": g["longitude"],
+                    "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
+                    "precipitation_sum,precipitation_probability_max,wind_speed_10m_max",
+                    "timezone": "auto",
+                    "start_date": d.isoformat(),
+                    "end_date": d.isoformat(),
+                },
+            )
+            if resp.status_code != 200:
+                reason = ""
+                with contextlib.suppress(Exception):
+                    reason = str(resp.json().get("reason", ""))
+                return f"天气查询失败（{d}）：{reason or resp.text[:200]}"
+            wj = resp.json()
+    except httpx.HTTPError as e:
+        return f"天气服务（Open-Meteo）不可用：{e}。请稍后重试。"
+    return _format_weather_result(g, d, wj.get("daily") or {})
+
+
 async def _probe_url(args: dict[str, Any]) -> str:
     """read 级：依赖预检通用工具（任务架构规范「第零步依赖预检」）。
 
@@ -290,6 +426,8 @@ BUILTIN_TOOLS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
     "search_knowledge": _search_knowledge,
     "run_legal_crawl": _run_legal_crawl,
     "legal_crawl_status": _legal_crawl_status,
+    "now_datetime": _now_datetime,
+    "query_weather": _query_weather,
     "probe_url": _probe_url,
     "procurement_trigger": _procurement_trigger,
     "procurement_status": _procurement_status,

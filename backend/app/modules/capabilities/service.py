@@ -106,6 +106,33 @@ BUILTIN_SEED: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "now_datetime",
+        "description": "查询当前时间：返回农历（干支纪年+中文月日+时分秒）、公历（年-月-日 "
+        "时:分:秒）、星期几。无需参数。",
+        "risk_level": "read",
+        "params": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "query_weather",
+        "description": "查询指定城市与日期的天气：返回天气现象、最高/最低气温、降水量、"
+        "降水概率、最大风速（Open-Meteo 公开接口，覆盖约前后 92 天的预报）。",
+        "risk_level": "read",
+        "params": {
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string",
+                    "description": "城市名（中文或英文，如「杭州」「上海」「Beijing」）",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "日期：今天/明天/后天 或 YYYY-MM-DD，缺省今天",
+                },
+            },
+            "required": ["city"],
+        },
+    },
+    {
         "name": "probe_url",
         "description": "依赖预检：探测某个服务/API 是否可达（GET/HEAD 请求），"
         "返回可达性、状态码、延迟。任务开始前应先检查依赖项，不通则告知用户并停止。",
