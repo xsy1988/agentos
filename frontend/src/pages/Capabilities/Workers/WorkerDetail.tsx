@@ -36,6 +36,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { workersApi } from "@/api/workers";
 import type { FileNodeOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 
 /** FileNodeOut → antd Tree DataNode（文件路径作 key；目录 default 展开一层） */
 function toTreeNodes(node: FileNodeOut, prefix: string): DataNode[] {
@@ -489,14 +490,15 @@ export default function WorkerDetailPage() {
       </Modal>
 
       {/* 新建子任务文件夹 */}
-      <Modal
+      <FormDrawer
         title="新建子任务文件夹"
         open={newSubOpen}
-        onCancel={() => setNewSubOpen(false)}
+        onClose={() => setNewSubOpen(false)}
         onOk={() => newSub.name.trim() && createSubMutation.mutate()}
         confirmLoading={createSubMutation.isPending}
         okText="创建"
         cancelText="取消"
+        width={480}
         destroyOnClose
       >
         <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 8 }}>
@@ -519,17 +521,18 @@ export default function WorkerDetailPage() {
             生成 sub_workers/&lt;名&gt;/WORKER.md 脚手架（seq/kind/optional/capability_hint + playbook 正文）。
           </Typography.Text>
         </Space>
-      </Modal>
+      </FormDrawer>
 
       {/* 新建文件 */}
-      <Modal
+      <FormDrawer
         title="新建文件"
         open={newFileOpen}
-        onCancel={() => setNewFileOpen(false)}
+        onClose={() => setNewFileOpen(false)}
         onOk={() => newFile.trim() && createFileMutation.mutate()}
         confirmLoading={createFileMutation.isPending}
         okText="创建"
         cancelText="取消"
+        width={480}
         destroyOnClose
       >
         <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 8 }}>
@@ -543,7 +546,7 @@ export default function WorkerDetailPage() {
             仅文本文件（.md / .txt / .yaml / .json 等）；WORKER.md 已存在，请勿重复创建。
           </Typography.Text>
         </Space>
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

@@ -80,8 +80,16 @@ async def run_smoke_test(db: AsyncSession, cap: Any) -> CapabilitySmokeReport:
 
     # ---------- mcp / plugin ----------
     if cap.type in ("mcp", "plugin"):
-        from app.modules.capabilities.mcp_client import open_mcp_session
+        from app.modules.capabilities.mcp_client import mcp_connectable, open_mcp_session
         from app.modules.capabilities.models import CapabilityTool
+
+        if not mcp_connectable(payload):
+            # 纯前端 plugin（iframe 清单、无 MCP transport，如「采购决策面板」）没有 MCP
+            # 工具可冒烟：直接放行，别拿它去 open_mcp_session 撞「未知 transport」
+            checks.append(
+                {"name": "前端 plugin", "ok": True, "detail": "无 MCP transport，跳过 MCP 冒烟"}
+            )
+            return _report(checks)
 
         try:
             async with asyncio.timeout(SMOKE_TIMEOUT + 30):

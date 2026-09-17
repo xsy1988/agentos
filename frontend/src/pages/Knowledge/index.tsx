@@ -15,7 +15,6 @@ import {
   Input,
   List,
   message,
-  Modal,
   Tag,
   Typography,
   Upload,
@@ -37,6 +36,7 @@ import { knowledgeApi } from "@/api/knowledge";
 import { filesApi } from "@/api/files";
 import type { DocOut, SearchHit } from "@/api/types";
 import DocDetailDrawer from "./DocDetailDrawer";
+import FormDrawer from "@/components/FormDrawer";
 
 // 文档状态 → 颜色/标签
 const DOC_STATUS: Record<string, { color: string; label: string }> = {
@@ -238,15 +238,16 @@ function FolderGrid() {
       <SearchTester />
 
       {/* 新建文件夹 */}
-      <Modal
+      <FormDrawer
         title="新建文件夹"
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onClose={() => setModalOpen(false)}
         onOk={() => newName.trim() && createFolderMutation.mutate(newName.trim())}
         okText="创建"
         cancelText="取消"
-        okButtonProps={{ disabled: !newName.trim() }}
+        okDisabled={!newName.trim()}
         confirmLoading={createFolderMutation.isPending}
+        width={420}
       >
         <Input
           placeholder="文件夹名称"
@@ -257,7 +258,7 @@ function FolderGrid() {
           }
           autoFocus
         />
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }
@@ -527,15 +528,16 @@ function FolderDetail({ folderId }: { folderId: string }) {
       </Drawer>
 
       {/* 新建子文件夹 */}
-      <Modal
+      <FormDrawer
         title={`在「${folder?.name ?? "…"}」下新建文件夹`}
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onClose={() => setModalOpen(false)}
         onOk={() => newName.trim() && createFolderMutation.mutate(newName.trim())}
         okText="创建"
         cancelText="取消"
-        okButtonProps={{ disabled: !newName.trim() }}
+        okDisabled={!newName.trim()}
         confirmLoading={createFolderMutation.isPending}
+        width={420}
       >
         <Input
           placeholder="文件夹名称"
@@ -546,7 +548,7 @@ function FolderDetail({ folderId }: { folderId: string }) {
           }
           autoFocus
         />
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

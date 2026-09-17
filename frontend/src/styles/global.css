@@ -282,12 +282,12 @@ body {
 }
 
 /* 看板 item 精简（仅名称/icon/进度条常显）：
-   操作按钮与辅助信息 hover/选中才展开 —— 纯 CSS 控制，勿用内联 visibility */
+   操作按钮与辅助信息仅 hover 才展开（选中但未 hover 也不显示）
+   —— 纯 CSS 控制，勿用内联 visibility */
 .board-task-actions {
   visibility: hidden;
 }
-.board-task-item:hover .board-task-actions,
-.board-task-item.active .board-task-actions {
+.board-task-item:hover .board-task-actions {
   visibility: visible;
 }
 .board-task-meta {
@@ -296,8 +296,7 @@ body {
   gap: 6px;
   margin-top: 2px;
 }
-.board-task-item:hover .board-task-meta,
-.board-task-item.active .board-task-meta {
+.board-task-item:hover .board-task-meta {
   display: flex;
 }
 .board-task-type {
@@ -307,8 +306,8 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 看板 item 标题前状态 icon（WorkBuddy 式）：待确认橙叹号/已完成绿勾/
-   进行中蓝转圈/失败红叉，细节进 tooltip，视觉保持轻量 */
+/* 看板 item 标题前状态 icon（五态线性）：已完成/执行中/等待中/已终止均为灰，
+   仅待决策鲜艳橙；细节进 tooltip，视觉保持轻量 */
 .board-task-status {
   flex: none;
   display: inline-flex;

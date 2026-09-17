@@ -3,11 +3,12 @@
  * 按 kind 筛选浏览记忆 → 手改内容 → 手动触发每日整理。
  */
 import { useState } from "react";
-import { List, Tag, Typography, Button, Modal, Input, Select, Space, Empty, Popconfirm, message } from "antd";
+import { List, Tag, Typography, Button, Input, Select, Space, Empty, Popconfirm, message } from "antd";
 import { EditOutlined, DeleteOutlined, ThunderboltOutlined, BookOutlined } from "@ant-design/icons";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { memoryApi } from "@/api/memory";
 import type { MemoryOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 
 const KIND_META: Record<string, { color: string; label: string }> = {
   fact: { color: "blue", label: "事实" },
@@ -133,10 +134,10 @@ export default function MemoryPage() {
         }}
       />
 
-      <Modal
+      <FormDrawer
         title={`编辑记忆: ${editing?.title ?? ""}`}
         open={editing !== null}
-        onCancel={() => setEditing(null)}
+        onClose={() => setEditing(null)}
         onOk={() => editing && updateMutation.mutate({ id: editing.id, content: editContent })}
         confirmLoading={updateMutation.isPending}
         width={600}
@@ -146,7 +147,7 @@ export default function MemoryPage() {
           value={editContent}
           onChange={(e) => setEditContent(e.target.value)}
         />
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

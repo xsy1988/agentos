@@ -7,7 +7,6 @@ import {
   Tabs,
   Table,
   Button,
-  Modal,
   Form,
   Input,
   Select,
@@ -32,6 +31,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { schedulerApi } from "@/api/scheduler";
 import { agentsApi } from "@/api/agents";
 import type { TimerOut, AlarmOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 import dayjs from "dayjs";
 
 function fmtTime(dt: string | null): string {
@@ -169,12 +169,13 @@ function TimersTab() {
         ]}
       />
 
-      <Modal
+      <FormDrawer
         title="新建定时任务"
         open={modalOpen}
-        onCancel={() => setModalOpen(false)}
+        onClose={() => setModalOpen(false)}
         onOk={() => form.validateFields().then((v) => createMutation.mutate(v))}
         confirmLoading={createMutation.isPending}
+        width={520}
         destroyOnClose
       >
         <Form form={form} layout="vertical">
@@ -201,7 +202,7 @@ function TimersTab() {
             <Input.TextArea rows={2} placeholder="交给 Agent 的输入文本" />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

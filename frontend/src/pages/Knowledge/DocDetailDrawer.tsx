@@ -14,7 +14,6 @@ import {
   InputNumber,
   List,
   message,
-  Modal,
   Popconfirm,
   Space,
   Steps,
@@ -32,6 +31,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { knowledgeApi } from "@/api/knowledge";
 import type { ChunkOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 
 const INDEXING = ["parsing", "chunking", "embedding"];
 const PAGE = 50;
@@ -370,14 +370,15 @@ export default function DocDetailDrawer({
       />
 
       {/* 重切参数 */}
-      <Modal
+      <FormDrawer
         title="重新切分"
         open={rechunkOpen}
-        onCancel={() => setRechunkOpen(false)}
+        onClose={() => setRechunkOpen(false)}
         onOk={() => rechunkMutation.mutate()}
         okText="开始重切"
         cancelText="取消"
         confirmLoading={rechunkMutation.isPending}
+        width={420}
       >
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           基于既有解析产物重新切分并重新向量化（不重跑 docling 解析）。当前文档
@@ -405,13 +406,13 @@ export default function DocDetailDrawer({
             />
           </div>
         </Space>
-      </Modal>
+      </FormDrawer>
 
       {/* 切片编辑 */}
-      <Modal
+      <FormDrawer
         title={`编辑切片 #${editing ? editing.seq + 1 : ""}`}
         open={editing !== null}
-        onCancel={() => setEditing(null)}
+        onClose={() => setEditing(null)}
         onOk={() =>
           editing &&
           editText.trim() &&
@@ -420,8 +421,8 @@ export default function DocDetailDrawer({
         okText="保存（并重新向量化）"
         cancelText="取消"
         confirmLoading={updateChunkMutation.isPending}
-        width={620}
-        okButtonProps={{ disabled: !editText.trim() }}
+        width={560}
+        okDisabled={!editText.trim()}
       >
         <Input.TextArea
           rows={10}
@@ -430,7 +431,7 @@ export default function DocDetailDrawer({
           showCount
           maxLength={32000}
         />
-      </Modal>
+      </FormDrawer>
     </Drawer>
   );
 }

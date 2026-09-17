@@ -11,7 +11,6 @@ import {
   Button,
   Empty,
   Input,
-  Modal,
   Popconfirm,
   Segmented,
   Space,
@@ -27,7 +26,7 @@ import {
   EditOutlined,
   ExclamationCircleOutlined,
   LoadingOutlined,
-  MinusCircleOutlined,
+  PauseCircleOutlined,
   PlusOutlined,
   SearchOutlined,
   SettingOutlined,
@@ -37,9 +36,8 @@ import { useNavigate } from "react-router-dom";
 import { conversationsApi } from "@/api/conversations";
 import { tasksApi } from "@/api/tasks";
 import type { TaskOut } from "@/api/types";
-import {
-  TASK_STATUS_LABELS,
-} from "./taskDisplay";
+import FormDrawer from "@/components/FormDrawer";
+import { deriveTaskState, TASK_STATE_LABELS } from "./taskDisplay";
 
 type FilterKey = "all" | "active" | "awaiting" | "done";
 
@@ -57,50 +55,46 @@ function matches(t: TaskOut, filter: FilterKey): boolean {
   return true;
 }
 
-/** 标题前状态 icon（WorkBuddy 式）：线形弱化（降透明度，不鲜艳），
- *  待确认 > 终态 > 进行中；默认单行卡片，细节进 tooltip */
+/** 标题前状态 icon（五态线性）：已完成/执行中/等待中/已终止一律灰色弱化，
+ *  仅待决策鲜艳橙；派生逻辑见 deriveTaskState，细节进 tooltip */
 function taskStatusIcon(task: TaskOut): { node: ReactNode; tooltip: string } {
-  if (task.awaiting_confirm) {
-    return {
-      node: (
-        <ExclamationCircleOutlined
-          style={{ color: "var(--ant-color-warning)", opacity: 0.65 }}
-        />
-      ),
-      tooltip:
-        task.awaiting_steps_count > 0
-          ? `${task.awaiting_steps_count} 个子任务待你确认`
-          : "有事项待你确认",
-    };
-  }
-  switch (task.status) {
+  const state = deriveTaskState(task);
+  const gray = { color: "var(--ant-color-text-tertiary)" };
+  switch (state) {
+    case "awaiting":
+      return {
+        node: (
+          <ExclamationCircleOutlined style={{ color: "var(--ant-color-warning)" }} />
+        ),
+        tooltip:
+          task.awaiting_steps_count > 0
+            ? `${task.awaiting_steps_count} 个子任务待你决策`
+            : "有事项待你决策",
+      };
+    case "running":
+      return {
+        node: (
+          <LoadingOutlined spin style={{ color: "var(--ant-color-text-secondary)" }} />
+        ),
+        tooltip: TASK_STATE_LABELS.running,
+      };
+    case "waiting":
+      return {
+        node: (
+          <PauseCircleOutlined style={{ color: "var(--ant-color-text-quaternary)" }} />
+        ),
+        tooltip: TASK_STATE_LABELS.waiting,
+      };
+    case "terminated":
+      return {
+        node: <CloseCircleOutlined style={gray} />,
+        tooltip: TASK_STATE_LABELS.terminated,
+      };
     case "done":
-      return {
-        node: (
-          <CheckCircleOutlined
-            style={{ color: "var(--ant-color-success)", opacity: 0.6 }}
-          />
-        ),
-        tooltip: "已完成",
-      };
-    case "active":
-      return {
-        node: <LoadingOutlined spin style={{ color: "var(--ant-color-primary)", opacity: 0.6 }} />,
-        tooltip: "进行中",
-      };
-    case "failed":
-      return {
-        node: (
-          <CloseCircleOutlined
-            style={{ color: "var(--ant-color-error)", opacity: 0.6 }}
-          />
-        ),
-        tooltip: "执行失败",
-      };
     default:
       return {
-        node: <MinusCircleOutlined style={{ color: "var(--ant-color-text-quaternary)" }} />,
-        tooltip: TASK_STATUS_LABELS[task.status] ?? task.status,
+        node: <CheckCircleOutlined style={gray} />,
+        tooltip: TASK_STATE_LABELS.done,
       };
   }
 }
@@ -176,6 +170,23 @@ export default function TaskBoard({
     onError: (e: Error) => antdMessage.error(e.message || "新建会话失败"),
   });
 
+  // 新建会话（需求 1）：先查是否已有「空的通用会话」（无消息），有则直接跳转复用，
+  // 避免堆积空会话；没有才真正建会话。tasks 来自看板 useQuery（20s 轮询 + SSE invalidate）。
+  const handleNewSession = () => {
+    const empty = [...tasks]
+      .filter(
+        (t) =>
+          (t.worker_name === "" || t.worker_name === "__common__") &&
+          (t.conversation?.message_count ?? 0) === 0,
+      )
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+    if (empty) {
+      onSelect(empty);
+      return;
+    }
+    createMutation.mutate();
+  };
+
   // 平铺：创建时间倒序（最新在上）
   const visible = useMemo(() => {
     const kw = search.trim().toLowerCase();
@@ -198,7 +209,7 @@ export default function TaskBoard({
           icon={<PlusOutlined />}
           block
           loading={createMutation.isPending}
-          onClick={() => createMutation.mutate()}
+          onClick={handleNewSession}
         >
           新建会话
         </Button>
@@ -245,7 +256,8 @@ export default function TaskBoard({
                 <Typography.Text type="secondary" style={{ fontSize: 11, flex: "none" }}>
                   {timeAgo(task.created_at)}
                 </Typography.Text>
-                {/* 操作按钮：默认隐藏，hover/选中才展开（CSS 控制，勿用内联 visibility） */}
+                {/* 操作按钮：默认隐藏，仅 hover 才展开（选中但未 hover 也不显示；
+                    CSS 控制，勿用内联 visibility） */}
                 <Space
                   size={0}
                   className="board-task-actions"
@@ -280,7 +292,7 @@ export default function TaskBoard({
                 </Space>
               </div>
 
-              {/* 辅助信息（hover/选中才展开）：进度数字 + 类型 + 越界 */}
+              {/* 辅助信息（仅 hover 才展开）：进度数字 + 类型 + 越界 */}
               <div className="board-task-meta">
                 {task.progress_total > 0 && (
                   <span className="board-task-type">
@@ -332,14 +344,15 @@ export default function TaskBoard({
         </Button>
       </div>
 
-      <Modal
+      <FormDrawer
         title="重命名任务"
         open={!!renaming}
-        onCancel={() => setRenaming(null)}
+        onClose={() => setRenaming(null)}
         onOk={() => renaming && renaming.title.trim() && renameMutation.mutate(renaming)}
         confirmLoading={renameMutation.isPending}
         okText="保存"
         cancelText="取消"
+        width={420}
         destroyOnClose
       >
         <Input
@@ -353,7 +366,7 @@ export default function TaskBoard({
             renaming && renaming.title.trim() && renameMutation.mutate(renaming)
           }
         />
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

@@ -9,7 +9,6 @@ import {
   Button,
   Empty,
   Input,
-  Modal,
   Popconfirm,
   Space,
   Switch,
@@ -23,6 +22,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnsType } from "antd/es/table";
 import { workersApi } from "@/api/workers";
 import type { WorkerOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 
 export default function WorkersPage() {
   const navigate = useNavigate();
@@ -201,14 +201,15 @@ export default function WorkersPage() {
         }}
       />
 
-      <Modal
+      <FormDrawer
         title="新建 Worker"
         open={creating}
-        onCancel={() => setCreating(false)}
+        onClose={() => setCreating(false)}
         onOk={() => form.name.trim() && createMutation.mutate()}
         confirmLoading={createMutation.isPending}
         okText="创建"
         cancelText="取消"
+        width={520}
         destroyOnClose
       >
         <Space direction="vertical" size={8} style={{ width: "100%", marginTop: 8 }}>
@@ -229,7 +230,7 @@ export default function WorkersPage() {
             创建即生成 v1 脚手架（WORKER.md + sub_workers/ + references/），创建后进入文件管理器编辑。
           </Typography.Text>
         </Space>
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

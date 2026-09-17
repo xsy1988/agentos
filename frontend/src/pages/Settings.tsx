@@ -7,7 +7,6 @@ import {
   Tabs,
   Table,
   Button,
-  Modal,
   Form,
   Input,
   InputNumber,
@@ -32,6 +31,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import { modelsApi } from "@/api/models";
 import type { AgentOut, ModelProviderOut } from "@/api/types";
+import FormDrawer from "@/components/FormDrawer";
 
 // ---------- Agent 管理子页 ----------
 
@@ -202,10 +202,10 @@ function AgentsTab() {
         ]}
       />
 
-      <Modal
+      <FormDrawer
         title={editing ? `编辑 Agent: ${editing.name}` : "新建 Agent"}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null); }}
+        onClose={() => { setModalOpen(false); setEditing(null); }}
         onOk={() => form.validateFields().then((v) => saveMutation.mutate(v))}
         confirmLoading={saveMutation.isPending}
         width={640}
@@ -245,7 +245,7 @@ function AgentsTab() {
             <Input.TextArea rows={4} style={{ fontFamily: "monospace", fontSize: 12 }} />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }
@@ -435,12 +435,13 @@ function ModelsTab() {
         ]}
       />
 
-      <Modal
+      <FormDrawer
         title={editing ? `编辑模型: ${editing.name}` : "添加模型"}
         open={modalOpen}
-        onCancel={() => { setModalOpen(false); setEditing(null); }}
+        onClose={() => { setModalOpen(false); setEditing(null); }}
         onOk={() => form.validateFields().then((v) => saveMutation.mutate(v))}
         confirmLoading={saveMutation.isPending}
+        width={560}
         destroyOnClose={!editing}
       >
         <Form form={form} layout="vertical" initialValues={{ kind: "llm", impl: "openai_compatible" }}>
@@ -502,7 +503,7 @@ function ModelsTab() {
             />
           </Form.Item>
         </Form>
-      </Modal>
+      </FormDrawer>
     </div>
   );
 }

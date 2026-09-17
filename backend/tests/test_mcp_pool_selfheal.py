@@ -12,20 +12,30 @@
 cancel scope 会把 `CancelledError` 泄漏进 `health_probe()`/`close()`。它是 BaseException，
 旧代码 `except Exception` 抓不住 → 健康循环当场暴毙 → 容器恢复后 websearch 永久失联，
 只能重启后端。修复后：非停机时把它当一次探活失败，循环必须活着（见下方 cancel 组用例）。
+
+第三个回归（上一版仍不彻底：生产 13.5h 失联实测揪出）：cancel scope 在 rebuild 所在任务
+enter、却可能在健康循环/停机任务 exit（AsyncExitStack 跨任务 aclose）→ 泄漏的 CancelledError
+打穿 `_health_loop` 里无保护的 `await asyncio.sleep()`，还窜进 uvicorn lifespan 与 SQLAlchemy。
+永久修复：每条会话的 enter/use/exit 全锁进一个专属 owner 任务（`McpConnection._run`），anyio
+取消只在该任务内生灭、绝不外泄；`_health_loop` 再加兜底（stray cancel 不许打死循环）；
+`call_tool` 命中死会话即时 retire+rebuild+重试；池跳过无 transport 的纯前端 plugin。
 """
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from anyio import ClosedResourceError
 
+from app.modules.capabilities import mcp_client
 from app.modules.capabilities.mcp_client import (
     HEALTH_FAILURE_LIMIT,
     McpConnection,
     McpPool,
+    mcp_connectable,
 )
 
 
@@ -36,9 +46,7 @@ class FakeConn:
     name / close），其余保持缺省——测试要盯的是池的簿记，不是连接内部。
     """
 
-    def __init__(
-        self, cap_id: UUID, name: str, *, fail: bool = True, cancel: bool = False
-    ) -> None:
+    def __init__(self, cap_id: UUID, name: str, *, fail: bool = True, cancel: bool = False) -> None:
         self.cap_id = cap_id
         self.name = name
         self.fail = fail
@@ -229,26 +237,35 @@ def test_cancelled_probe_does_not_kill_health_loop() -> None:
     assert health[-1] == (cap_id, "healthy")
 
 
-def test_close_swallows_cancelled_error_and_resets_state() -> None:
-    """close() 对断裂会话的 aclose 泄漏 CancelledError：吞掉且务必复位状态。
+def test_close_confines_owner_teardown_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """owner 任务把会话 teardown 泄漏的 CancelledError 吞在内部：close() 不外泄、状态复位。
 
-    旧行为会让停机路径 `mcp_pool.stop()` 上抛，日志出现「Application shutdown failed」。
+    本次事故真根因回归：旧实现用 AsyncExitStack 在**别的任务**里 aclose，streamablehttp 的
+    anyio cancel scope 跨任务 → CancelledError 泄漏打穿调用方（健康循环 sleep / lifespan /
+    SQLAlchemy）。现在 enter/exit 全锁在 owner 任务内，取消不再逃出来。
     """
+
+    @contextlib.asynccontextmanager
+    async def _fake_open(payload: dict[str, Any]) -> AsyncIterator[Any]:
+        yield object()
+        # 对端把会话拖垮：teardown 泄漏 CancelledError（贴近真机 streamablehttp 行为）
+        raise asyncio.CancelledError("session torn down")
+
+    monkeypatch.setattr(mcp_client, "open_mcp_session", _fake_open)
+
     conn = McpConnection(uuid4(), "websearch", {"transport": "http", "url": "x"})
-
-    class _Stack:
-        async def aclose(self) -> None:
-            raise asyncio.CancelledError("torn down")
-
-    conn._stack = _Stack()
-    conn.session = object()
     conn.tools_cache = {"web_search": {}}
 
-    asyncio.run(conn.close())  # 不抛即通过
+    async def _run() -> None:
+        await conn.connect()
+        assert conn.session is not None
+        await conn.close()  # 不得抛 CancelledError（旧 bug 会在此泄漏打穿停机路径）
+
+    asyncio.run(_run())
 
     assert conn.session is None
-    assert conn._stack is None
     assert conn.tools_cache == {}
+    assert conn._owner is None
 
 
 def test_stopping_reraises_cancelled_probe() -> None:
@@ -294,3 +311,102 @@ def test_shutting_down_ignores_task_cancelling_count() -> None:
         task.uncancel()  # 收尾平衡计数（生产里由 anyio scope 负责）
 
     asyncio.run(_run())
+
+
+def test_call_tool_self_heals_on_dead_session() -> None:
+    """call_tool 命中死会话（ClosedResourceError）→ retire + rebuild + 用新连接重试成功。
+
+    用户实测诉求：容器重启后 web_search 命中池中死会话，应立刻自愈返回结果，
+    而不是干等 60s 健康循环、期间整条检索流水线全部 ClosedResourceError。
+    """
+    cap_id = uuid4()
+
+    class _DeadConn:
+        name = "websearch"
+        consecutive_failures = 0
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+            raise ClosedResourceError
+
+        async def close(self) -> None:
+            self.closed = True
+
+    class _FreshConn:
+        name = "websearch"
+        consecutive_failures = 0
+
+        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+            return "ok-result"
+
+        async def close(self) -> None:
+            return None
+
+    dead, fresh = _DeadConn(), _FreshConn()
+    health: list[tuple[UUID, str]] = []
+    pool = McpPool()
+    pool._conns[cap_id] = dead  # type: ignore[assignment]
+
+    async def _set_health(cap_id: UUID, status: str) -> None:
+        health.append((cap_id, status))
+
+    async def _rebuild() -> None:
+        pool._conns[cap_id] = fresh  # type: ignore[assignment]
+
+    pool._set_health = _set_health  # type: ignore[method-assign]
+    pool.rebuild = _rebuild  # type: ignore[method-assign]
+
+    result = asyncio.run(pool.call_tool(cap_id, "web_search", {"q": "x"}))
+
+    assert result == "ok-result"  # 重试成功
+    assert dead.closed is True  # 死连接被 retire 关闭
+    assert pool._conns[cap_id] is fresh  # 换成新连接
+    assert (cap_id, "unhealthy") in health  # retire 落了 unhealthy
+
+
+def test_health_loop_survives_stray_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """兜底：即便 stray CancelledError 逃进 _health_loop，循环也不许死，且继续跑后续轮。
+
+    直接死因回归：旧 `_health_loop` 的 `await asyncio.sleep()` 无保护，泄漏的取消在此
+    终结整个 mcp-health 任务 → 不再 rebuild → 能力永久失联。
+    """
+    monkeypatch.setattr(mcp_client, "HEALTH_CHECK_INTERVAL", 0.01)
+    pool = McpPool()
+    rounds = {"n": 0}
+
+    async def _round() -> None:
+        rounds["n"] += 1
+        if rounds["n"] == 1:
+            # 忠实模拟 anyio scope 泄漏：它通过 task.cancel() 递送 CancelledError
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            await asyncio.sleep(0)  # 让 CancelledError 在此递打进 _health_loop
+
+    pool._health_round = _round  # type: ignore[method-assign]
+
+    async def _run() -> tuple[bool, int]:
+        task = asyncio.create_task(pool._health_loop())
+        await asyncio.sleep(0.08)  # 让它跑几轮
+        alive, n = not task.done(), rounds["n"]
+        pool._stopping = True
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        return alive, n
+
+    alive, n = asyncio.run(_run())
+
+    assert alive is True  # 循环没被那次 stray cancel 打死
+    assert n >= 2  # 且继续跑了后续轮
+
+
+def test_mcp_connectable_skips_frontend_only_plugin() -> None:
+    """纯前端 plugin（无 transport，如「采购决策面板」iframe）不可连接，池/冒烟须跳过。"""
+    assert mcp_connectable({"frontend": {"mode": "iframe", "url": "x"}}) is False
+    assert mcp_connectable({}) is False
+    assert mcp_connectable({"transport": "http", "url": "x"}) is True
+    assert mcp_connectable({"transport": "stdio", "command": "x"}) is True
+    assert mcp_connectable({"transport": "grpc"}) is False

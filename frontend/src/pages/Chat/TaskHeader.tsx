@@ -30,12 +30,22 @@ import {
   STEP_SOURCE_LABELS,
   STEP_STATUS_COLORS,
   STEP_STATUS_LABELS,
-  TASK_STATUS_COLORS,
-  TASK_STATUS_LABELS,
+  TASK_STATE_LABELS,
+  deriveTaskState,
   progressText,
   stepKindLabel,
   stepLabel,
+  type TaskState,
 } from "./taskDisplay";
+
+/** 顶栏状态 Tag 配色（与会话列表五态术语一致；running/awaiting 另有专显，不在此列） */
+const STATE_TAG_COLOR: Record<TaskState, string> = {
+  done: "success",
+  running: "processing",
+  waiting: "default",
+  awaiting: "warning",
+  terminated: "error",
+};
 
 export default function TaskHeader({
   taskId,
@@ -65,6 +75,7 @@ export default function TaskHeader({
 
   if (!task) return null;
 
+  const state = deriveTaskState(task);
   const steps = task.steps ?? [];
   const mainSteps = steps.filter((s) => s.kind === "main");
   const branchSteps = steps.filter((s) => s.kind === "branch");
@@ -171,9 +182,9 @@ export default function TaskHeader({
           <Typography.Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
             {progressText(task)}
           </Typography.Text>
-          {task.status !== "active" && (
-            <Tag color={TASK_STATUS_COLORS[task.status]} style={{ fontSize: 11 }}>
-              {TASK_STATUS_LABELS[task.status] ?? task.status}
+          {state !== "running" && state !== "awaiting" && (
+            <Tag color={STATE_TAG_COLOR[state]} style={{ fontSize: 11 }}>
+              {TASK_STATE_LABELS[state]}
             </Tag>
           )}
         </div>
