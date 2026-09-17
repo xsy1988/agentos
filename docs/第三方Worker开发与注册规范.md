@@ -18,7 +18,7 @@ Agent 平台是一个任务导向的 Agent 运行平台：**任务是第一等�
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  你提供                                                      │
-│  ① Worker 定义：WORKER.md（干什么/怎么干/遇何问题/调哪个能力）│
+│  ① Worker 定义：WORKER.md（干什么/怎么干/遇何问题/调哪个能力）+ inputs 输入契约 │
 │  ② 能力（可执行单元）：mcp server / plugin 前端 / ……         │
 │  ③（可选）外部服务本体：保持在你自己的进程/主机上运行        │
 ├─────────────────────────────────────────────────────────────┤
@@ -387,7 +387,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 
 | 级别 | 内容 | 载入时机 |
 |---|---|---|
-| **L1** | yaml 头 `name` + `description`（一句话讲清「什么场景用它」） | 常驻上下文（意图识别、看板） |
+| **L1** | yaml 头 `name` + `description`（一句话讲清「什么场景用它」）+ `inputs` 输入契约（§3.1.1） | `name`/`description` 常驻上下文（意图识别、看板）；`inputs` 用于调用前的齐备性判定 |
 | **L2** | 正文 playbook | Worker 激活时注入**永不压缩区** |
 | **L3** | `references` 清单 + `references/*.md` | 执行到相应节点按需拉取 |
 
@@ -416,6 +416,69 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 - search_knowledge (read)：检索历史沉淀
 ```
 
+### 3.1.1 输入契约 `inputs`（P1-4，必需输入由平台判定，不靠模型自觉）
+
+Worker 需要的外部输入（报价单、客户名、币种……）写在 front-matter 的 `inputs:` 里，
+**平台在调用模型之前判定齐备性**——缺必填就直接拦截并告诉你差哪个字段，而不是让模型
+拿着空上下文硬干（编数据）或反问用户。**不声明 = 平台不管**（既有 Worker 零回归）。
+
+```yaml
+---
+name: 供应商报价对比
+description: 对比多家供应商报价并给出推荐（采购比价场景用）
+capabilities: [probe_url, parse_quote, search_knowledge]
+inputs:
+  - name: quote_file          # 必填字段，见下方命名规则
+    type: file                # text | number | date | file | url | json（缺省 text）
+    required: true            # 缺省 false
+    description: 待比价的报价单（xlsx/pdf）   # ≤500 字符，缺失时展示给用户
+    example: 报价单-2026Q1.xlsx               # ≤200 字符
+  - name: budget
+    type: number
+    required: false
+    description: 预算上限（含税，人民币）
+---
+```
+
+**声明约束**（任一不满足 → `POST /workers` 走 4xx、开放注册走 **422**）：
+
+| 约束 | 值 |
+|---|---|
+| 条目数 | ≤ 16 |
+| `name` | 小写字母开头的 ASCII 标识：`^[a-z][a-z0-9_]{0,39}$`，**同一 Worker 内不得重名** |
+| `type` | `text` / `number` / `date` / `file` / `url` / `json`（缺省 `text`） |
+| `required` | 布尔值（字符串 `"yes"` 会被拒——避免"看起来必填其实不是"） |
+| `description` / `example` | ≤500 / ≤200 字符 |
+| 其它键 | **一律拒绝**（未知字段会让声明与平台理解悄悄不一致） |
+
+**取值只来自平台能确定性判定的事实**（这是这项能力的核心纪律——**不让模型填**、
+不做文本抽取，因此"齐备判定"不会随模型输出漂移）：
+
+1. **显式传值**：`POST /conversations/{id}/messages` 或 `POST /tasks` 的 `inputs` 对象
+   （`{"quote_file": "报价单-2026Q1.xlsx"}`；只接受文本/数字/布尔，单值 ≤2000 字符）；
+2. **会话附件**：`file` 类型输入由随消息附带的附件**按声明顺序逐个顶替**（附件是平台
+   事实，不依赖模型转述）——注意**一个附件只消费一次**，多个 `file` 输入共享同一附件
+   目前不支持；
+3. **跨轮累积**：同一会话里历史 run 提供过的取值会被沿用（第一轮给了报价单，第三轮
+   不该被拦）。**未在 `inputs` 里声明的键一律忽略**（契约外输入不参与判定、也不进上下文）。
+
+**行为**：
+
+- 缺必填 → run **在调用模型前**落 `failed`，结构化 `error.code = "missing_inputs"`
+  （含 `missing` 字段名数组、每项声明的 `provided`/`value`、`retryable: false`、
+  `phase: "pre_invoke"`），用户看到的是"缺哪个输入 + 这个输入是干什么用的 + 补齐后
+  重新发起"。**此路径不消耗模型调用**。
+- 齐备 → 平台把"输入契约 + 实测取值"注入 Worker 的**永不压缩区**，模型看到的是
+  「已预检」而不是自己猜自己要什么。
+- **确认 / 等待恢复（`Command`）不重复设门**：计划已批准、执行已过半，此刻拦下来只会
+  丢进度。
+- **定时任务**（无交互入口补输入）触发声明了 `required: true` 的 Worker 会被拦 →
+  这类 Worker 请声明 `required: false`，或让输入走"附件/历史累积"通道。
+
+**边界（如实说明）**：门是 **run 级**（主 Worker 声明）；子任务 `inputs` 只做声明、
+校验、展示与 API 暴露，**没有 step 级门**（拦住子任务需要 interrupt-ask 机制，属独立
+工程项）；**平台目前没有 inputs 表单 UI**（补输入的通道是 API / 外部系统）。
+
 ### 3.2 子任务拆分（sub_workers）
 
 - 每个子任务一个文件夹：`sub_workers/<名>/WORKER.md`；
@@ -424,7 +487,11 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
   `ask_user`（文本澄清）/ `request_decision`（富交互决策卡，指向你的 plugin）/
   `declare_subtask`（非阻塞登记）触发；
 - `capability_hint`（能力名数组）给该步打检索提示——在本 Worker 域内优先装配这些能力
-  （软约束，不是白名单）。
+  （软约束，不是白名单）；
+- **`inputs`（可选，P1-4）**：语法与约束同 §3.1.1。子任务的 `inputs` 目前只做**声明、
+  校验、展示**（注册/编辑时会被校验，`GET /workers/{name}` 会回传），**不会**在子任务
+  开始时拦截——平台只有 run 级预检门（见 §3.1.1「边界」）。写它是为了把"这一步要什么"
+  讲清楚、供人审与后续演进，不要指望它替你挡住缺失输入。
 
 ### 3.3 版本纪律
 
@@ -486,7 +553,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `worker` | object | ✓ | Worker 定义：`name`(≤128，禁路径分隔符/点开头)、`description`(L1，必填)、`icon`/`color`(可选)、`capabilities`(能力名引用清单)、`references`(L3 清单)、`playbook`(L2 正文；空则落脚手架模板)、`sub_workers`(数组：`name/seq/kind/optional/description/playbook/capability_hint`，`optional` 缺省按 kind 推断) |
+| `worker` | object | ✓ | Worker 定义：`name`(≤128，禁路径分隔符/点开头)、`description`(L1，必填)、`icon`/`color`(可选)、`capabilities`(能力名引用清单)、`references`(L3 清单)、`playbook`(L2 正文；空则落脚手架模板)、`inputs`(**输入契约**，P1-4：数组，`name/type/required/description/example`，约束见 §3.1.1)、`sub_workers`(数组：`name/seq/kind/optional/description/playbook/capability_hint/inputs`，`optional` 缺省按 kind 推断) |
 | `capabilities` | array | | 逐项结构同 §2 各示例（`type/name/description/risk_level/payload/secret_env/test_info/version/category`）；**幂等：同名已存在则跳过，沿用平台既有配置** |
 | `if_exists` | enum | 缺省 `fail` | Worker 已存在时的决策：`fail`(409) / `skip`(沿用现状) / `new_version`(保留历史、发布 vN+1) |
 
@@ -526,7 +593,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 | 401 / 503 | 令牌无效 / 开放接口未启用 |
 | 404 | 查询的 Worker 不存在 |
 | 409 | Worker 已存在且 `if_exists=fail` |
-| 422 | payload 结构非法；tool 未带合法 `payload.builtin`；引用清单有未注册能力；`secret_env` 超长等 |
+| 422 | payload 结构非法；tool 未带合法 `payload.builtin`；引用清单有未注册能力；`secret_env` 超长；**`inputs` 声明非法**（未知字段 / 非法 `name` 或 `type` / 重名 / 超过 16 条 / `required` 非布尔 / 描述或示例超长）等 |
 
 ### 4.4 完整示例（curl）
 
@@ -571,6 +638,12 @@ curl -X POST http://<平台地址>/api/v1/open/workers/register \
       {"kind": "plugin", "title": "审核面板", "capability": "acme_review_panel"}
     ],
     "playbook": "# ACME 客户尽调\n\n## 第零步：依赖预检（必做）\n…（五件事见 §3.1）",
+    "inputs": [
+      {"name": "customer_name", "type": "text", "required": true,
+       "description": "被尽调的客户名称（与 CRM 中一致）", "example": "示例科技有限公司"},
+      {"name": "credit_file", "type": "file", "required": false,
+       "description": "客户提供的信用报告（pdf），有则一并核验"}
+    ],
     "sub_workers": [
       {"name": "拉取客户档案", "seq": 1, "kind": "main",
        "description": "从 ACME CRM 拉取客户基础档案与跟进记录",
@@ -592,6 +665,9 @@ curl -X POST http://<平台地址>/api/v1/open/workers/register \
 - [ ] L2 playbook 非空且覆盖「五件事 + 第零步依赖预检」（空模板会在 `warnings` 里提示）；
 - [ ] 主线子任务有 `seq`、支线 `kind=branch`；需富交互的步骤 playbook 指明了
       `request_decision` + 对应 plugin；
+- [ ] **必需输入写进了 `worker.inputs`**（§3.1.1）：`required` 如实（别把可缺的写成必填，
+      否则每次执行都会被拦）；`file` 类型配 `description` 讲清要哪份文件；定时任务触发的
+      Worker 不要声明 `required: true`；
 - [ ] 端到端验证：平台内新建会话发一条命中你 Worker 的消息 → 看板出现任务卡 →
       planner 按主线骨架推进 → 支线抛卡/侧边栏处理 → 回传续跑 → 进度三处同源（看板/任务卡/事件）；
 - [ ] 写操作工具触发确认门（risk_level 定级生效）；只读工具不打扰用户。
