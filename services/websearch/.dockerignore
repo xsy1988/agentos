@@ -1,0 +1,14 @@
+# 构建上下文只留 pyproject.toml / uv.lock / src（Dockerfile 里也只 COPY 这三样）。
+# 排除本地生成物：不然 .venv 与缓存 DB 会被塞进上下文，白白拖慢每次 build。
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+data/
+eval/reports/
+tests/
+reranker/
+searxng/
+README.md
+__pycache__/
+*.py[cod]

@@ -26,5 +26,145 @@ services:
     environment:
       DOCLING_SERVE_ENABLE_UI: "0"
 
+  # ==================== 自建网页搜索栈（profiles: search）====================
+  #
+  # 默认 `docker compose up -d` 只起 db + parser；这一栈用 profile 隔离，按需拉起：
+  #     docker compose --profile search up -d      # 或 bin/agentos search up
+  #
+  # 全部端口只绑 127.0.0.1：SearXNG 与 Crawl4AI 都没有真正的鉴权边界（后者只有一个
+  # 静态 token），绝不能对外暴露。容器间一律用 service name 互访。
+  #
+  # 分级可用（降级是设计的一部分，不是故障）：
+  #     缺 reranker → 跳过精排，沿用 RRF 序，meta 标 rerank=skipped
+  #     缺 crawler  → 不抽正文，用引擎摘要当片段，meta 标 extract=snippets_only
+  #     searxng 全挂 → available=false + 明确不可用文案（不抛异常，Agent run 不崩）
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: agent-platform-searxng
+    profiles: ["search"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8201:8080"
+    volumes:
+      # 必须可写：entrypoint 会在 settings.yml 缺 secret_key 时改写它
+      - ./services/websearch/searxng:/etc/searxng
+    environment:
+      # 覆盖镜像默认的 GRANIAN_HOST=::（双栈监听在部分宿主上会绑失败）
+      GRANIAN_HOST: "0.0.0.0"
+      GRANIAN_PORT: "8080"
+    healthcheck:
+      # 镜像基于 Void Linux，没有 curl，只有 wget 与 python3 → 用 python3 探
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 6s
+      start_period: 20s
+      retries: 3
+
+  search-api:
+    build:
+      context: ./services/websearch
+      dockerfile: Dockerfile
+    image: agent-platform-websearch-api:latest
+    container_name: agent-platform-search-api
+    profiles: ["search"]
+    restart: unless-stopped
+    ports:
+      # 容器内固定 8200，宿主侧可覆盖。默认不用 8200：部分开发机上它被
+      # Logitech G Hub 的 LSGTransmit 长期占着，而且它 accept 连接却从不响应——
+      # OrbStack 遇到端口被占会静默跳过发布，表现为「容器 healthy 但宿主 curl 超时」，极难查
+      - "127.0.0.1:${SEARCH_API_PORT:-8204}:8200"
+    environment:
+      SEARXNG_URL: "http://searxng:8080"
+      RERANKER_URL: "http://reranker:8000"
+      CRAWLER_URL: "http://crawler:11235"
+      # 与 crawler 的 CRAWL4AI_API_TOKEN 必须成对：Crawl4AI ≥0.9 未设 token 时只绑容器内
+      # loopback，届时发布的端口是死的（宿主与同网容器都连不上），流水线会一路降级
+      CRAWLER_TOKEN: ${CRAWL4AI_API_TOKEN:-agentos-crawler-local-token}
+      HOST: "0.0.0.0"
+      PORT: "8200"
+      CACHE_DIR: "/data"
+      # ---- 调参旋钮：改 .env 即可生效，不用重建镜像（含义见 config.py 与运维文档调优表）----
+      # CPU 上 cross-encoder 成本 ≈ pairs × tokens²，这几个参数直接决定全链路能否落进 25s。
+      # 注意：宿主变量 RERANK_DOC_MAX_LENGTH 注入到容器内叫 RERANK_MAX_LENGTH（=文档级），
+      # 与 reranker 服务自己的 RERANK_MAX_LENGTH（服务端默认）是两个不同层次的东西
+      RERANK_CANDIDATES: ${RERANK_CANDIDATES:-20}
+      RERANK_MAX_LENGTH: ${RERANK_DOC_MAX_LENGTH:-128}
+      # 低于此分的候选直接丢（不凑满 top10）：实测某一路会召回精排 0.0000 分的无关页
+      RERANK_SCORE_THRESHOLD: ${RERANK_SCORE_THRESHOLD:-0.05}
+      PASSAGE_MAX_LENGTH: ${PASSAGE_MAX_LENGTH:-256}
+      EXTRACT_TOP_N: ${EXTRACT_TOP_N:-3}
+      PASSAGE_CANDIDATES: ${PASSAGE_CANDIDATES:-4}
+      # google 从本地/机房 IP 常被限流；引擎死活靠 recall@50 量化，不靠玄学
+      SEARXNG_ENGINES: ${SEARXNG_ENGINES:-}
+    volumes:
+      # sqlite 缓存（query_cache/url_cache/metrics）落宿主目录，方便 sqlite3 CLI 直接查
+      - ./services/websearch/data:/data
+    depends_on:
+      # 只硬依赖 searxng：它是召回的唯一来源。reranker/crawler 刻意不列在这里——
+      # 它们不可用时流水线要能降级启动，而不是被 compose 挡在门外
+      searxng:
+        condition: service_healthy
+
+  reranker:
+    build:
+      context: ./services/websearch/reranker
+      dockerfile: Dockerfile
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+    image: agent-platform-websearch-reranker:latest
+    container_name: agent-platform-reranker
+    profiles: ["search"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8202:8000"
+    environment:
+      MODEL_ID: ${RERANK_MODEL_ID:-BAAI/bge-reranker-v2-m3}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      # 0 = 自动取 min(8, cpu_count)：CPU 上线程给太多会因同步开销反而变慢
+      NUM_THREADS: ${RERANK_THREADS:-0}
+      BATCH_SIZE: ${RERANK_BATCH_SIZE:-8}
+      # 服务端默认 token 上限；search-api 会按层下发更精确的值（文档级 128 / 片段级 256）。
+      # 实测（arm64 / 10 核 / batch=8）：128 token ≈ 0.18s/对、251 token ≈ 0.53s/对、
+      # 50 对 × 512 token = 44s——成本随长度约平方增长，这是延迟的头号旋钮
+      MAX_LENGTH: ${RERANK_MAX_LENGTH:-256}
+      RERANK_BUDGET_S: ${RERANK_BUDGET_S:-12}
+    volumes:
+      # 模型 2.2GB，首次下载后由命名卷持久化（重建容器不用重下）
+      - reranker_models:/models
+
+  crawler:
+    image: unclecode/crawl4ai:latest
+    container_name: agent-platform-crawler
+    profiles: ["search"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8203:11235"
+    environment:
+      # 不设这个 token，0.9+ 的 entrypoint 会把服务绑到容器内 127.0.0.1 → 发布的端口不通
+      CRAWL4AI_API_TOKEN: ${CRAWL4AI_API_TOKEN:-agentos-crawler-local-token}
+    # chromium 多标签渲染吃 /dev/shm，默认 64MB 会让重页直接崩
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:11235/health', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
+
 volumes:
   pgdata:
+  reranker_models:

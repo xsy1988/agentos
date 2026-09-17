@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     procurement_agent_base_url: str = "http://localhost:8100"
     # 第三方开发者开放注册接口（/api/v1/open）静态令牌；None = 开放接口停用（503）
     open_api_token: str | None = None
+    # 自建网页搜索服务（MCP Streamable HTTP，容器隔离区，§7.3）：
+    # 五级漏斗（召回→融合→重排→抽取→缓存）全部在 services/websearch 内完成，
+    # 平台侧只登记一个 type=mcp 能力并按标准通道消费，核心进程零新依赖。
+    # 8204 而非更顺手的 8200：后者在部分开发机上被桌面外设常驻进程占着且 accept 不响应，
+    # 探测会白等满 timeout 再把能力误判为 unhealthy（与 compose 的 SEARCH_API_PORT 成对修改）
+    search_mcp_url: str = "http://localhost:8204/mcp"
+    # REST 基址：seed 用它探可达性（决定 enabled/health_status），不承载工具调用
+    search_rest_base_url: str = "http://localhost:8204"
+    # 探测超时：必须短——它在 lifespan 里同步执行，服务没起时不能拖慢启动
+    search_probe_timeout: float = 3.0
 
 
 settings = Settings()

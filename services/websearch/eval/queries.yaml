@@ -1,0 +1,440 @@
+# 金标集：26 条查询 × 5 类意图切片，供 `python -m eval.run` 出指标、`eval.compare` 做回归门禁。
+#
+# ## 标注纪律（计划 §6 原文）
+#
+# 「逐条**实际打开候选 URL 确认其确实回答问题**后才写 grade: 2；无法逐条确认的只标
+# domain + grade: 1。」
+#
+# 这里的「实际打开」是用服务自己的 `POST /fetch`（**不带 question**）把全文取回来，
+# 再查 `answer_spans` 是否出现在正文里。每条 grade:2 的 `note` 都写了取证结果
+# （命中哪个串、抽到多少字），便于日后复查标注是不是失真。
+#
+# 为什么必须不带 question：带上它 /fetch 返回的是**片段精选后**的文本，
+# 用它取证会把「正文里有、但没被选进片段」的页面误判成不相关（实测 130 个候选里
+# 假阴性 29 个）。页面是否相关 与 我们的片段选择是否命中，是两件事，必须分开量。
+#
+# ## 三个刻意的取舍
+#
+# 1. **同一页面的不同语言版本只标一条**。实测 MDN 的 429 页面 `/zh-CN/` 与 `/en-US/`
+#    会同时进 top10（标题完全相同），流水线已按「去重键忽略语言段」合并成一条；
+#    若两条都标注，`ideal_dcg` 会凭空多出一个理想位次，把这条 query 的 nDCG 结构性
+#    压到 0.5 以下——那是在惩罚去重做对了。
+# 2. **标注权威性 ≠ 可抽取性**。stackoverflow.com、dl.acm.org、arxiv.org/pdf 这几类
+#    页面我们的抽取器拿不到正文（实测 UNAVAILABLE），但它们确实是相关答案源，
+#    照样标 grade:1~2。这样 nDCG 如实反映排序质量，而「抽不到」的代价落在
+#    片段召回率上——两个指标各说一件事，不互相掩盖。
+# 3. **volatile: true 的条目不进回归门禁**。时效类查询的结果每天都不一样，
+#    把它们算进 nDCG 门禁会让 CI 天天红，红了也没人能判断是代码退化还是新闻换了一批。
+#    它们仍然跑、仍然出数，只是 compare.py 不拿它们卡阈值。
+#
+# ## 覆盖率（读指标时必须一起看）
+#
+# 26 条查询共 71 条判定：grade:2 有 38 条（全部经 /fetch 全文取证）、grade:1 有 33 条
+# （按权威域名推断，或取证后降级的）。金标集必然不完备：没标注的相关页会被算成 0 分，
+# 所以 nDCG@10 的绝对值系统性偏低，**只能跨版本对比**。
+
+- id: tech-001
+  query: "BGE-Reranker-v2-m3 参数量与最大上下文长度"
+  intent: tech
+  freshness: any
+  answer_spans: ["8192", "568M"]
+  relevant:
+    - url: "https://huggingface.co/BAAI/bge-reranker-v2-m3/discussions/9"
+      grade: 2
+      note: "官方模型库讨论帖，全文 2484 字，命中 8192"
+    - url: "https://github.com/FlagOpen/FlagEmbedding/issues/990"
+      grade: 2
+      note: "官方仓库 issue 直接问 max_length，全文 815 字，命中 8192"
+    - domain: "huggingface.co"
+      grade: 1
+      note: "模型卡本体所在域，未逐篇确认"
+
+- id: tech-002
+  query: "docker compose depends_on 健康检查 service_healthy 怎么写"
+  intent: tech
+  freshness: any
+  answer_spans: ["service_healthy"]
+  relevant:
+    - url: "https://myapollo.com.tw/blog/docker-compose-depends-on"
+      grade: 2
+      note: "全文 5503 字，命中 service_healthy"
+    - url: "https://last9.io/blog/docker-compose-health-checks"
+      grade: 2
+      note: "全文 19878 字，命中 service_healthy"
+    - domain: "docs.docker.com"
+      grade: 1
+      note: "官方 compose 规范；实测未进 top50，是召回的真实缺口"
+
+- id: tech-003
+  query: "Kubernetes Pod CrashLoopBackOff 排查步骤"
+  intent: tech
+  freshness: any
+  answer_spans: ["kubectl describe", "kubectl logs"]
+  relevant:
+    - url: "https://docs.cloud.google.com/kubernetes-engine/docs/troubleshooting/crashloopbackoff-events"
+      grade: 2
+      note: "GKE 官方排查文档，全文 10147 字，两个 kubectl 命令都命中"
+    - url: "https://zhuanlan.zhihu.com/p/651299187"
+      grade: 2
+      note: "全文 9967 字（走 crawl4ai 才抽到，trafilatura 拿不到），命中两串"
+    - domain: "kubernetes.io"
+      grade: 1
+      note: "官方文档域，未逐篇确认"
+
+- id: tech-004
+  query: "Python asyncio.gather 与 asyncio.wait 的区别"
+  intent: tech
+  freshness: any
+  answer_spans: ["return_exceptions", "pending"]
+  relevant:
+    - url: "https://superfastpython.com/asyncio-gather-vs-wait"
+      grade: 2
+      note: "全文 13711 字，命中 return_exceptions 与 pending"
+    - url: "https://codemia.io/knowledge-hub/path/asynciogather_vs_asynciowait_vs_asynciotaskgroup"
+      grade: 2
+      note: "全文 6387 字，命中两串"
+    - domain: "docs.python.org"
+      grade: 1
+      note: "asyncio 官方 API 文档"
+    - domain: "stackoverflow.com"
+      grade: 1
+      note: "同题最高票问答；实测抽取 UNAVAILABLE（SO 反爬），相关但拿不到正文"
+
+- id: tech-005
+  query: "SearXNG settings.yml 开启 json 格式输出"
+  intent: tech
+  freshness: any
+  answer_spans: ["formats"]
+  relevant:
+    - url: "https://github.com/searxng/searxng/discussions/3542"
+      grade: 2
+      note: "官方仓库讨论，全文 1944 字，命中 formats"
+    - url: "https://github.com/searxng/searxng-docker/issues/453"
+      grade: 2
+      note: "官方 docker 部署仓库 issue，全文 441 字，命中 formats"
+    - domain: "docs.searxng.org"
+      grade: 1
+      note: "官方 settings 文档域"
+
+- id: tech-006
+  query: "nginx 反向代理 websocket 升级配置 Upgrade 头"
+  intent: tech
+  freshness: any
+  answer_spans: ["proxy_set_header Upgrade", "proxy_http_version"]
+  relevant:
+    - url: "https://cnblogs.com/yangtao416/p/17159117.html"
+      grade: 2
+      note: "全文 7938 字，两个配置项都命中"
+    - url: "https://cloud.tencent.com/developer/article/2655436"
+      grade: 2
+      note: "全文 6494 字，命中两串"
+    - domain: "nginx.org"
+      grade: 1
+      note: "官方 WebSocket proxying 文档域"
+
+- id: tech-007
+  query: "PostgreSQL vacuum 机制 为什么需要"
+  intent: tech
+  freshness: any
+  answer_spans: ["死元组", "dead tuple", "MVCC"]
+  relevant:
+    - url: "https://blog.yasking.org/a/postgresql-vacuum"
+      grade: 2
+      note: "全文 15160 字，命中「死元组」与 MVCC"
+    - url: "https://geeksforgeeks.org/postgresql/what-is-vacuum-in-postgresql"
+      grade: 2
+      note: "全文 5464 字，命中 dead tuple"
+    - domain: "postgresql.org"
+      grade: 1
+      note: "官方 VACUUM 文档域"
+
+- id: fact-001
+  query: "HTTP 状态码 429 代表什么"
+  intent: fact
+  freshness: any
+  answer_spans: ["Too Many Requests", "请求过多"]
+  relevant:
+    # 只标 zh-CN 一条：en-US 是同一页面的另一语言版，流水线已合并，重复标注会虚增理想位次
+    - url: "https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Status/429"
+      grade: 2
+      note: "MDN 权威定义，全文 872 字，命中 Too Many Requests"
+    - url: "https://seo.juziseo.com/doc/http_code/429"
+      grade: 2
+      note: "全文 1991 字，中英两串都命中"
+    - domain: "developer.mozilla.org"
+      grade: 1
+      note: "MDN 全域（覆盖 en-US 版本）"
+
+- id: fact-002
+  query: "PostgreSQL 默认监听端口号是多少"
+  intent: fact
+  freshness: any
+  answer_spans: ["5432"]
+  relevant:
+    - url: "https://postgresqlco.nf/doc/zh/param/port"
+      grade: 2
+      note: "PG 参数文档站 port 条目，全文 432 字，命中 5432"
+    - domain: "postgresql.org"
+      grade: 1
+      note: "官方 runtime-config-connection 文档"
+
+- id: fact-003
+  query: "Redis 默认端口号"
+  intent: fact
+  freshness: any
+  answer_spans: ["6379"]
+  relevant:
+    - url: "https://geeksforgeeks.org/system-design/what-is-the-default-port-for-redis"
+      grade: 2
+      note: "全文 2848 字，命中 6379"
+    - domain: "redis.io"
+      grade: 1
+      note: "官方文档域，未逐篇确认"
+
+- id: fact-004
+  query: "MCP 协议全称 Model Context Protocol 是谁提出的"
+  intent: fact
+  freshness: any
+  answer_spans: ["Anthropic"]
+  relevant:
+    - url: "https://en.wikipedia.org/wiki/Model_Context_Protocol"
+      grade: 2
+      note: "全文 10886 字，命中 Anthropic（含提出时间与背景）"
+    - url: "https://zh.wikipedia.org/wiki/%E6%A8%A1%E5%9E%8B%E4%B8%8A%E4%B8%8B%E6%96%87%E5%8D%8F%E8%AE%AE"
+      grade: 2
+      note: "中文维基同条目，全文 3368 字，命中 Anthropic"
+    - domain: "anthropic.com"
+      grade: 1
+      note: "提出方自己的公告域"
+
+- id: fact-005
+  query: "Git rebase 与 merge 的区别"
+  intent: fact
+  freshness: any
+  answer_spans: ["线性", "提交历史", "commit history", "提交的副本"]
+  relevant:
+    - url: "https://zhuanlan.zhihu.com/p/686538265"
+      grade: 2
+      note: "全文 5932 字，命中「线性」「提交历史」「提交的副本」三串"
+    - url: "https://cnblogs.com/hiyong/p/17114779.html"
+      grade: 2
+      note: "全文 1271 字，命中「提交历史」"
+    - domain: "git-scm.com"
+      grade: 1
+      note: "Pro Git 官方书域"
+
+- id: fact-006
+  query: "TCP 三次握手为什么不能是两次"
+  intent: fact
+  freshness: any
+  answer_spans: ["收发能力", "失效", "SYN"]
+  relevant:
+    - url: "https://lianjinta.com/network/tcp-ip"
+      grade: 2
+      note: "全文 1613 字，命中「失效」与 SYN"
+    - url: "https://github.com/wolverinn/Waking-Up/issues/8"
+      grade: 1
+      note: "命中「失效」但只抽到 412 字，不足以确认完整论证，故降为 grade:1"
+    - domain: "zhihu.com"
+      grade: 1
+      note: "同题高赞问答（15659 字，命中 SYN）"
+
+- id: zh-001
+  query: "为什么向量数据库用 HNSW 索引而不是 B 树"
+  intent: zh
+  freshness: any
+  answer_spans: ["维度灾难", "近似最近邻", "curse of dimensionality"]
+  relevant:
+    - url: "https://quant67.com/post/algorithms/39-hnsw/hnsw.html"
+      grade: 2
+      note: "HNSW 专题长文 31896 字，命中「近似最近邻」"
+    - url: "https://zhuanlan.zhihu.com/p/652730120"
+      grade: 2
+      note: "全文 10946 字，命中「近似最近邻」"
+    - domain: "zilliz.com.cn"
+      grade: 1
+      note: "Milvus 厂商技术博客，按权威域名推断"
+
+- id: zh-002
+  query: "大模型上下文窗口变大之后 RAG 还有必要吗"
+  intent: zh
+  freshness: any
+  answer_spans: []   # 观点题：没有唯一答案串，span_hit 跳过（分母不含它）
+  relevant:
+    - url: "https://zilliz.com.cn/blog/will-long-contextllms-kill-rag-vectordatabase"
+      grade: 2
+      note: "观点题：标题即「长上下文是否会杀死 RAG」，全文 4586 字可抓取，正文围绕该问题展开"
+    - url: "https://zhuanlan.zhihu.com/p/81543132939"
+      grade: 1
+      note: "同题长文 25264 字，可抓取，未逐段确认结论"
+
+- id: zh-003
+  query: "个人开发者怎么挑中文嵌入模型"
+  intent: zh
+  freshness: any
+  answer_spans: []   # 选型建议题，无唯一答案串
+  relevant:
+    - url: "https://ihower.tw/blog/12167-embedding-models"
+      grade: 2
+      note: "嵌入模型选型对比文，全文 4242 字可抓取"
+    - url: "https://github.com/ForceInjection/AI-fundamentals/blob/main/07_rag_and_tools/rag_basics/chinese_embeddings"
+      grade: 1
+      note: "中文嵌入模型清单，全文 9625 字，未逐项确认时效"
+
+- id: zh-004
+  query: "自建搜索服务用 SearXNG 还是自己爬"
+  intent: zh
+  freshness: any
+  answer_spans: []   # 方案权衡题，无唯一答案串
+  relevant:
+    - url: "https://ssdnodes.com/learn/lang/zh-hans/searxng-self-hosted-search"
+      grade: 2
+      note: "自托管 SearXNG 专题，全文 8939 字可抓取"
+    - domain: "searxng.org"
+      grade: 1
+      note: "官方站；实测抽取 UNAVAILABLE，但域名本身是权威来源"
+
+- id: en-001
+  query: "Ollama supported model formats GGUF"
+  intent: en
+  freshness: any
+  answer_spans: ["llama.cpp", "GGML", "binary file format"]
+  relevant:
+    - url: "https://ollama.com/blog/improved-performance-and-model-support-with-gguf"
+      grade: 2
+      note: "官方 GGUF 支持公告，全文 2246 字，命中 llama.cpp 与 GGML"
+    - url: "https://datacamp.com/tutorial/gguf-format-a-complete-guide"
+      grade: 2
+      note: "GGUF 格式完整指南 35896 字，三串全中"
+    - domain: "huggingface.co"
+      grade: 1
+      note: "Hub 的 Ollama 集成文档域"
+
+- id: en-002
+  query: "vLLM PagedAttention paper"
+  intent: en
+  freshness: any
+  answer_spans: ["2309.06180", "Efficient Memory Management"]
+  relevant:
+    - url: "https://arxiv.org/abs/2309.06180"
+      grade: 2
+      note: "论文本体（SOSP'23）。按 URL 认定，未走 /fetch 取证：abs 与 pdf 页抽取均失败"
+    - url: "https://medium.com/@abonia/vllm-and-pagedattention-a-comprehensive-overview-20046d8d0c61"
+      grade: 2
+      note: "全文 7632 字，命中 arXiv 编号 2309.06180"
+    - url: "https://docs.vllm.ai/en/latest/design/paged_attention"
+      grade: 1
+      note: "全文 19152 字，讲的是实现且自述为 historical document，未标明论文出处，故 grade:1"
+    - domain: "dl.acm.org"
+      grade: 1
+      note: "ACM 正式版；实测抽取 UNAVAILABLE（付费墙 + 反爬）"
+
+- id: en-003
+  query: "LangGraph postgres checkpointer"
+  intent: en
+  freshness: any
+  answer_spans: ["PostgresSaver"]
+  relevant:
+    - url: "https://reference.langchain.com/python/langgraph.checkpoint.postgres/PostgresSaver"
+      grade: 2
+      note: "官方 API 参考 PostgresSaver 条目，全文 2029 字，命中"
+    - url: "https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-postgres/langgraph/checkpoint/postgres"
+      grade: 2
+      note: "官方实现源码，全文 20272 字，命中 PostgresSaver"
+    - domain: "langchain.com"
+      grade: 1
+      note: "官方文档域（含 docs./reference. 子域）"
+
+- id: en-004
+  query: "sentence-transformers CrossEncoder vs Bi-Encoder"
+  intent: en
+  freshness: any
+  answer_spans: ["cosine similarity", "logit"]
+  relevant:
+    - url: "https://sbert.net/docs/cross_encoder/usage/usage.html"
+      grade: 2
+      note: "官方 CrossEncoder 用法文档，全文 5877 字，命中 logit"
+    - url: "https://osanseviero.github.io/hackerllama/blog/posts/sentence_embeddings2"
+      grade: 2
+      note: "两类模型对比的经典长文 40564 字，命中 cosine similarity"
+    - domain: "sbert.net"
+      grade: 1
+      note: "sentence-transformers 官方站全域"
+
+- id: en-005
+  query: "FastAPI dependency injection yield"
+  intent: en
+  freshness: any
+  answer_spans: ["exit code", "after the response"]
+  relevant:
+    - url: "https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield"
+      grade: 2
+      note: "官方教程原页，全文 17948 字，两串都命中"
+    - url: "https://fastapi.xiniushu.com/it/tutorial/dependencies/dependencies-with-yield"
+      grade: 2
+      note: "官方文档的第三方镜像，全文 11577 字，两串都命中。实测它排在官方站之前——
+             排序上的已知瑕疵，见 docs/自建网页搜索服务.md 的「已知不足」"
+    - domain: "fastapi.tiangolo.com"
+      grade: 1
+      note: "官方站全域"
+
+# ---- 时效切片：结果随时间漂移，volatile 条目不参与回归门禁 ----
+# 这四条的存在不是为了考 nDCG（新闻每天都在换，标注第二天就过期），
+# 而是为了考**意图识别与召回窗口**：understand 层要能从「最近/本周/今年/今天」推出
+# time_range，且召回窗口明显小于常青查询（实测 13~20 vs 34~50）——这本身就是可量的行为。
+
+- id: fresh-001
+  query: "最近开源大模型有哪些新发布"
+  intent: fresh
+  freshness: auto
+  volatile: true
+  answer_spans: []
+  relevant:
+    - domain: "huggingface.co"
+      grade: 1
+      note: "开源模型发布的第一现场"
+    - domain: "36kr.com"
+      grade: 1
+      note: "中文科技媒体"
+
+- id: fresh-002
+  query: "本周 AI 领域重要新闻"
+  intent: fresh
+  freshness: auto
+  volatile: true
+  answer_spans: []
+  relevant:
+    - domain: "news.mit.edu"
+      grade: 1
+      note: "机构级 AI 研究新闻"
+    - domain: "cls.cn"
+      grade: 1
+      note: "财联社快讯"
+
+- id: fresh-003
+  query: "今年 MCP 生态有哪些新进展"
+  intent: fresh
+  freshness: auto
+  volatile: true
+  answer_spans: []
+  relevant:
+    - domain: "modelcontextprotocol.io"
+      grade: 1
+      note: "MCP 官方站（规范与变更日志）"
+    - domain: "anthropic.com"
+      grade: 1
+      note: "提出方公告域"
+
+- id: fresh-004
+  query: "今天有什么科技行业的大新闻"
+  intent: fresh
+  freshness: auto
+  volatile: true
+  answer_spans: []
+  relevant:
+    - domain: "jiemian.com"
+      grade: 1
+      note: "界面新闻"
+    - domain: "sina.com.cn"
+      grade: 1
+      note: "新浪科技/财经"

@@ -17,6 +17,7 @@ from app.modules.capabilities.router import (
 )
 from app.modules.capabilities.router import router as capabilities_router
 from app.modules.capabilities.service import seed_builtin_capabilities
+from app.modules.capabilities.websearch_seed import seed_websearch_capability
 from app.modules.conversations.router import router as conversations_router
 from app.modules.engine.runtime import engine_runtime
 from app.modules.files.router import router as files_router
@@ -46,6 +47,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await seed_builtin_capabilities()
     # 幂等 seed：采购报价对比 Worker 文件包 + 决策面板 plugin（决策4）
     await seed_procurement_worker()
+    # 幂等 seed：自建网页搜索服务（type=mcp）。搜索栈是 compose profile，没起时探测失败
+    # → 能力置 disabled/unhealthy 但不阻断启动；起来后重启后端即自动接上
+    await seed_websearch_capability()
     # 幂等 seed：知识库三个默认根目录（产品/研发/生活）
     await seed_default_folders()
     # 管道中断文档 → failed（可 retry），不自动续跑

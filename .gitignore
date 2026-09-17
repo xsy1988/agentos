@@ -15,6 +15,9 @@ build/
 # Runtime data
 data/
 backend/data/
+# 自建网页搜索服务的 sqlite 缓存（query_cache/url_cache/metrics 三表）——
+# 已被上面的 data/ 覆盖，这里写出来是为了让人一眼看见它在哪、能直接删
+services/websearch/data/
 
 # IDE
 .idea/

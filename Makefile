@@ -1,4 +1,5 @@
-.PHONY: db-up db-down db-logs dev migrate upgrade test lint fmt hooks clean web dev-web
+.PHONY: db-up db-down db-logs dev migrate upgrade test lint fmt hooks clean web dev-web \
+        search-up search-eval search-model
 
 db-up:            ## 启动 PostgreSQL（pgvector）
 	docker-compose up -d
@@ -38,3 +39,14 @@ web:              ## 启动前端开发服务（热重载，:5173）
 
 dev-web:          ## 一键启动全部服务（容器+后端+前端）
 	./bin/agentos start
+
+search-up:        ## 起可选的自建网页搜索栈（searxng/search-api/reranker/crawler，profiles: search）
+	./bin/agentos search up
+
+search-eval:      ## 跑评测出全指标表 + 消融对照（需先 search-up；默认四档全跑、并发 1）
+	cd services/websearch && uv run python -m eval.run --concurrency 1
+
+search-model:     ## 预拉 reranker 模型（首次 2.2GB 下到命名卷 reranker_models，重建容器不重下）
+	docker compose --profile search up -d reranker
+	@echo "模型下载/加载中，跟踪进度: docker compose --profile search logs -f reranker"
+	@echo "就绪判据: curl -s http://localhost:8202/health 返回 loaded:true"

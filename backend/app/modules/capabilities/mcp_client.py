@@ -3,7 +3,8 @@
 进程模型约束（设计方案 §7）：单进程 workers=1，池是进程内单例。
 
 - 每 Server 一条会话，工具调用经 asyncio.Lock 串行排队
-- 健康检查：每 60s list_tools，连续 3 次失败 → unhealthy + 落库 + 摘除检索池
+- 健康检查：每 60s list_tools，连续 3 次失败 → unhealthy + 落库 + **从池中摘除**
+- 自愈：每轮探活末尾 rebuild() 补缺失连接 → Server（容器）重启后最多 60s 自动接回
 - 热注册：监听 pg NOTIFY 'capability_changed' → 增量重建（M3-d）
 - 工具级开关：list_tools 输出经 capability_tools.enabled 过滤（上下文膨胀最后闸门）
 """
@@ -99,6 +100,12 @@ class McpConnection:
         if self._stack is not None:
             try:
                 await self._stack.aclose()
+            except asyncio.CancelledError:
+                # 断裂会话（容器重启 / 停机）的 aclose 会把 streamablehttp 内部 anyio
+                # cancel scope 的 CancelledError 泄漏出来。它是 BaseException，普通
+                # `except Exception` 抓不住——吞掉它，但务必走完下面的状态复位，
+                # 否则半死连接留在池里，且停机时会上抛致「Application shutdown failed」。
+                logger.warning("mcp connection close cancelled: %s", self.name)
             except Exception:  # noqa: BLE001 —— 关闭失败的噪音不掩盖主流程
                 logger.warning("mcp connection close failed: %s", self.name)
         self.session = None
@@ -151,6 +158,9 @@ class McpPool:
         self._health_task: asyncio.Task | None = None
         self._listener_task: asyncio.Task | None = None
         self._listen_conn: Any = None
+        # stop() 置位：用来区分「停机时对本任务的真正取消」与「对端拖垮会话时
+        # streamablehttp 泄漏进来的 CancelledError」——只有前者该让健康循环退出
+        self._stopping = False
 
     # ---------- 生命周期 ----------
 
@@ -161,6 +171,7 @@ class McpPool:
         logger.info("McpPool started (%d servers)", len(self._conns))
 
     async def stop(self) -> None:
+        self._stopping = True
         for t in (self._health_task, self._listener_task):
             if t:
                 t.cancel()
@@ -276,22 +287,74 @@ class McpPool:
     async def _health_loop(self) -> None:
         while True:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
-            for cap_id, conn in list(self._conns.items()):
-                try:
-                    await conn.health_probe()
-                    if conn.consecutive_failures == 0:
-                        await self._set_health(cap_id, "healthy")
-                except Exception:  # noqa: BLE001 —— 探活失败计数
-                    conn.consecutive_failures += 1
-                    if conn.consecutive_failures >= HEALTH_FAILURE_LIMIT:
-                        logger.warning(
-                            "mcp server unhealthy: %s (%d consecutive failures)",
-                            conn.name,
-                            conn.consecutive_failures,
-                        )
-                        await self._set_health(cap_id, "unhealthy")
-                        await conn.close()
-                        # 摘除检索池：关连接即可，rebuild 时若仍 enabled 会重试拉起
+            await self._health_round()
+
+    def _shutting_down(self) -> bool:
+        """健康循环是否正被 stop() 主动停机。用于给 CancelledError 分类。
+
+        只认 _stopping 这个显式信号：stop() 先置位再 cancel 本任务，而它是本任务
+        唯一的取消者。**不能**用 `Task.cancelling()` 判——对端容器重启时 streamablehttp
+        的 anyio cancel scope 也是通过 task.cancel() 取消宿主的，同样会把 cancelling()
+        抬到 >0；用它会把「会话被拖垮」误判成「停机」，于是把那个本应吞掉的
+        CancelledError 重新放回，健康循环照样被打死（实测踩过的坑）。
+        """
+        return self._stopping
+
+    async def _health_round(self) -> None:
+        """一轮探活 + 自愈重建。拆出方法是为了可单测：不碰 sleep 与 while True。
+
+        CancelledError 纪律：会话被对端拖垮时 health_probe()/rebuild() 会泄漏
+        CancelledError（BaseException），普通 `except Exception` 抓不住。一旦逃逸就
+        终结健康循环 → 容器恢复后该能力永久失联（DoD 8 自愈要防的正是这个）。
+        故这里显式接住当作一次失败；唯有本任务被真正取消（_shutting_down）才上抛。
+        """
+        for cap_id, conn in list(self._conns.items()):
+            try:
+                await conn.health_probe()
+                if conn.consecutive_failures == 0:
+                    await self._set_health(cap_id, "healthy")
+            except asyncio.CancelledError:
+                if self._shutting_down():
+                    raise
+                conn.consecutive_failures += 1
+                logger.warning(
+                    "mcp probe cancelled by torn-down session: %s (%d)",
+                    conn.name,
+                    conn.consecutive_failures,
+                )
+                if conn.consecutive_failures >= HEALTH_FAILURE_LIMIT:
+                    await self._retire(cap_id, conn)
+            except Exception:  # noqa: BLE001 —— 探活失败计数
+                conn.consecutive_failures += 1
+                if conn.consecutive_failures >= HEALTH_FAILURE_LIMIT:
+                    await self._retire(cap_id, conn)
+        # 自愈：把上面摘掉的、以及启动时连不上但现在活过来的 Server 重新拉起。
+        # rebuild() 幂等且单 Server 失败不拖垮池，所以每轮跑一次是安全的；
+        # 容器恢复后最多 60s（一个探活周期）自动接回，无需重启后端
+        try:
+            await self.rebuild()
+        except asyncio.CancelledError:
+            if self._shutting_down():
+                raise
+            logger.warning("mcp pool rebuild cancelled; retry next round")
+        except Exception as e:  # noqa: BLE001 —— DB 抖动不该终结整个健康循环
+            logger.warning("mcp pool rebuild failed: %s", e)
+
+    async def _retire(self, cap_id: UUID, conn: McpConnection) -> None:
+        """判死一个 Server：落 unhealthy + 关闭 + 从池摘除，让 rebuild() 能重新拉起。
+
+        必须从池里摘掉：rebuild() 对已存在的 cap_id 是 `continue`，留着一条死连接
+        = 该能力永久失联（call_tool 抛「未连接」、list_enabled_tools 静默摘除其工具），
+        直到后端进程重启。close() 对断裂会话可能再泄漏 CancelledError，已在 close 内接住。
+        """
+        logger.warning(
+            "mcp server unhealthy: %s (%d consecutive failures)",
+            conn.name,
+            conn.consecutive_failures,
+        )
+        await self._set_health(cap_id, "unhealthy")
+        await conn.close()
+        self._conns.pop(cap_id, None)
 
     async def _listen_changes(self) -> None:
         """热注册：NOTIFY 'capability_changed' → 增量重建（不重启进程）。"""

@@ -1,0 +1,172 @@
+# 自建 SearXNG 配置 —— 挂载到容器内 /etc/searxng/settings.yml
+#
+# 只写「与内置默认不同」的部分：use_default_settings 让 SearXNG 把本文件深合并到
+# /usr/local/searxng/searx/settings.yml（3400+ 行的默认配置）之上；engines 按 name 逐条合并，
+# 只覆盖列出的字段，其余保持默认。所以这份文件短、可读、随 SearXNG 升级不容易失效。
+#
+# 头号坑（DoD 1）：默认 search.formats 只有 html → 请求 format=json 会直接 403，
+# 整条流水线无从召回。下面 formats 必须含 json。
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "agentos-websearch"
+  enable_metrics: true
+
+server:
+  # 容器内必须监听全部网卡（granian 用 GRANIAN_HOST=:: / GRANIAN_PORT=8080 覆盖此处）；
+  # 对外只暴露 127.0.0.1 由 compose 的端口映射保证（SearXNG 无鉴权，绝不能公网暴露）
+  port: 8080
+  bind_address: "0.0.0.0"
+  # 可被 SEARXNG_SECRET 覆盖；本地自用固定值即可（重启不掉 session）
+  secret_key: "agentos-websearch-local-secret"
+  # 内网自用：限流会让 JSON 请求随机 429，是「时好时坏搜不到」的经典成因
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: GET
+
+search:
+  formats:
+    - html
+    - json # ← 流水线走 GET /search?format=json，缺这行直接 403
+  safe_search: 0
+  default_lang: "auto"
+  autocomplete: "" # 服务化调用不需要自动补全，省一次外网请求
+
+outgoing:
+  # 单引擎超时必须 < 流水线的单路召回超时（RECALL_ROUTE_TIMEOUT=8s），
+  # 否则一路慢引擎会把整路吃掉
+  request_timeout: 5.0
+  max_request_timeout: 12.0
+  pool_connections: 100
+  pool_maxsize: 200
+  enable_http2: true
+  # 引擎连续失败会被 SearXNG 暂停一段时间：本地自用把惩罚时间调短，
+  # 否则一次网络抖动会让某引擎「消失」十几分钟
+  suspended_times:
+    SearxEngineAccessDenied: 60
+    SearxEngineCaptcha: 600
+    SearxEngineTooManyRequests: 60
+    cf_SearxEngineCaptcha: 3600
+    cf_SearxEngineAccessDenied: 600
+    recaptcha_SearxEngineCaptcha: 3600
+
+# 引擎集：**按实测结果配置，不是按「哪个更有名」配置**。
+#
+# 复现方法：`uv run python scripts/probe_engines.py`（逐引擎单发，用「top5 里有几条提到查询
+# 关键词」判相关性，而不是看「有没有返回」）。换网络环境（出口 IP 变了）后请重跑一次，
+# 引擎死活会变；临时覆盖用 compose 的 `SEARXNG_ENGINES`（recall.py 会改发 engines= 参数）。
+#
+# 2026-09 本机（CN 出口）实测结论：
+#   可用   sogou / 360search / naver / yandex / yahoo / yep / mwmbl / wikipedia / hackernews
+#   限流   baidu、quark（首发能出数，连续跑十几条后 CAPTCHA 挂起；退避 60s 后恢复）
+#   不可用 google、google cse（Suspended: CAPTCHA）/ duckduckgo（SSL 握手被掐断）
+#           brave（too many requests）/ mojeek（access denied）/ seznam、wiby、tusksearch（超时）
+#   出垃圾 bing —— **这条最坑**：它不报错、稳定返回 10 条，但中文查询的结果与查询无关
+#           （查「什么是向量数据库」返回 CRAN/R 下载页，查「PostgreSQL VACUUM」返回 cn.ubuntu.com）。
+#           英文查询正常（「Python 3.13 new features」→ python.org）。
+#           活着的垃圾源比死掉的引擎更坏：它占 rank 1、拿 RRF 最高票，把候选窗口的名额
+#           挤给无关页，只能靠精排一层层把它们筛掉。默认关掉。
+#
+# 「出垃圾的引擎要关」与「引擎冗余」不冲突：冗余是为了**任何一路挂掉都不塌**，
+# 而现在有 6~7 路在出相关结果——比原来「10 个引擎里 9 个挂、剩下 1 个出垃圾」强得多。
+engines:
+  # ---------- 通用网页（实测可用）----------
+  - name: sogou
+    disabled: false
+    timeout: 5.0
+  - name: 360search
+    disabled: false
+    timeout: 5.0
+  - name: naver
+    disabled: false
+    timeout: 5.0
+  - name: yandex
+    disabled: false
+    timeout: 5.0
+  - name: yahoo
+    disabled: false
+    timeout: 5.0
+  - name: yep
+    disabled: false
+    timeout: 5.0
+  - name: mwmbl
+    disabled: false
+    timeout: 5.0
+  # wikipedia 默认 display_type 只有 infobox → 结果只进信息框、不进 results 列表；
+  # 加上 list 才算一路真召回（实测「向量数据库」「Vector database」各返回 1 条词条）
+  - name: wikipedia
+    display_type: ["list", "infobox"]
+    timeout: 4.0
+  # 技术类查询的高质量独立源（实测「vLLM PagedAttention」返回 6 条带日期的讨论）
+  - name: hackernews
+    disabled: false
+    timeout: 4.0
+  # 国内引擎，出数质量好但**易触发验证码**：连续跑评测时会被挂起 60s（suspended_times 已调短）
+  - name: baidu
+    disabled: false
+    timeout: 5.0
+  - name: quark
+    disabled: false
+    timeout: 5.0
+
+  # ---------- 新闻（时效路 categories=news 用）----------
+  - name: bing news
+    disabled: false
+    timeout: 5.0
+  - name: naver news
+    disabled: false
+    timeout: 5.0
+  - name: yahoo news
+    disabled: false
+    timeout: 5.0
+  - name: sogou wechat
+    disabled: false
+    timeout: 5.0
+  - name: reuters
+    disabled: false
+    timeout: 5.0
+
+  # ---------- 明确关掉：本机实测不可用或出垃圾 ----------
+  # 关掉而不是留着的理由：留着它们每次查询都会往 unresponsive_engines 里塞 4~5 条常驻噪声，
+  # 而这个字段的意义正是「召回被掐断了」——噪声一多，真正的告警就再也看不出来。
+  # 换网络环境后想恢复：把 disabled 改成 false 即可（或 SEARXNG_ENGINES 临时指定）。
+  - name: bing
+    disabled: true # 出垃圾（中文查询返回无关页），见上方实测结论
+  - name: google
+    disabled: true # Suspended: CAPTCHA
+  - name: google cse
+    disabled: true
+  - name: duckduckgo
+    disabled: true # SSL error: certificate validation has failed（网络层被掐断，不是证书过期）
+  - name: brave
+    disabled: true # too many requests
+  - name: mojeek
+    disabled: true # access denied
+  - name: mojeek news
+    disabled: true
+  - name: google news
+    disabled: true
+  - name: duckduckgo news
+    disabled: true
+  - name: brave.news
+    disabled: true
+  # startpage 系：Proof-Of-Work 验证码（默认 inactive），开着只会拖慢每一路
+  - name: startpage
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: qwant news
+    disabled: true
+  # 图片/视频/音乐类目对本流水线无用（只要 general + news + it）
+  - name: google images
+    disabled: true
+  - name: bing images
+    disabled: true
+  - name: duckduckgo images
+    disabled: true
+  - name: google videos
+    disabled: true
+  - name: bing videos
+    disabled: true

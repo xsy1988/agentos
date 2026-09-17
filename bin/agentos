@@ -5,12 +5,14 @@
 #   agentos start     一键启动全部服务（数据库 → 后端 → 前端，含就绪等待）
 #   agentos stop      停止前后端与容器（数据保留在 volume）
 #   agentos restart   等价于 stop + start
-#   agentos status    查看各服务运行状态
+#   agentos status    查看各服务运行状态（含可选搜索栈）
 #   agentos logs      跟踪前后端日志（Ctrl-C 退出，不影响服务）
+#   agentos search up|down|status|logs   起停可选的自建网页搜索栈（profiles: search）
 #
 # 说明:
 #   - 后端 :8000（uvicorn --reload 热重载），前端 :5173（vite HMR）
 #   - 容器: agent-platform-db（pgvector）/ agent-platform-parser（docling）
+#   - 搜索栈（可选）: searxng/search-api/reranker/crawler，宿主端口 8201/8204/8202/8203，只绑 127.0.0.1
 #   - 日志与 pid 写到项目 logs/ 目录
 
 set -euo pipefail
@@ -116,6 +118,11 @@ cmd_start() {
     echo "  ✓ 前端就绪"
   fi
 
+  # 搜索栈是可选 profile，刻意不纳入默认启动路径（重资源、按需拉起）：缺失只提示一行，绝不阻塞
+  if [ "$(docker inspect -f '{{.State.Running}}' agent-platform-search-api 2>/dev/null)" != "true" ]; then
+    echo "  · 网页搜索栈未启动（可选）：需要联网搜索能力时执行 agentos search up"
+  fi
+
   echo ""
   echo "全部就绪："
   echo "  前端    http://localhost:5173"
@@ -148,12 +155,76 @@ cmd_status() {
       echo "  ✗ 容器  $c 未运行"
     fi
   done
+  # 搜索栈是可选 profile：未起是正常状态，措辞上不暗示故障
+  echo "  ── 搜索栈（可选，agentos search up 拉起）"
+  local h
+  for c in $SEARCH_CONTAINERS; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = "true" ]; then
+      h="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null)"
+      echo "  ✓ 容器  ${c} 运行中（health=${h}）"
+    else
+      echo "  · 容器  $c 未运行（可选）"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------- logs
 
 cmd_logs() {
   tail -f "$LOG_DIR/backend.log" "$LOG_DIR/frontend.log"
+}
+
+# ---------------------------------------------------------------- search stack
+#
+# 自建网页搜索栈（docker-compose profiles: search）。它是**可选**的重资源栈
+# （reranker 常驻 2~4GB），默认 agentos start 不拉它；这里单独封装起停/状态/日志。
+
+SEARCH_CONTAINERS="agent-platform-searxng agent-platform-search-api agent-platform-reranker agent-platform-crawler"
+SEARCH_SERVICES="searxng search-api reranker crawler"
+
+cmd_search() {
+  local action="${1:-up}"
+  local port="${SEARCH_API_PORT:-8204}"
+  local h
+  case "$action" in
+    up)
+      echo "── 搜索栈（searxng + search-api + reranker + crawler）"
+      docker compose --profile search up -d
+      echo "  等待 search-api 就绪（:$port/health）..."
+      if wait_http "http://localhost:${port}/health" 60 "search-api"; then
+        echo "  ✓ 搜索栈就绪"
+        echo "      REST  http://localhost:${port}   （/search /fetch /health /metrics）"
+        echo "      MCP   http://localhost:${port}/mcp"
+        echo "  · reranker 首次启动要下模型（2.2GB），未就绪时流水线自动降级为不精排（不影响可用性）"
+        echo "  · 后端若已在运行，需重启它让 websearch 能力重新探活：agentos restart（或重启 uvicorn）"
+      else
+        echo "  ⚠ search-api 60s 内未就绪；searxng 是硬依赖，reranker/crawler 缺失可降级运行"
+        echo "      排查: agentos search logs"
+      fi
+      ;;
+    down)
+      # 用 stop + 显式服务名，而非 `compose down`：down 是项目级操作，可能连带拆掉
+      # db/parser 共用的网络。stop 只停这 4 个容器，模型卷与缓存目录原样保留。
+      docker compose --profile search stop $SEARCH_SERVICES \
+        && echo "  ✓ 搜索栈已停止（容器保留、数据与模型卷不动；重启: agentos search up）"
+      ;;
+    status)
+      for c in $SEARCH_CONTAINERS; do
+        if [ "$(docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = "true" ]; then
+          h="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$c" 2>/dev/null)"
+          echo "  ✓ ${c} 运行中（health=${h}）"
+        else
+          echo "  ✗ $c 未运行"
+        fi
+      done
+      ;;
+    logs)
+      docker compose --profile search logs -f --tail=100 $SEARCH_SERVICES
+      ;;
+    *)
+      echo "用法: agentos search up|down|status|logs"; return 1
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------- main
@@ -164,5 +235,6 @@ case "${1:-help}" in
   restart) cmd_stop; echo ""; cmd_start ;;
   status)  cmd_status ;;
   logs)    cmd_logs ;;
-  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  search)  cmd_search "${2:-up}" ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
 esac

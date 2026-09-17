@@ -1,0 +1,10 @@
+# reranker 容器依赖（torch 单独装，见 Dockerfile 的 TORCH_INDEX_URL 参数）
+# 这里刻意不列 torch：CPU wheel 源在不同架构下不一样，交给 Dockerfile 决策
+transformers>=4.44,<5
+# bge-reranker-v2-m3 是 XLM-RoBERTa 系：fast tokenizer 读 tokenizer.json 不需要它，
+# 但慢速 XLMRobertaTokenizer 需要。模型源不完整或回退到慢速 tokenizer 时不至于直接报错——
+# 2MB 的保险，值。
+sentencepiece>=0.2
+fastapi>=0.111
+uvicorn>=0.30
+pydantic>=2.7

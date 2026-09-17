@@ -1,0 +1,5473 @@
+{
+ "generated_at": "2026-09-16T18:40:23+0800",
+ "base_url": "http://localhost:8204",
+ "queries_file": "/Users/hg/工作/项目demo/Agent平台/services/websearch/eval/queries.yaml",
+ "query_count": 26,
+ "health_components": {
+  "searxng": true,
+  "reranker": true,
+  "crawler": true
+ },
+ "upstream": {
+  "degraded": false,
+  "reasons": [],
+  "unresponsive_engines": [
+   "baidu",
+   "bing news",
+   "brave",
+   "duckduckgo",
+   "google",
+   "google cse",
+   "mojeek",
+   "mwmbl",
+   "naver",
+   "quark",
+   "reuters",
+   "sogou",
+   "wikidata",
+   "yep"
+  ],
+  "contributing_engines": [
+   "360search",
+   "bing news",
+   "github",
+   "mwmbl",
+   "naver",
+   "quark",
+   "sogou",
+   "wikipedia",
+   "yahoo",
+   "yandex",
+   "yep"
+  ]
+ },
+ "cache_probe": {
+  "probed": 3,
+  "hit_rate": 1.0,
+  "cold_p50_ms": 6032,
+  "warm_p50_ms": 0,
+  "speedup": 6032.0
+ },
+ "server_metrics": {
+  "service": "websearch",
+  "version": "0.1.0",
+  "available": true,
+  "components": {
+   "searxng": {
+    "available": true,
+    "probe": "/healthz",
+    "latency_ms": 18
+   },
+   "reranker": {
+    "status": "ok",
+    "model": "BAAI/bge-reranker-v2-m3",
+    "loaded": true,
+    "loading": false,
+    "device": "cpu",
+    "threads": 8,
+    "max_length": 256,
+    "max_length_cap": 512,
+    "batch_size": 8,
+    "bucket_chars": 96,
+    "budget_s": 12.0,
+    "warmup_ms": 200,
+    "requests": 273,
+    "pairs_scored": 2544,
+    "error": "",
+    "available": true,
+    "latency_ms": 13
+   },
+   "crawler": {
+    "status": "ok",
+    "timestamp": 1789555223.6356685,
+    "version": "0.9.3",
+    "available": true,
+    "latency_ms": 8
+   }
+  },
+  "degraded_components": [],
+  "reranker_model": "BAAI/bge-reranker-v2-m3",
+  "reranker_loaded": true,
+  "pipeline": {
+   "rrf_k": 60,
+   "route_weights": {
+    "original": 1.0,
+    "phrase": 0.9,
+    "keyword": 0.8,
+    "extra": 0.7
+   },
+   "candidate_window": 50,
+   "rerank_top_n": 10,
+   "rerank_candidates": 20,
+   "rerank_max_length": 128,
+   "rerank_score_threshold": 0.05,
+   "extract_top_n": 3,
+   "passage_candidates": 4,
+   "passage_max_length": 256,
+   "passage_score_threshold": 0.3,
+   "extractor": "auto",
+   "passages_per_doc": 2,
+   "chunk_size": 400,
+   "chunk_overlap": 60,
+   "max_chars_default": 6000,
+   "max_chars_hard_cap": 12000,
+   "pipeline_hard_timeout": 25.0,
+   "route_llm": false
+  },
+  "metrics": {
+   "counters": {
+    "query_cache_miss": 71,
+    "url_cache_miss": 217,
+    "search_total": 170,
+    "search_degraded": 28,
+    "recall_raw_total": 13569,
+    "query_cache_hit": 12,
+    "url_cache_hit": 131
+   },
+   "hit_rate": {
+    "query": 0.1446,
+    "url": 0.3764
+   },
+   "latency_ms": {
+    "pipeline": {
+     "count": 158,
+     "p50": 5898,
+     "p95": 14570,
+     "avg": 6848
+    },
+    "understand": {
+     "count": 158,
+     "p50": 0,
+     "p95": 1,
+     "avg": 4
+    },
+    "recall": {
+     "count": 158,
+     "p50": 1937,
+     "p95": 5051,
+     "avg": 2750
+    },
+    "fusion": {
+     "count": 157,
+     "p50": 0,
+     "p95": 3,
+     "avg": 0
+    },
+    "rerank": {
+     "count": 157,
+     "p50": 3381,
+     "p95": 9055,
+     "avg": 3084
+    },
+    "extract": {
+     "count": 157,
+     "p50": 0,
+     "p95": 5766,
+     "avg": 1033
+    }
+   },
+   "rows": {
+    "query_cache": 31,
+    "url_cache": 190
+   },
+   "latency_samples": 200,
+   "extra": {
+    "last_unresponsive": [
+     "baidu",
+     "quark",
+     "sogou"
+    ]
+   }
+  },
+  "last_unresponsive_engines": [
+   "baidu",
+   "quark",
+   "sogou"
+  ],
+  "uptime_s": 5611
+ },
+ "configs": {
+  "fusion": {
+   "ablate": "fusion",
+   "stages": [
+    "understand",
+    "recall"
+   ],
+   "overall": {
+    "n": 26,
+    "recall_at_50": 0.7308,
+    "ndcg_at_10": 0.142,
+    "mrr": 0.2293,
+    "route_agreement": null,
+    "span_hit_rate": 0.8421,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 3629,
+    "p95_ms": 6634,
+    "avg_window": 27.7692,
+    "avg_results": 10.0,
+    "avg_chars": 2940.1923,
+    "degraded": 3,
+    "cost_per_query": 0.0
+   },
+   "stable": {
+    "n": 22,
+    "recall_at_50": 0.7727,
+    "ndcg_at_10": 0.1326,
+    "mrr": 0.2425,
+    "route_agreement": null,
+    "span_hit_rate": 0.8421,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 4494,
+    "p95_ms": 6634,
+    "avg_window": 29.4545,
+    "avg_results": 10.0,
+    "avg_chars": 3021.2727,
+    "degraded": 1,
+    "cost_per_query": 0.0
+   },
+   "by_intent": {
+    "en": {
+     "n": 5,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.4303,
+     "mrr": 0.8286,
+     "route_agreement": null,
+     "span_hit_rate": 0.6,
+     "span_queries": 5,
+     "available_rate": 1.0,
+     "p50_ms": 4494,
+     "p95_ms": 5026,
+     "avg_window": 30.0,
+     "avg_results": 10.0,
+     "avg_chars": 3626.2,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "fact": {
+     "n": 6,
+     "recall_at_50": 0.8333,
+     "ndcg_at_10": 0.0952,
+     "mrr": 0.1167,
+     "route_agreement": null,
+     "span_hit_rate": 1.0,
+     "span_queries": 6,
+     "available_rate": 1.0,
+     "p50_ms": 5025,
+     "p95_ms": 6634,
+     "avg_window": 30.0,
+     "avg_results": 10.0,
+     "avg_chars": 2824.5,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "fresh": {
+     "n": 4,
+     "recall_at_50": 0.5,
+     "ndcg_at_10": 0.1934,
+     "mrr": 0.1562,
+     "route_agreement": null,
+     "span_hit_rate": null,
+     "span_queries": 0,
+     "available_rate": 1.0,
+     "p50_ms": 1093,
+     "p95_ms": 2215,
+     "avg_window": 18.5,
+     "avg_results": 10.0,
+     "avg_chars": 2494.25,
+     "degraded": 2,
+     "cost_per_query": 0.0
+    },
+    "tech": {
+     "n": 7,
+     "recall_at_50": 0.8571,
+     "ndcg_at_10": 0.0279,
+     "mrr": 0.0704,
+     "route_agreement": null,
+     "span_hit_rate": 0.8571,
+     "span_queries": 7,
+     "available_rate": 1.0,
+     "p50_ms": 1932,
+     "p95_ms": 5030,
+     "avg_window": 28.8571,
+     "avg_results": 10.0,
+     "avg_chars": 2913.5714,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "zh": {
+     "n": 4,
+     "recall_at_50": 0.25,
+     "ndcg_at_10": 0.0,
+     "mrr": 0.0,
+     "route_agreement": null,
+     "span_hit_rate": 1.0,
+     "span_queries": 1,
+     "available_rate": 1.0,
+     "p50_ms": 5025,
+     "p95_ms": 8016,
+     "avg_window": 29.0,
+     "avg_results": 10.0,
+     "avg_chars": 2748.75,
+     "degraded": 1,
+     "cost_per_query": 0.0
+    }
+   },
+   "queries": [
+    {
+     "id": "tech-001",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0799,
+     "mrr": 0.25,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "8192",
+      "568M"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5023,
+     "chars": 2710,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "sogou",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7509302276608409639",
+      "https://bge-model.com/bge/bge_reranker_v2.html",
+      "https://blog.csdn.net/weixin_34162851/article/details/157167059",
+      "https://huggingface.co/BAAI/bge-reranker-v2-m3",
+      "https://blog.csdn.net/weixin_36235398/article/details/158368608"
+     ]
+    },
+    {
+     "id": "tech-002",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "service_healthy"
+     ],
+     "window": 28,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1932,
+     "chars": 3336,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/gitblog_00576/article/details/151489438",
+      "https://cloud.tencent.com/developer/article/2590573",
+      "https://juejin.cn/post/7236932516739989559",
+      "https://jianshu.com/p/ab0e4d83dc45",
+      "https://juejin.cn/post/7568746602804428827"
+     ]
+    },
+    {
+     "id": "tech-003",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0618,
+     "mrr": 0.1429,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "kubectl describe",
+      "kubectl logs"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1858,
+     "chars": 3212,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://linkedin.com/pulse/what-really-happens-when-kubernetes-pod-crashes-hari-prasath-fn3uc",
+      "https://blog.csdn.net/rtkmnn_395/article/details/162131374",
+      "https://github.com/projectcalico/calico/issues/3094",
+      "https://cnblogs.com/leojazz/p/18781403",
+      "https://wenku.csdn.net/answer/jsdi2010fhx"
+     ]
+    },
+    {
+     "id": "tech-004",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1206,
+     "chars": 3015,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/m0_51159233/article/details/112462902",
+      "https://pypi.org/project/nb-aiopool",
+      "https://realpython.com/async-io-python",
+      "https://blog.csdn.net/nvd11/article/details/154288206",
+      "https://blog.csdn.net/weixin_44818729/article/details/107102593"
+     ]
+    },
+    {
+     "id": "tech-005",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0536,
+     "mrr": 0.1,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "formats"
+     ],
+     "window": 29,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1768,
+     "chars": 2687,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/fuyou_211/article/details/150223250",
+      "https://juejin.cn/post/7421815032184782860",
+      "https://github.com/Coffeiz/Gugu-web",
+      "https://blog.csdn.net/weixin_65552509/article/details/149323853",
+      "https://github.com/zhangmusinb-dotcom/-"
+     ]
+    },
+    {
+     "id": "tech-006",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "proxy_set_header Upgrade"
+     ],
+     "window": 25,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 4034,
+     "chars": 2610,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://developer.aliyun.com/article/1671002",
+      "https://php.cn/faq/2470032.html",
+      "https://blog.csdn.net/weixin_30074763/article/details/164656719",
+      "https://zhuanlan.zhihu.com/p/718559370",
+      "https://devtuts.net/zh-hans/nginx/nginx-websocket-reverse-proxy.html"
+     ]
+    },
+    {
+     "id": "tech-007",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "死元组",
+      "MVCC"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5030,
+     "chars": 2825,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://v2ex.com/tag/postgres",
+      "https://blog.csdn.net/u012551524/article/details/120548763",
+      "https://juejin.cn/post/7638267536363503651",
+      "https://php.cn/faq/1781896.html",
+      "https://github.com/dockercore/sre-skill"
+     ]
+    },
+    {
+     "id": "fact-001",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.356,
+     "mrr": 0.5,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "Too Many Requests",
+      "请求过多"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 2710,
+     "chars": 2529,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/q7w8e9r4/article/details/133639163",
+      "https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Status",
+      "https://nstproxy.com/zh/blog/what-is-429-error-code-fix-too-many-requests",
+      "https://zh.wikipedia.org/zh-hans/HTTP%E7%8A%B6%E6%80%81%E7%A0%81",
+      "https://capsolver.com/zh/blog/web-scraping/402-403-404-429-errors-web-scraping"
+     ]
+    },
+    {
+     "id": "fact-002",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "5432"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 6634,
+     "chars": 2790,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://clickhouse.com/docs/integrations/postgresql",
+      "https://pgpedia.postgresql.ac.cn/p/port.html",
+      "https://yansheng836.github.io",
+      "https://blog.csdn.net/weixin_32145807/article/details/113628940",
+      "https://blog.csdn.net/ghostliming/article/details/53312493"
+     ]
+    },
+    {
+     "id": "fact-003",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "6379"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5025,
+     "chars": 2487,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://php.cn/faq/421754.html",
+      "https://hub.docker.com/r/qiujiahong/redis_sen",
+      "https://api.hslcommunication.cn",
+      "https://blog.51cto.com/topic/redismorenduankou.html",
+      "https://blog.csdn.net/weixin_44797593/article/details/108559316"
+     ]
+    },
+    {
+     "id": "fact-004",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "Anthropic"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5024,
+     "chars": 3447,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://zenn.dev/cloud_ace/articles/model-context-protocol",
+      "https://ibm.com/jp-ja/think/topics/model-context-protocol",
+      "https://github.com/QingyaFan/blog/issues/115",
+      "https://community.cisco.com/t5/security-blogs/ai-model-context-protocol-mcp-and-security/ba-p/5274394",
+      "https://lobehub.com/mcp/modelcontextprotocol-servers"
+     ]
+    },
+    {
+     "id": "fact-005",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.2152,
+     "mrr": 0.2,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "提交历史"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5033,
+     "chars": 2953,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://gist.github.com/cnjimbo/9d2789f38fb62e60b9fa0d0c4a7d4511",
+      "https://blog.csdn.net/weixin_44966641/article/details/122561998",
+      "https://blog.csdn.net/xishining/article/details/115152823",
+      "https://stackoverflow.com/questions/16666089/whats-the-difference-between-git-merge-and-git-rebase",
+      "https://zhuanlan.zhihu.com/p/686538265"
+     ]
+    },
+    {
+     "id": "fact-006",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "失效"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5038,
+     "chars": 2741,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/lengxiao1993/article/details/82771768",
+      "https://github.com/wl05/AntBlog/issues/4",
+      "https://draven.co/whys-the-design-tcp-three-way-handshake",
+      "https://github.com/ljianshu/Blog/issues/61",
+      "https://developer.aliyun.com/article/631120"
+     ]
+    },
+    {
+     "id": "zh-001",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "近似最近邻"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5025,
+     "chars": 2845,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://github.com/digoal/blog/blob/master/202308/20230824_02.md",
+      "https://developer.aliyun.com/article/1707613",
+      "https://developer.aliyun.com/article/1731114",
+      "https://blog.csdn.net/Rangsh/article/details/164169731",
+      "https://juejin.cn/post/7621122531538894874"
+     ]
+    },
+    {
+     "id": "zh-002",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 8016,
+     "chars": 2654,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [
+      "路 extra: ReadTimeout: "
+     ],
+     "top_urls": [
+      "https://qubittool.com/zh/blog/long-context-vs-rag-decision-framework",
+      "https://juejin.cn/post/7666089320763523082",
+      "https://time.geekbang.org/column/article/891935",
+      "https://cnblogs.com/deephub/p/archive/2026/03/13",
+      "https://microsoft.com/en-us/research/articles/new-arrival-in-research-18"
+     ]
+    },
+    {
+     "id": "zh-003",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 26,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 2407,
+     "chars": 2533,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/qq_62223405/article/details/147957062",
+      "https://eet-china.com/mp/a515306.html",
+      "https://blog.csdn.net/a18302465887/article/details/158703377",
+      "https://juejin.cn/post/7527149165652394019",
+      "https://blog.csdn.net/weixin_34456923/article/details/158116545"
+     ]
+    },
+    {
+     "id": "zh-004",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 3629,
+     "chars": 2963,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://capitalonline.net/zh-cn/service/bigdata/elk",
+      "https://github.com/ihor-sokoliuk/mcp-searxng",
+      "https://blog.csdn.net/qq_33906319/article/details/161106984",
+      "https://blog.csdn.net/mmlihaio/article/details/143082042",
+      "https://juejin.cn/post/7135364257918484488"
+     ]
+    },
+    {
+     "id": "en-001",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 0.1429,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "llama.cpp",
+      "GGML"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5024,
+     "chars": 3629,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://docs.ollama.com/import",
+      "https://docs.ollama.com/modelfile",
+      "https://en.wikipedia.org/wiki/GGUF",
+      "https://ask.csdn.net/questions/9477988",
+      "https://deepwiki.com/ollama/ollama/4.4-model-file-formats"
+     ]
+    },
+    {
+     "id": "en-002",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5648,
+     "mrr": 1.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "Efficient Memory Management"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1244,
+     "chars": 3288,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://arxiv.org/abs/2309.06180",
+      "https://arxiv.org/pdf/2309.06180",
+      "https://paperswithcode.com",
+      "https://blog.csdn.net/weixin_51147313/article/details/148087959",
+      "https://vllm.ai/blog/2023-06-20-vllm"
+     ]
+    },
+    {
+     "id": "en-003",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 1.0,
+     "agreement": null,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 2003,
+     "chars": 3563,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://reference.langchain.com/python/langgraph.checkpoint.postgres",
+      "https://github.com/SerezhaGRig/langgraph-postgres-checkpointer",
+      "https://github.com/redis-developer/langgraph-redis",
+      "https://blog.csdn.net/weixin_47560078/article/details/148338420",
+      "https://pypi.org/project/langgraph-postgres-memory"
+     ]
+    },
+    {
+     "id": "en-004",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5397,
+     "mrr": 1.0,
+     "agreement": null,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 4494,
+     "chars": 3863,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://sbert.net/examples/cross_encoder/applications/README.html",
+      "https://sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html",
+      "https://blog.csdn.net/gitblog_00718/article/details/151853693",
+      "https://blog.csdn.net/2401_85378759/article/details/143249034",
+      "https://github.com/UKPLab/sentence-transformers/issues/1707"
+     ]
+    },
+    {
+     "id": "en-005",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.676,
+     "mrr": 1.0,
+     "agreement": null,
+     "span_hit": true,
+     "spans_matched": [
+      "exit code"
+     ],
+     "window": 30,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 5026,
+     "chars": 3788,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield",
+      "https://thirdygayares.com/FastAPI/fastapi-dependency-injection",
+      "https://blog.csdn.net/fwzzzzz/article/details/130011693",
+      "https://blog.stackademic.com/database-connections-in-fastapi-leveraging-dependency-injection-and-best-practices-765861cf4d31",
+      "https://hobit22.github.io/posts/DI"
+     ]
+    },
+    {
+     "id": "fresh-001",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5803,
+     "mrr": 0.5,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 25,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 2215,
+     "chars": 2439,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "bing news",
+      "naver",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://kimkj.com/ai-library?mod=document&uid=13387",
+      "https://36kr.com/p/2248079315677064",
+      "https://datalearner.com/leaderboards/open-source",
+      "https://developer.volcengine.com/articles/7429201976199970843",
+      "https://feelmeu.github.io/github-trending-tracker/index.html"
+     ]
+    },
+    {
+     "id": "fresh-002",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 19,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1017,
+     "chars": 2736,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "mwmbl",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://finance.eastmoney.com/a/202609133872791147.html",
+      "https://asiae.co.kr/cn/article/2026091408435913985",
+      "https://asiae.co.kr/cn/article/2026091612504683704",
+      "https://finance.eastmoney.com/a/202609133872786598.html",
+      "https://caifuhao.eastmoney.com/news/20260703095631577199060"
+     ]
+    },
+    {
+     "id": "fresh-003",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 14,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1093,
+     "chars": 2713,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "mwmbl",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://thepaper.cn/newsdetail_forward_33695386",
+      "https://cnblogs.com/weiluliaokeji/p/22629527",
+      "https://news.10jqka.com.cn/20250425/c667752292.shtml",
+      "https://aprilzz.com/ai/mcp-2026-roadmap",
+      "https://developer.aliyun.com/article/1680852"
+     ]
+    },
+    {
+     "id": "fresh-004",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1934,
+     "mrr": 0.125,
+     "agreement": null,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 16,
+     "routes": 1,
+     "results": 10,
+     "elapsed_ms": 1080,
+     "chars": 2089,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "bing news",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://cyzone.cn/article/846587.html",
+      "https://remoshuang.com/c/tech",
+      "https://ai.so.com/search/soefd7ea02d8a93d69b57f26c8f61d4dfa?search=%E4%BB%8A%E6%97%A5%E5%8D%81%E5%A4%A7%E7%A7%91%E6%8A%80%E6%96%B0%E9%97%BB%E6%B1%87%E6%80%BB&src=so_result_natural_news&srcg=so_result_natural_news",
+      "https://aihot.news/daily",
+      "https://toutiao.com/article/7674771684523622914"
+     ]
+    }
+   ]
+  },
+  "rerank": {
+   "ablate": "rerank",
+   "stages": [
+    "understand",
+    "recall",
+    "fusion"
+   ],
+   "overall": {
+    "n": 26,
+    "recall_at_50": 0.8462,
+    "ndcg_at_10": 0.2022,
+    "mrr": 0.4051,
+    "route_agreement": 0.9538,
+    "span_hit_rate": 1.0,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 1853,
+    "p95_ms": 5027,
+    "avg_window": 46.2308,
+    "avg_results": 10.0,
+    "avg_chars": 3012.7308,
+    "degraded": 2,
+    "cost_per_query": 0.0
+   },
+   "stable": {
+    "n": 22,
+    "recall_at_50": 0.9091,
+    "ndcg_at_10": 0.2022,
+    "mrr": 0.4485,
+    "route_agreement": 0.9636,
+    "span_hit_rate": 1.0,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 1940,
+    "p95_ms": 5027,
+    "avg_window": 49.0909,
+    "avg_results": 10.0,
+    "avg_chars": 3106.5455,
+    "degraded": 0,
+    "cost_per_query": 0.0
+   },
+   "by_intent": {
+    "en": {
+     "n": 5,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.4112,
+     "mrr": 0.8,
+     "route_agreement": 0.98,
+     "span_hit_rate": 1.0,
+     "span_queries": 5,
+     "available_rate": 1.0,
+     "p50_ms": 1611,
+     "p95_ms": 5030,
+     "avg_window": 46.0,
+     "avg_results": 10.0,
+     "avg_chars": 3659.0,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "fact": {
+     "n": 6,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.1632,
+     "mrr": 0.2833,
+     "route_agreement": 0.9667,
+     "span_hit_rate": 1.0,
+     "span_queries": 6,
+     "available_rate": 1.0,
+     "p50_ms": 1952,
+     "p95_ms": 3239,
+     "avg_window": 50.0,
+     "avg_results": 10.0,
+     "avg_chars": 2771.3333,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "fresh": {
+     "n": 4,
+     "recall_at_50": 0.5,
+     "ndcg_at_10": 0.2024,
+     "mrr": 0.1667,
+     "route_agreement": 0.9,
+     "span_hit_rate": null,
+     "span_queries": 0,
+     "available_rate": 1.0,
+     "p50_ms": 1555,
+     "p95_ms": 3992,
+     "avg_window": 30.5,
+     "avg_results": 10.0,
+     "avg_chars": 2496.75,
+     "degraded": 2,
+     "cost_per_query": 0.0
+    },
+    "tech": {
+     "n": 7,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.1625,
+     "mrr": 0.4524,
+     "route_agreement": 1.0,
+     "span_hit_rate": 1.0,
+     "span_queries": 7,
+     "available_rate": 1.0,
+     "p50_ms": 2324,
+     "p95_ms": 5026,
+     "avg_window": 50.0,
+     "avg_results": 10.0,
+     "avg_chars": 3133.1429,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "zh": {
+     "n": 4,
+     "recall_at_50": 0.5,
+     "ndcg_at_10": 0.0688,
+     "mrr": 0.25,
+     "route_agreement": 0.875,
+     "span_hit_rate": 1.0,
+     "span_queries": 1,
+     "available_rate": 1.0,
+     "p50_ms": 1853,
+     "p95_ms": 5022,
+     "avg_window": 50.0,
+     "avg_results": 10.0,
+     "avg_chars": 2872.25,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    }
+   },
+   "queries": [
+    {
+     "id": "tech-001",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "8192",
+      "568M"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 2324,
+     "chars": 3238,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://huggingface.co/BAAI/bge-reranker-v2-m3",
+      "https://bge-model.com/bge/bge_reranker_v2.html",
+      "https://blog.csdn.net/alankuo/article/details/150614660",
+      "https://blog.csdn.net/qq_41475067/article/details/147515024",
+      "https://juejin.cn/post/7509302276608409639"
+     ]
+    },
+    {
+     "id": "tech-002",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "service_healthy"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1940,
+     "chars": 3372,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/u010339879/article/details/132869044",
+      "https://eastondev.com/blog/zh/posts/dev/20251217-docker-compose-healthcheck",
+      "https://jianshu.com/p/ab0e4d83dc45",
+      "https://cloud.tencent.com/developer/article/2590573",
+      "https://blog.csdn.net/gitblog_00576/article/details/151489438"
+     ]
+    },
+    {
+     "id": "tech-003",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "kubectl describe",
+      "kubectl logs"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1849,
+     "chars": 2935,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/wdfloj_977/article/details/162320569",
+      "https://github.com/projectcalico/calico/issues/3094",
+      "https://serverfault.com/q/946470",
+      "https://cloud.tencent.com/developer/article/2695442",
+      "https://juejin.cn/post/7426307140866326565"
+     ]
+    },
+    {
+     "id": "tech-004",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.3798,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "pending"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 2651,
+     "chars": 3325,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/weixin_44818729/article/details/107102593",
+      "https://stackoverflow.com/questions/42231161/asyncio-gather-vs-asyncio-wait-vs-asyncio-taskgroup",
+      "https://blog.csdn.net/m0_51159233/article/details/112462902",
+      "https://superfastpython.com/asyncio-gather-vs-wait",
+      "https://realpython.com/async-io-python"
+     ]
+    },
+    {
+     "id": "tech-005",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1887,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "formats"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 3609,
+     "chars": 2915,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/fuyou_211/article/details/150223250",
+      "https://docs.searxng.org/admin/settings/index.html",
+      "https://github.com/Coffeiz/Gugu-web",
+      "https://juejin.cn/post/7421815032184782860",
+      "https://docs.searxng.org/admin/settings/settings.html"
+     ]
+    },
+    {
+     "id": "tech-006",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1982,
+     "mrr": 0.1667,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "proxy_set_header Upgrade",
+      "proxy_http_version"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5026,
+     "chars": 2941,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://developer.aliyun.com/article/1671002",
+      "https://zhuanlan.zhihu.com/p/718559370",
+      "https://blog.csdn.net/ITKidKid/article/details/131993294",
+      "https://cnblogs.com/kevingrace/p/9512287.html",
+      "https://devtuts.net/zh-hans/nginx/nginx-websocket-reverse-proxy.html"
+     ]
+    },
+    {
+     "id": "tech-007",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "死元组",
+      "dead tuple",
+      "MVCC"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1675,
+     "chars": 3206,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://postgresql.org/docs/current/sql-vacuum.html",
+      "https://v2ex.com/tag/postgres",
+      "https://github.com/dockercore/sre-skill",
+      "https://cnblogs.com/bigleft/p/17978078",
+      "https://gist.github.com/xkou/6b1a19e453f731e37c1d16c36b61abbb"
+     ]
+    },
+    {
+     "id": "fact-001",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5563,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Too Many Requests",
+      "请求过多"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1952,
+     "chars": 2856,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Status/429",
+      "https://ai.so.com/search/sodd7905eae2a2191b5e6977382fd79359?search=%E7%BD%91%E7%BB%9C%E7%B3%BB%E5%88%97HTTP+429+%E7%8A%B6%E6%80%81%E7%A0%81&src=so_result_natural_ask&srcg=so_result_natural_ask",
+      "https://blog.csdn.net/qyj19920704/article/details/149150028",
+      "https://runebook.dev/zh/docs/http/status/429",
+      "https://blog.csdn.net/q7w8e9r4/article/details/133639163"
+     ]
+    },
+    {
+     "id": "fact-002",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.8,
+     "span_hit": true,
+     "spans_matched": [
+      "5432"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 2096,
+     "chars": 2842,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/weixin_32145807/article/details/113628940",
+      "https://pgpedia.postgresql.ac.cn/p/port.html",
+      "https://database.ink/postgresql/listen-address-and-port-configuration.html",
+      "https://bbs.huaweicloud.com/blogs/470305",
+      "https://codenong.com/15100368"
+     ]
+    },
+    {
+     "id": "fact-003",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "6379"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1725,
+     "chars": 2396,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://php.cn/faq/421754.html",
+      "https://worktile.com/kb/ask/762976.html",
+      "https://php.cn/redis/422973.html",
+      "https://juejin.cn/post/7538760868785635363",
+      "https://juejin.cn/post/7470971173880119350"
+     ]
+    },
+    {
+     "id": "fact-004",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0717,
+     "mrr": 0.2,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Anthropic"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 3239,
+     "chars": 3011,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://github.com/ghbountybot/mcp",
+      "https://innoq.com/ch/topics/mcp",
+      "https://uml.org.cn/ai/202507144.asp",
+      "https://elastic.co/docs/solutions/search/mcp",
+      "https://anthropic.com/news/model-context-protocol"
+     ]
+    },
+    {
+     "id": "fact-005",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.351,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "线性",
+      "提交历史"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1260,
+     "chars": 2887,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://stackoverflow.com/questions/16666089/whats-the-difference-between-git-merge-and-git-rebase",
+      "https://zhuanlan.zhihu.com/p/686538265",
+      "https://blog.csdn.net/weixin_44966641/article/details/122561998",
+      "https://blog.csdn.net/xishining/article/details/115152823",
+      "https://developer.aliyun.com/article/1679801"
+     ]
+    },
+    {
+     "id": "fact-006",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "失效",
+      "SYN"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 2213,
+     "chars": 2636,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/b954960630/article/details/81861579",
+      "https://51cto.com/article/856006.html",
+      "https://blog.csdn.net/xumin330774233/article/details/14448715",
+      "https://blog.csdn.net/m0_48256515/article/details/116295015",
+      "https://blog.csdn.net/airplanewuhu/article/details/141500697"
+     ]
+    },
+    {
+     "id": "zh-001",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.8,
+     "span_hit": true,
+     "spans_matched": [
+      "近似最近邻"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1687,
+     "chars": 2715,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7621122531538894874",
+      "https://blog.csdn.net/Rangsh/article/details/164169731",
+      "https://cloud.tencent.com/document/product/1709/95428",
+      "https://developer.aliyun.com/article/1731114",
+      "https://developer.aliyun.com/article/1328709"
+     ]
+    },
+    {
+     "id": "zh-002",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5022,
+     "chars": 2768,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "wikipedia",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7666089320763523082",
+      "https://blog.csdn.net/weixin_27038701/article/details/164939296",
+      "https://qubittool.com/zh/blog/long-context-vs-rag-decision-framework",
+      "https://developer.aliyun.com/article/1716575",
+      "https://tianpan.co/zh/blog/2026/04/09/long-context-vs-rag-production-decision-framework"
+     ]
+    },
+    {
+     "id": "zh-003",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 1423,
+     "chars": 2546,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/a18302465887/article/details/158703377",
+      "https://cloud.tencent.com/developer/article/2437565",
+      "https://juejin.cn/post/7527149165652394019",
+      "https://blog.csdn.net/qq_62223405/article/details/147957062",
+      "https://blog.aihubplus.com/post/embedding-model-guide-2026"
+     ]
+    },
+    {
+     "id": "zh-004",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.2754,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 1853,
+     "chars": 3460,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://docs.searxng.org",
+      "https://blog.csdn.net/qq_33906319/article/details/161106984",
+      "https://medium.com/@rosgluk/selfhosting-searxng-a3cb66a196e9",
+      "https://github.com/ihor-sokoliuk/mcp-searxng",
+      "https://blog.csdn.net/tony_vip/article/details/145725812"
+     ]
+    },
+    {
+     "id": "en-001",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.9,
+     "span_hit": true,
+     "spans_matched": [
+      "llama.cpp",
+      "GGML"
+     ],
+     "window": 50,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 1611,
+     "chars": 3349,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://en.wikipedia.org/wiki/GGUF",
+      "https://docs.ollama.com/modelfile",
+      "https://docs.ollama.com/import",
+      "https://deepwiki.com/ollama/ollama/4.4-model-file-formats",
+      "https://markaicode.com/ollama-gguf-conversion-tutorial"
+     ]
+    },
+    {
+     "id": "en-002",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.6165,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Efficient Memory Management"
+     ],
+     "window": 40,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 1233,
+     "chars": 3719,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://arxiv.org/abs/2309.06180",
+      "https://arxiv.org/pdf/2309.06180",
+      "https://en.wikipedia.org/wiki/PagedAttention",
+      "https://en.wikipedia.org/wiki/VLLM",
+      "https://vllm.ai/blog/2023-06-20-vllm"
+     ]
+    },
+    {
+     "id": "en-003",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "PostgresSaver"
+     ],
+     "window": 41,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 5027,
+     "chars": 3731,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://reference.langchain.com/python/langgraph.checkpoint.postgres",
+      "https://github.com/SerezhaGRig/langgraph-postgres-checkpointer",
+      "https://pypi.org/project/langgraph-checkpoint-postgres",
+      "https://github.com/CodifyIQ/langgraph-checkpoint-postgres-pg8000",
+      "https://blog.csdn.net/weixin_47560078/article/details/148338420"
+     ]
+    },
+    {
+     "id": "en-004",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5089,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "cosine similarity"
+     ],
+     "window": 49,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 5030,
+     "chars": 3891,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://sbert.net/examples/cross_encoder/applications/README.html",
+      "https://medium.com/@shazaelmorsh/sentence-transformers-bi-encoders-and-cross-encoders-a82cba125abd",
+      "https://blog.csdn.net/gitblog_00718/article/details/151853693",
+      "https://blog.csdn.net/2401_85378759/article/details/143249034",
+      "https://sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html"
+     ]
+    },
+    {
+     "id": "en-005",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.745,
+     "mrr": 1.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "exit code"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 1337,
+     "chars": 3605,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield",
+      "https://fastapi.tiangolo.com/tutorial/dependencies",
+      "https://blog.csdn.net/fwzzzzz/article/details/130011693",
+      "https://thirdygayares.com/FastAPI/fastapi-dependency-injection",
+      "https://fastapi.tiangolo.com/advanced/advanced-dependencies"
+     ]
+    },
+    {
+     "id": "fresh-001",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.3869,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 33,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 3992,
+     "chars": 2735,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "reuters",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "bing news",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://datalearner.com/leaderboards/open-source",
+      "https://36kr.com/p/2877230975816328",
+      "https://news.qq.com/rain/a/20260916A06UMT00",
+      "https://news.qq.com/rain/a/20260915A06EUR00",
+      "https://sohu.com/a/1072820588_122980439"
+     ]
+    },
+    {
+     "id": "fresh-002",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 25,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 1321,
+     "chars": 2188,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "naver",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://aivertical.chinacloudsites.cn",
+      "https://aidaily.fyi/zh",
+      "https://post.smzdm.com/zz/p/ako0w77e",
+      "https://news.qq.com/rain/a/20260815A0A6NV00",
+      "https://maomu.com/news"
+     ]
+    },
+    {
+     "id": "fresh-003",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 31,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 969,
+     "chars": 2746,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "naver",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://xiaozha.org/article/mcp-ecosystem",
+      "https://cnblogs.com/weiluliaokeji/p/22629527",
+      "https://finance.eastmoney.com/a/202608173843007563.html",
+      "https://juejin.cn/post/7676770289486708771",
+      "https://blog.csdn.net/weixin_53961451/article/details/164812851"
+     ]
+    },
+    {
+     "id": "fresh-004",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.4228,
+     "mrr": 0.1667,
+     "agreement": 0.6,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 33,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 1555,
+     "chars": 2318,
+     "rerank_shift": null,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ablated",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "bing news",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://remoshuang.com/c/tech",
+      "https://ai.so.com/search/soefd7ea02d8a93d69b57f26c8f61d4dfa?search=%E4%BB%8A%E6%97%A5%E5%8D%81%E5%A4%A7%E7%A7%91%E6%8A%80%E6%96%B0%E9%97%BB%E6%B1%87%E6%80%BB&src=so_result_natural_news&srcg=so_result_natural_news",
+      "https://163.com/news/article/L6UJRKL20519DM16.html",
+      "https://aihot.news/daily",
+      "https://toutiao.com/article/7674771684523622914"
+     ]
+    }
+   ]
+  },
+  "extract": {
+   "ablate": "extract",
+   "stages": [
+    "understand",
+    "recall",
+    "fusion",
+    "rerank"
+   ],
+   "overall": {
+    "n": 26,
+    "recall_at_50": 0.8077,
+    "ndcg_at_10": 0.1302,
+    "mrr": 0.1439,
+    "route_agreement": 0.7047,
+    "span_hit_rate": 0.8947,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 6153,
+    "p95_ms": 9254,
+    "avg_window": 44.7308,
+    "avg_results": 9.9615,
+    "avg_chars": 3106.7692,
+    "degraded": 3,
+    "cost_per_query": 0.0
+   },
+   "stable": {
+    "n": 22,
+    "recall_at_50": 0.8182,
+    "ndcg_at_10": 0.1153,
+    "mrr": 0.1246,
+    "route_agreement": 0.7465,
+    "span_hit_rate": 0.8947,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 6369,
+    "p95_ms": 9254,
+    "avg_window": 48.8182,
+    "avg_results": 9.9545,
+    "avg_chars": 3174.3636,
+    "degraded": 1,
+    "cost_per_query": 0.0
+   },
+   "by_intent": {
+    "en": {
+     "n": 5,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.2038,
+     "mrr": 0.2333,
+     "route_agreement": 0.86,
+     "span_hit_rate": 0.8,
+     "span_queries": 5,
+     "available_rate": 1.0,
+     "p50_ms": 4227,
+     "p95_ms": 8106,
+     "avg_window": 45.2,
+     "avg_results": 10.0,
+     "avg_chars": 3958.4,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "fact": {
+     "n": 6,
+     "recall_at_50": 0.8333,
+     "ndcg_at_10": 0.1875,
+     "mrr": 0.2083,
+     "route_agreement": 0.75,
+     "span_hit_rate": 1.0,
+     "span_queries": 6,
+     "available_rate": 1.0,
+     "p50_ms": 5898,
+     "p95_ms": 12013,
+     "avg_window": 50.0,
+     "avg_results": 10.0,
+     "avg_chars": 2780.6667,
+     "degraded": 1,
+     "cost_per_query": 0.0
+    },
+    "fresh": {
+     "n": 4,
+     "recall_at_50": 0.75,
+     "ndcg_at_10": 0.2126,
+     "mrr": 0.25,
+     "route_agreement": 0.475,
+     "span_hit_rate": null,
+     "span_queries": 0,
+     "available_rate": 1.0,
+     "p50_ms": 4974,
+     "p95_ms": 8093,
+     "avg_window": 22.25,
+     "avg_results": 10.0,
+     "avg_chars": 2735.0,
+     "degraded": 2,
+     "cost_per_query": 0.0
+    },
+    "tech": {
+     "n": 7,
+     "recall_at_50": 0.8571,
+     "ndcg_at_10": 0.0436,
+     "mrr": 0.0286,
+     "route_agreement": 0.8143,
+     "span_hit_rate": 0.8571,
+     "span_queries": 7,
+     "available_rate": 1.0,
+     "p50_ms": 6456,
+     "p95_ms": 9254,
+     "avg_window": 50.0,
+     "avg_results": 10.0,
+     "avg_chars": 3184.7143,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    },
+    "zh": {
+     "n": 4,
+     "recall_at_50": 0.5,
+     "ndcg_at_10": 0.0217,
+     "mrr": 0.0312,
+     "route_agreement": 0.4806,
+     "span_hit_rate": 1.0,
+     "span_queries": 1,
+     "available_rate": 1.0,
+     "p50_ms": 7955,
+     "p95_ms": 8639,
+     "avg_window": 49.5,
+     "avg_results": 9.75,
+     "avg_chars": 2766.75,
+     "degraded": 0,
+     "cost_per_query": 0.0
+    }
+   },
+   "queries": [
+    {
+     "id": "tech-001",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.6,
+     "span_hit": true,
+     "spans_matched": [
+      "8192",
+      "568M"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 6369,
+     "chars": 3228,
+     "rerank_shift": 53,
+     "dropped_low": 2,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://docs.apiyi.com/api-capabilities/rerank/overview",
+      "https://askai.glarity.app/zh-CN/search/bge%E2%80%91reranker%E2%80%91v2%E2%80%91m3-%E7%9A%84%E6%9C%80%E5%A4%A7-Tokens-%E6%95%B0%E6%98%AF%E5%A4%9A%E5%B0%91",
+      "https://blog.csdn.net/weixin_33562004/article/details/158528463",
+      "https://blog.csdn.net/weixin_31715353/article/details/158440397",
+      "https://blog.csdn.net/weixin_34162851/article/details/157167059"
+     ]
+    },
+    {
+     "id": "tech-002",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.8,
+     "span_hit": true,
+     "spans_matched": [
+      "service_healthy"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5602,
+     "chars": 3577,
+     "rerank_shift": 35,
+     "dropped_low": 2,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "mwmbl",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7236932516739989559",
+      "https://blog.csdn.net/u010339879/article/details/132869044",
+      "https://juejin.cn/post/7568746602804428827",
+      "https://thisdevtool.com/blog/docker-compose-depends-on-service-healthy-not-waiting",
+      "https://begindev.com/docker-tutorial/docker-compose-dependencies-orchestration-tutorial"
+     ]
+    },
+    {
+     "id": "tech-003",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "kubectl describe",
+      "kubectl logs"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 6456,
+     "chars": 2959,
+     "rerank_shift": 55,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/ysqinv_642/article/details/162151170",
+      "https://juejin.cn/post/7426307140866326565",
+      "https://blog.csdn.net/miachen520/article/details/110731557",
+      "https://pcltxs.github.io/2026/03/24/Kubernetes-Pod-CrashLoopBackOff%20%E6%95%85%E9%9A%9C%E6%8E%92%E6%9F%A5%E5%AE%9E%E6%88%98/index.html",
+      "https://juejin.cn/post/7672692746071392302"
+     ]
+    },
+    {
+     "id": "tech-004",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.3052,
+     "mrr": 0.2,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "pending"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 8938,
+     "chars": 3977,
+     "rerank_shift": 46,
+     "dropped_low": 2,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://php.cn/faq/2008849.html",
+      "https://jianshu.com/p/6872bf356af7",
+      "https://landybird.github.io/python/2019/03/08/asyncio_gather_vs_asyncio_wait",
+      "https://salivity.github.io/python/article/asyncio-gather-vs-asyncio-wait-in-python",
+      "https://superfastpython.com/asyncio-gather-vs-wait"
+     ]
+    },
+    {
+     "id": "tech-005",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "formats"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5192,
+     "chars": 2973,
+     "rerank_shift": 40,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://linux.do/t/topic/336853",
+      "https://kinpoeray.notion.site/SearXNG-Dify-d06f0308f36c4deb8c2a549099fca6be",
+      "https://docs.litellm.com.cn/docs/search/searxng",
+      "https://hermes-doc.aigc.green/user-guide/features/web-search",
+      "https://blog.csdn.net/fuyou_211/article/details/150223250"
+     ]
+    },
+    {
+     "id": "tech-006",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.6,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 7720,
+     "chars": 2677,
+     "rerank_shift": 42,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://css3er.com/p/257.html",
+      "https://raybyte.cn/post/2026/1/5/834250e2",
+      "https://juejin.cn/post/7314365456076603429",
+      "https://cnblogs.com/zzw1986/p/5906592.html",
+      "https://devtuts.net/zh-hans/nginx/nginx-websocket-reverse-proxy.html"
+     ]
+    },
+    {
+     "id": "tech-007",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7,
+     "span_hit": true,
+     "spans_matched": [
+      "死元组",
+      "dead tuple",
+      "MVCC"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 9254,
+     "chars": 2902,
+     "rerank_shift": 27,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://cnblogs.com/ataoxz/p/18757393",
+      "https://blog.csdn.net/weixin_37692493/article/details/121089708",
+      "https://blog.csdn.net/a13407142317/article/details/134799124",
+      "https://cnblogs.com/dbadaily/p/vacuum1.html",
+      "https://juejin.cn/post/7638267536363503651"
+     ]
+    },
+    {
+     "id": "fact-001",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1982,
+     "mrr": 0.1667,
+     "agreement": 0.6,
+     "span_hit": true,
+     "spans_matched": [
+      "Too Many Requests",
+      "请求过多"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5898,
+     "chars": 2763,
+     "rerank_shift": 37,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/q7w8e9r4/article/details/133639163",
+      "https://baike.baidu.com/item/HTTP%20429%E7%8A%B6%E6%80%81%E7%A0%81/68953366",
+      "https://runebook.dev/zh/docs/http/status/429",
+      "https://blog.csdn.net/weixin_47872288/article/details/144949305",
+      "https://blog.csdn.net/qyj19920704/article/details/149150028"
+     ]
+    },
+    {
+     "id": "fact-002",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.4,
+     "span_hit": true,
+     "spans_matched": [
+      "5432"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 12013,
+     "chars": 2909,
+     "rerank_shift": 27,
+     "dropped_low": 8,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [
+      "路 extra: ReadTimeout: "
+     ],
+     "top_urls": [
+      "https://bbs.huaweicloud.com/blogs/470305",
+      "https://cnblogs.com/hongfei/p/3791911.html",
+      "https://pgpedia.postgresql.ac.cn/p/port.html",
+      "https://database.ink/postgresql/listen-address-and-port-configuration.html",
+      "https://help.supermap.com/iServer/1201/zh/Subject_introduce/Security/otherSecurity/PostgreSQL_install/PostgreSQL_install_config.htm"
+     ]
+    },
+    {
+     "id": "fact-003",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.9,
+     "span_hit": true,
+     "spans_matched": [
+      "6379"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 8649,
+     "chars": 2256,
+     "rerank_shift": 34,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7538760868785635363",
+      "https://blog.csdn.net/weixin_42075590/article/details/80748128",
+      "https://worktile.com/kb/ask/762976.html",
+      "https://shuyeidc.com/wp/291358.html",
+      "https://php.cn/faq/421754.html"
+     ]
+    },
+    {
+     "id": "fact-004",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.351,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Anthropic"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 4543,
+     "chars": 3417,
+     "rerank_shift": 48,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "mwmbl",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7660793595750858767",
+      "https://en.wikipedia.org/wiki/Model_Context_Protocol",
+      "https://github.com/modelcontextprotocol",
+      "https://elastic.co/docs/solutions/search/mcp",
+      "https://modelcontextprotocol.io"
+     ]
+    },
+    {
+     "id": "fact-005",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.4548,
+     "mrr": 0.25,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "线性",
+      "提交历史"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 8595,
+     "chars": 2887,
+     "rerank_shift": 44,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/xishining/article/details/115152823",
+      "https://juejin.cn/post/7577663384423104563",
+      "https://juejin.cn/post/6945572770843459615",
+      "https://zhuanlan.zhihu.com/p/686538265",
+      "https://cnblogs.com/hiyong/p/17114779.html"
+     ]
+    },
+    {
+     "id": "fact-006",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.121,
+     "mrr": 0.3333,
+     "agreement": 0.6,
+     "span_hit": true,
+     "spans_matched": [
+      "失效"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 5208,
+     "chars": 2452,
+     "rerank_shift": 44,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/lengxiao1993/article/details/82771768",
+      "https://toutiao.com/article/7684498951671644672",
+      "https://zhihu.com/question/429915921",
+      "https://blog.csdn.net/yiridancan/article/details/149031403",
+      "https://juejin.cn/post/7224045063424589880"
+     ]
+    },
+    {
+     "id": "zh-001",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.3,
+     "span_hit": true,
+     "spans_matched": [
+      "近似最近邻"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 7534,
+     "chars": 2783,
+     "rerank_shift": 45,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://developer.aliyun.com/article/1754722",
+      "https://ibm.com/cn-zh/think/topics/vector-database",
+      "https://juejin.cn/post/7621122531538894874",
+      "https://kingson4wu.github.io/zh/posts/20250220",
+      "https://blog.csdn.net/guoyizhongxing/article/details/162190140"
+     ]
+    },
+    {
+     "id": "zh-002",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.6,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 7955,
+     "chars": 2702,
+     "rerank_shift": 45,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://zhuanlan.zhihu.com/p/1903780172823499767",
+      "https://post.smzdm.com/p/a95860qo",
+      "https://51domino.com/blog/rag-vs-long-context-2026",
+      "https://qubittool.com/zh/blog/long-context-vs-rag-decision-framework",
+      "https://juejin.cn/post/7666089320763523082"
+     ]
+    },
+    {
+     "id": "zh-003",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.2222,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 48,
+     "routes": 3,
+     "results": 9,
+     "elapsed_ms": 5143,
+     "chars": 2385,
+     "rerank_shift": 40,
+     "dropped_low": 11,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/qq_62223405/article/details/147957062",
+      "https://cloud.tencent.com/developer/article/2437565",
+      "https://aishare.jizhiku.net/archives/21413",
+      "https://developer.volcengine.com/articles/7541275152172974121",
+      "https://blog.csdn.net/a18302465887/article/details/158703377"
+     ]
+    },
+    {
+     "id": "zh-004",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0869,
+     "mrr": 0.125,
+     "agreement": 0.8,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 8639,
+     "chars": 3197,
+     "rerank_shift": 42,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "mwmbl",
+      "wikipedia",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/mmlihaio/article/details/143082042",
+      "https://sider.ai/zh-CN/blog/ai-tools/how-to-use-searxng-from-first-search-to-self-hosting-mastery",
+      "https://xuanyuan.cloud/blog/5-docker-searxng",
+      "https://medium.com/@rosgluk/selfhosting-searxng-a3cb66a196e9",
+      "https://flybace.com/4293.html"
+     ]
+    },
+    {
+     "id": "en-001",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1982,
+     "mrr": 0.1667,
+     "agreement": 0.5,
+     "span_hit": true,
+     "spans_matched": [
+      "llama.cpp",
+      "GGML"
+     ],
+     "window": 49,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 3997,
+     "chars": 3921,
+     "rerank_shift": 41,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://xkiwilabs.com/guides/local-llm-setup",
+      "https://deepwiki.com/ollama/ollama/4.4-model-file-formats",
+      "https://contabo.com/blog/ollama-vs-localai-best-self-hosted-openai-compatible-llm-server",
+      "https://zenvanriel.com/ai-engineer-blog/ollama-vs-localai-comparison-local-model-deployment",
+      "https://atomic.chat/blog/llm-updates/ollama-vs-vllm"
+     ]
+    },
+    {
+     "id": "en-002",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Efficient Memory Management"
+     ],
+     "window": 36,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 3673,
+     "chars": 3502,
+     "rerank_shift": 44,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://ar5iv.labs.arxiv.org/html/2309.06180",
+      "https://huggingface.co/papers/2309.06180",
+      "https://generalcompute.com/blog/paged-attention-and-vllm?agent=true",
+      "https://en.wikipedia.org/wiki/PagedAttention",
+      "https://gpuhunter.io/research/llm-serving-systems-papers"
+     ]
+    },
+    {
+     "id": "en-003",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0661,
+     "mrr": 0.1667,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "PostgresSaver"
+     ],
+     "window": 41,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 4227,
+     "chars": 3869,
+     "rerank_shift": 40,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "naver",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://github.com/SerezhaGRig/langgraph-postgres-checkpointer",
+      "https://dev.to/irubtsov/building-conversational-ai-agents-that-remember-langgraph-postgres-checkpointing-and-the-future-gdl",
+      "https://github.com/CodifyIQ/langgraph-checkpoint-postgres-pg8000",
+      "https://blog.langchain.dev/langgraph-v0-2",
+      "https://markaicode.com/integrate/langgraph-with-postgresql"
+     ]
+    },
+    {
+     "id": "en-004",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.3499,
+     "mrr": 0.3333,
+     "agreement": 0.8,
+     "span_hit": true,
+     "spans_matched": [
+      "cosine similarity"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 8106,
+     "chars": 4323,
+     "rerank_shift": 25,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "naver",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://medium.com/@shazaelmorsh/sentence-transformers-bi-encoders-and-cross-encoders-a82cba125abd",
+      "https://blog.gopenai.com/sentence-transformers-sbert-vs-cross-encoders-a-conceptual-guide-d6ae67f1223a",
+      "https://osanseviero.github.io/hackerllama/blog/posts/sentence_embeddings2",
+      "https://milvus.io/ai-quick-reference/what-is-the-difference-between-using-a-sentence-transformer-biencoder-and-a-crossencoder-for-sentence-similarity-tasks",
+      "https://sbert.net/examples/cross_encoder/applications/README.html"
+     ]
+    },
+    {
+     "id": "en-005",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.4046,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 6153,
+     "chars": 4177,
+     "rerank_shift": 45,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://thecodeforge.io/python/fastapi-dependency-injection",
+      "https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield",
+      "https://linkedin.com/pulse/mastering-dependency-injection-fastapi-muhammad-ali-shahzad-jdzvf",
+      "https://llc.taejins.com/python/ch16/dependency",
+      "https://velog.io/@apollo058/FastAPI%EC%97%90%EC%84%9C-%EC%9D%98%EC%A1%B4%EC%84%B1-%EC%A3%BC%EC%9E%85"
+     ]
+    },
+    {
+     "id": "fresh-001",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 37,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 4974,
+     "chars": 2854,
+     "rerank_shift": 44,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "bing news",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://modelscope.csdn.net",
+      "https://datalearner.com/leaderboards/open-source",
+      "https://aikitapp.com/zh/weekly/models",
+      "https://aihot.news/topics/model-releases",
+      "https://finance.eastmoney.com/a/202609093869238345.html"
+     ]
+    },
+    {
+     "id": "fresh-002",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.5,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 19,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 8093,
+     "chars": 2610,
+     "rerank_shift": 46,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://aihot.news/weekly",
+      "https://tags.news.sina.com.cn/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD",
+      "https://aibars.net/zh/news",
+      "https://aihot.news/daily",
+      "https://news.daheiai.com"
+     ]
+    },
+    {
+     "id": "fresh-003",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.5,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 16,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 4069,
+     "chars": 2952,
+     "rerank_shift": 46,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://aprilzz.com/ai/mcp-2026-roadmap",
+      "https://tianliaos.com/post/ai-agent-open-source-ecosystem-mcp-protocol-local-first-august-2026",
+      "https://wikiprompt.org/zh/wiki/mcp-standard-ecosystem-growth",
+      "https://openai-hub.com/news/1705",
+      "https://cnblogs.com/weiluliaokeji/p/22629527"
+     ]
+    },
+    {
+     "id": "fresh-004",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.8503,
+     "mrr": 1.0,
+     "agreement": 0.2,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 17,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 4726,
+     "chars": 2524,
+     "rerank_shift": 40,
+     "dropped_low": 6,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "skipped"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "reuters",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://tech.sina.com.cn/roll",
+      "https://steemit.com/littlecookies/@littlecookies/7dmpho-ai",
+      "https://whatshot.top/tech",
+      "https://remoshuang.com/c/tech",
+      "https://tags.news.sina.com.cn/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD"
+     ]
+    }
+   ]
+  },
+  "none": {
+   "ablate": "none",
+   "stages": [
+    "understand",
+    "recall",
+    "fusion",
+    "rerank",
+    "extract"
+   ],
+   "overall": {
+    "n": 26,
+    "recall_at_50": 0.8077,
+    "ndcg_at_10": 0.1401,
+    "mrr": 0.1717,
+    "route_agreement": 0.7132,
+    "span_hit_rate": 0.9474,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 11389,
+    "p95_ms": 17851,
+    "avg_window": 44.3846,
+    "avg_results": 9.4615,
+    "avg_chars": 4317.5,
+    "degraded": 10,
+    "cost_per_query": 0.0
+   },
+   "stable": {
+    "n": 22,
+    "recall_at_50": 0.8182,
+    "ndcg_at_10": 0.1377,
+    "mrr": 0.1574,
+    "route_agreement": 0.7428,
+    "span_hit_rate": 0.9474,
+    "span_queries": 19,
+    "available_rate": 1.0,
+    "p50_ms": 12074,
+    "p95_ms": 17851,
+    "avg_window": 48.4091,
+    "avg_results": 9.3636,
+    "avg_chars": 4324.1364,
+    "degraded": 7,
+    "cost_per_query": 0.0
+   },
+   "by_intent": {
+    "en": {
+     "n": 5,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.2575,
+     "mrr": 0.3175,
+     "route_agreement": 0.88,
+     "span_hit_rate": 1.0,
+     "span_queries": 5,
+     "available_rate": 1.0,
+     "p50_ms": 9575,
+     "p95_ms": 17851,
+     "avg_window": 46.4,
+     "avg_results": 10.0,
+     "avg_chars": 5094.8,
+     "degraded": 2,
+     "cost_per_query": 0.0
+    },
+    "fact": {
+     "n": 6,
+     "recall_at_50": 1.0,
+     "ndcg_at_10": 0.2118,
+     "mrr": 0.2278,
+     "route_agreement": 0.8524,
+     "span_hit_rate": 1.0,
+     "span_queries": 6,
+     "available_rate": 1.0,
+     "p50_ms": 10784,
+     "p95_ms": 14875,
+     "avg_window": 50.0,
+     "avg_results": 9.5,
+     "avg_chars": 4112.3333,
+     "degraded": 1,
+     "cost_per_query": 0.0
+    },
+    "fresh": {
+     "n": 4,
+     "recall_at_50": 0.75,
+     "ndcg_at_10": 0.1533,
+     "mrr": 0.25,
+     "route_agreement": 0.55,
+     "span_hit_rate": null,
+     "span_queries": 0,
+     "available_rate": 1.0,
+     "p50_ms": 11389,
+     "p95_ms": 13351,
+     "avg_window": 22.25,
+     "avg_results": 10.0,
+     "avg_chars": 4281.0,
+     "degraded": 3,
+     "cost_per_query": 0.0
+    },
+    "tech": {
+     "n": 7,
+     "recall_at_50": 0.8571,
+     "ndcg_at_10": 0.0532,
+     "mrr": 0.049,
+     "route_agreement": 0.754,
+     "span_hit_rate": 0.8571,
+     "span_queries": 7,
+     "available_rate": 1.0,
+     "p50_ms": 15225,
+     "p95_ms": 18799,
+     "avg_window": 47.5714,
+     "avg_results": 8.7143,
+     "avg_chars": 4137.4286,
+     "degraded": 3,
+     "cost_per_query": 0.0
+    },
+    "zh": {
+     "n": 4,
+     "recall_at_50": 0.25,
+     "ndcg_at_10": 0.0245,
+     "mrr": 0.0417,
+     "route_agreement": 0.3875,
+     "span_hit_rate": 1.0,
+     "span_queries": 1,
+     "available_rate": 1.0,
+     "p50_ms": 15108,
+     "p95_ms": 16198,
+     "avg_window": 50.0,
+     "avg_results": 9.5,
+     "avg_chars": 4005.25,
+     "degraded": 1,
+     "cost_per_query": 0.0
+    }
+   },
+   "queries": [
+    {
+     "id": "tech-001",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.0,
+     "span_hit": false,
+     "spans_matched": [],
+     "window": 33,
+     "routes": 4,
+     "results": 2,
+     "elapsed_ms": 15225,
+     "chars": 1481,
+     "rerank_shift": 19,
+     "dropped_low": 18,
+     "flags": {
+      "cache": "hit",
+      "rerank": "ok",
+      "extract": "2/2"
+     },
+     "unresponsive": [
+      "brave",
+      "duckduckgo",
+      "google",
+      "google cse",
+      "mojeek"
+     ],
+     "engines": [
+      "github"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://github.com/bengtfrost/rag-server",
+      "https://github.com/RainCongeals/ecom-rag-lab"
+     ]
+    },
+    {
+     "id": "tech-002",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.9,
+     "span_hit": true,
+     "spans_matched": [
+      "service_healthy"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 15716,
+     "chars": 4939,
+     "rerank_shift": 46,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "hit",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark"
+     ],
+     "engines": [
+      "360search",
+      "sogou",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [
+      "路 extra: ReadTimeout: "
+     ],
+     "top_urls": [
+      "https://juejin.cn/post/7236932516739989559",
+      "https://blog.csdn.net/gitblog_00156/article/details/147006353",
+      "https://blog.csdn.net/u010339879/article/details/132869044",
+      "https://juejin.cn/post/7568746602804428827",
+      "https://begindev.com/docker-tutorial/docker-compose-dependencies-orchestration-tutorial"
+     ]
+    },
+    {
+     "id": "tech-003",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "kubectl describe",
+      "kubectl logs"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 14415,
+     "chars": 4467,
+     "rerank_shift": 50,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "hit",
+      "degraded": "partial_routes,extract_partial",
+      "rerank": "ok",
+      "extract": "2/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [
+      "路 extra: ReadTimeout: "
+     ],
+     "top_urls": [
+      "https://blog.csdn.net/weixin_42662753/article/details/163120558",
+      "https://juejin.cn/post/7426307140866326565",
+      "https://blog.csdn.net/miachen520/article/details/110731557",
+      "https://pcltxs.github.io/2026/03/24/Kubernetes-Pod-CrashLoopBackOff%20%E6%95%85%E9%9A%9C%E6%8E%92%E6%9F%A5%E5%AE%9E%E6%88%98/index.html",
+      "https://cloud-atlas.readthedocs.io/zh-cn/latest/kubernetes/debug/k8s_crashloopbackoff.html"
+     ]
+    },
+    {
+     "id": "tech-004",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.3107,
+     "mrr": 0.2,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "return_exceptions",
+      "pending"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 9501,
+     "chars": 5572,
+     "rerank_shift": 52,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "hit",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "mwmbl",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "360search",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://php.cn/faq/2008849.html",
+      "https://jianshu.com/p/6872bf356af7",
+      "https://landybird.github.io/python/2019/03/08/asyncio_gather_vs_asyncio_wait",
+      "https://salivity.github.io/python/article/asyncio-gather-vs-asyncio-wait-in-python",
+      "https://superfastpython.com/asyncio-gather-vs-wait"
+     ]
+    },
+    {
+     "id": "tech-005",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "formats"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 18799,
+     "chars": 3561,
+     "rerank_shift": 47,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "yep"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://linux.do/t/topic/336853",
+      "https://kinpoeray.notion.site/SearXNG-Dify-d06f0308f36c4deb8c2a549099fca6be",
+      "https://docs.litellm.com.cn/docs/search/searxng",
+      "https://hermes-doc.aigc.green/user-guide/features/web-search",
+      "https://blog.csdn.net/fuyou_211/article/details/150223250"
+     ]
+    },
+    {
+     "id": "tech-006",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.6,
+     "span_hit": true,
+     "spans_matched": [
+      "proxy_set_header Upgrade",
+      "proxy_http_version"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 9267,
+     "chars": 4256,
+     "rerank_shift": 35,
+     "dropped_low": 8,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://raybyte.cn/post/2026/1/5/834250e2",
+      "https://juejin.cn/post/7314365456076603429",
+      "https://phodal.com/blog/nginx-websocket-upgrade-nginx-179",
+      "https://devtuts.net/zh-hans/nginx/nginx-websocket-reverse-proxy.html",
+      "https://blog.csdn.net/ITKidKid/article/details/131993294"
+     ]
+    },
+    {
+     "id": "tech-007",
+     "intent": "tech",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0618,
+     "mrr": 0.1429,
+     "agreement": 0.7778,
+     "span_hit": true,
+     "spans_matched": [
+      "死元组",
+      "dead tuple",
+      "MVCC"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 9,
+     "elapsed_ms": 15610,
+     "chars": 4686,
+     "rerank_shift": 42,
+     "dropped_low": 11,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://cnblogs.com/dbadaily/p/vacuum1.html",
+      "https://juejin.cn/post/7638267536363503651",
+      "https://runebook.dev/zh/docs/postgresql/routine-vacuuming",
+      "https://zhuanlan.zhihu.com/p/2038056291654956248",
+      "https://yunbee.net/Home/News/detail/article_id/569.html"
+     ]
+    },
+    {
+     "id": "fact-001",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.2813,
+     "mrr": 0.2,
+     "agreement": 0.9,
+     "span_hit": true,
+     "spans_matched": [
+      "Too Many Requests",
+      "请求过多"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 14875,
+     "chars": 4487,
+     "rerank_shift": 31,
+     "dropped_low": 8,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/q7w8e9r4/article/details/133639163",
+      "https://baike.baidu.com/item/HTTP%20429%E7%8A%B6%E6%80%81%E7%A0%81/68953366",
+      "https://runebook.dev/zh/docs/http/status/429",
+      "https://blog.csdn.net/qyj19920704/article/details/149150028",
+      "https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Status/429"
+     ]
+    },
+    {
+     "id": "fact-002",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7143,
+     "span_hit": true,
+     "spans_matched": [
+      "5432"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 7,
+     "elapsed_ms": 12074,
+     "chars": 3382,
+     "rerank_shift": 23,
+     "dropped_low": 13,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://bbs.huaweicloud.com/blogs/470305",
+      "https://cnblogs.com/hongfei/p/3791911.html",
+      "https://pgpedia.postgresql.ac.cn/p/port.html",
+      "https://database.ink/postgresql/listen-address-and-port-configuration.html",
+      "https://blog.csdn.net/pg_hgdb/article/details/78653794"
+     ]
+    },
+    {
+     "id": "fact-003",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.9,
+     "span_hit": true,
+     "spans_matched": [
+      "6379"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 10784,
+     "chars": 4371,
+     "rerank_shift": 48,
+     "dropped_low": 9,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7538760868785635363",
+      "https://worktile.com/kb/ask/762976.html",
+      "https://php.cn/faq/421754.html",
+      "https://docs.pingcode.com/insights/awe0o4vpgzu4omfzw64gwzdi",
+      "https://nowcoder.com/discuss/353147310966251520"
+     ]
+    },
+    {
+     "id": "fact-004",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.351,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Anthropic"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 9534,
+     "chars": 4244,
+     "rerank_shift": 43,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://juejin.cn/post/7660793595750858767",
+      "https://en.wikipedia.org/wiki/Model_Context_Protocol",
+      "https://github.com/modelcontextprotocol",
+      "https://elastic.co/docs/solutions/search/mcp",
+      "https://modelcontextprotocol.io"
+     ]
+    },
+    {
+     "id": "fact-005",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.5177,
+     "mrr": 0.3333,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "线性",
+      "提交的副本"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 14570,
+     "chars": 4712,
+     "rerank_shift": 39,
+     "dropped_low": 1,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/xishining/article/details/115152823",
+      "https://cnblogs.com/FraserYu/p/11192840.html",
+      "https://zhuanlan.zhihu.com/p/686538265",
+      "https://cnblogs.com/hiyong/p/17114779.html",
+      "https://developer.aliyun.com/article/1679801"
+     ]
+    },
+    {
+     "id": "fact-006",
+     "intent": "fact",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.121,
+     "mrr": 0.3333,
+     "agreement": 0.6,
+     "span_hit": true,
+     "spans_matched": [
+      "SYN"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 10055,
+     "chars": 3478,
+     "rerank_shift": 42,
+     "dropped_low": 6,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://toutiao.com/article/7684498951671644672",
+      "https://blog.csdn.net/lengxiao1993/article/details/82771768",
+      "https://zhihu.com/question/429915921",
+      "https://github.com/jawil/blog/issues/14",
+      "https://blog.csdn.net/Y0Q2T57s/article/details/119523734"
+     ]
+    },
+    {
+     "id": "zh-001",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.2,
+     "span_hit": true,
+     "spans_matched": [
+      "近似最近邻"
+     ],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 13052,
+     "chars": 3765,
+     "rerank_shift": 36,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://tomartisan.com/prodev/getting-to-know-vector-databases",
+      "https://ibm.com/cn-zh/think/topics/vector-database",
+      "https://juejin.cn/post/7621122531538894874",
+      "https://blog.csdn.net/guoyizhongxing/article/details/162190140",
+      "https://cloud.tencent.com/document/product/1709/95428"
+     ]
+    },
+    {
+     "id": "zh-002",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.5,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 15108,
+     "chars": 4401,
+     "rerank_shift": 44,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://zhuanlan.zhihu.com/p/2065362757550092883",
+      "https://zhuanlan.zhihu.com/p/1903780172823499767",
+      "https://post.smzdm.com/p/a95860qo",
+      "https://51domino.com/blog/rag-vs-long-context-2026",
+      "https://qubittool.com/zh/blog/long-context-vs-rag-decision-framework"
+     ]
+    },
+    {
+     "id": "zh-003",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.25,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 3,
+     "results": 8,
+     "elapsed_ms": 16198,
+     "chars": 3596,
+     "rerank_shift": 38,
+     "dropped_low": 12,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou",
+      "wikidata",
+      "yep"
+     ],
+     "engines": [
+      "yahoo",
+      "yandex"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/qq_62223405/article/details/147957062",
+      "https://cloud.tencent.com/developer/article/2437565",
+      "https://developer.volcengine.com/articles/7541275152172974121",
+      "https://blog.csdn.net/a18302465887/article/details/158703377",
+      "https://devpress.csdn.net/v1/article/detail/154432959"
+     ]
+    },
+    {
+     "id": "zh-004",
+     "intent": "zh",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0981,
+     "mrr": 0.1667,
+     "agreement": 0.6,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 50,
+     "routes": 4,
+     "results": 10,
+     "elapsed_ms": 9577,
+     "chars": 4259,
+     "rerank_shift": 47,
+     "dropped_low": 9,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "naver",
+      "wikipedia",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://blog.csdn.net/mmlihaio/article/details/143082042",
+      "https://sider.ai/zh-CN/blog/ai-tools/how-to-use-searxng-from-first-search-to-self-hosting-mastery",
+      "https://xuanyuan.cloud/blog/5-docker-searxng",
+      "https://medium.com/@rosgluk/selfhosting-searxng-a3cb66a196e9",
+      "https://github.com/xiaohan815/mcp-search-server"
+     ]
+    },
+    {
+     "id": "en-001",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.1854,
+     "mrr": 0.1429,
+     "agreement": 0.4,
+     "span_hit": true,
+     "spans_matched": [
+      "llama.cpp",
+      "GGML"
+     ],
+     "window": 50,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 7593,
+     "chars": 4863,
+     "rerank_shift": 59,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://techspot.com/downloads/7772-ollama.html",
+      "https://deepwiki.com/ollama/ollama/4.4-model-file-formats",
+      "https://dev.to/rosgluk/local-llm-hosting-complete-2025-guide-ollama-vllm-localai-jan-lm-studio-more-1dcl",
+      "https://medium.com/@rosgluk/local-llm-hosting-complete-2025-guide-ollama-vllm-localai-jan-lm-studio-more-f98136ce7e4a",
+      "https://mindstudio.ai/blog/run-open-weight-ai-models-locally-ollama-lm-studio"
+     ]
+    },
+    {
+     "id": "en-002",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0517,
+     "mrr": 0.1111,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "Efficient Memory Management"
+     ],
+     "window": 46,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 9575,
+     "chars": 4841,
+     "rerank_shift": 43,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "sogou"
+     ],
+     "engines": [
+      "mwmbl",
+      "naver",
+      "quark",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://ar5iv.labs.arxiv.org/html/2309.06180",
+      "https://generalcompute.com/blog/paged-attention-and-vllm?agent=true",
+      "https://en.wikipedia.org/wiki/PagedAttention",
+      "https://gpuhunter.io/research/llm-serving-systems-papers",
+      "https://hopsworks.ai/dictionary/vllm"
+     ]
+    },
+    {
+     "id": "en-003",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0927,
+     "mrr": 0.3333,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "PostgresSaver"
+     ],
+     "window": 40,
+     "routes": 2,
+     "results": 10,
+     "elapsed_ms": 9274,
+     "chars": 5756,
+     "rerank_shift": 22,
+     "dropped_low": 3,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://github.com/SerezhaGRig/langgraph-postgres-checkpointer",
+      "https://github.com/CodifyIQ/langgraph-checkpoint-postgres-pg8000",
+      "https://reference.langchain.com/python/langgraph.checkpoint.postgres",
+      "https://youtube.com/watch?v=hE8C2M8GRLo",
+      "https://pypi.org/project/langgraph-checkpoint-postgres"
+     ]
+    },
+    {
+     "id": "en-004",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.4893,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "cosine similarity",
+      "logit"
+     ],
+     "window": 46,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 17851,
+     "chars": 4974,
+     "rerank_shift": 35,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [
+      "1 页抽取超预算被取消"
+     ],
+     "top_urls": [
+      "https://blog.gopenai.com/sentence-transformers-sbert-vs-cross-encoders-a-conceptual-guide-d6ae67f1223a",
+      "https://osanseviero.github.io/hackerllama/blog/posts/sentence_embeddings2",
+      "https://milvus.io/ai-quick-reference/what-is-the-difference-between-using-a-sentence-transformer-biencoder-and-a-crossencoder-for-sentence-similarity-tasks",
+      "https://sbert.net/examples/cross_encoder/applications/README.html",
+      "https://medium.com/@shazaelmorsh/sentence-transformers-bi-encoders-and-cross-encoders-a82cba125abd"
+     ]
+    },
+    {
+     "id": "en-005",
+     "intent": "en",
+     "volatile": false,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.4686,
+     "mrr": 0.5,
+     "agreement": 1.0,
+     "span_hit": true,
+     "spans_matched": [
+      "exit code"
+     ],
+     "window": 50,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 10942,
+     "chars": 5040,
+     "rerank_shift": 42,
+     "dropped_low": 0,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo",
+      "yandex",
+      "yep"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://thecodeforge.io/python/fastapi-dependency-injection",
+      "https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield",
+      "https://linkedin.com/pulse/mastering-dependency-injection-fastapi-muhammad-ali-shahzad-jdzvf",
+      "https://llc.taejins.com/python/ch16/dependency",
+      "https://wikidocs.net/312762"
+     ]
+    },
+    {
+     "id": "fresh-001",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 36,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 11353,
+     "chars": 4213,
+     "rerank_shift": 43,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "bing news",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://modelscope.csdn.net",
+      "https://datalearner.com/leaderboards/open-source",
+      "https://aikitapp.com/zh/weekly/models",
+      "https://aihot.news/topics/model-releases",
+      "https://finance.eastmoney.com/a/202609093869238345.html"
+     ]
+    },
+    {
+     "id": "fresh-002",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 0.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.7,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 18,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 10862,
+     "chars": 4362,
+     "rerank_shift": 52,
+     "dropped_low": 5,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "naver",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://tags.news.sina.com.cn/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD",
+      "https://aihot.news/weekly",
+      "https://ai.winterresearch.com",
+      "https://aibars.net/zh/news",
+      "https://aihot.news/daily"
+     ]
+    },
+    {
+     "id": "fresh-003",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.0,
+     "mrr": 0.0,
+     "agreement": 0.5,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 16,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 11389,
+     "chars": 4786,
+     "rerank_shift": 46,
+     "dropped_low": 4,
+     "flags": {
+      "cache": "miss",
+      "degraded": "partial_routes",
+      "rerank": "ok",
+      "extract": "3/3"
+     },
+     "unresponsive": [
+      "baidu",
+      "bing news",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://aprilzz.com/ai/mcp-2026-roadmap",
+      "https://tianliaos.com/post/ai-agent-open-source-ecosystem-mcp-protocol-local-first-august-2026",
+      "https://wikiprompt.org/zh/wiki/mcp-standard-ecosystem-growth",
+      "https://openai-hub.com/news/1705",
+      "https://cnblogs.com/weiluliaokeji/p/22629527"
+     ]
+    },
+    {
+     "id": "fresh-004",
+     "intent": "fresh",
+     "volatile": true,
+     "available": true,
+     "recall": 1.0,
+     "ndcg": 0.6131,
+     "mrr": 1.0,
+     "agreement": 0.3,
+     "span_hit": null,
+     "spans_matched": [],
+     "window": 19,
+     "routes": 3,
+     "results": 10,
+     "elapsed_ms": 13351,
+     "chars": 3763,
+     "rerank_shift": 45,
+     "dropped_low": 7,
+     "flags": {
+      "cache": "miss",
+      "rerank": "ok",
+      "extract": "2/3",
+      "degraded": "extract_partial"
+     },
+     "unresponsive": [
+      "baidu",
+      "quark",
+      "sogou"
+     ],
+     "engines": [
+      "bing news",
+      "naver",
+      "yahoo"
+     ],
+     "errors": [],
+     "top_urls": [
+      "https://tech.sina.com.cn/roll",
+      "https://steemit.com/littlecookies/@littlecookies/7dmpho-ai",
+      "https://whatshot.top/tech",
+      "https://remoshuang.com/c/tech",
+      "https://readaitime.com/digests/2026-09-15"
+     ]
+    }
+   ]
+  }
+ }
+}

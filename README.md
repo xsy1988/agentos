@@ -26,6 +26,7 @@
 | [docs/数据库设计.md](docs/数据库设计.md) | 26 张表字段级设计（主数据 9 + 业务 14 + 框架 3）、索引、ER | 写模型/迁移/查询前必读对应表 |
 | [docs/前端设计.md](docs/前端设计.md) | 菜单结构、页面交互细节、技术选型（Antd/桌面优先/工作台风） | 开发前端或前端 API 契约时 |
 | [docs/开发计划.md](docs/开发计划.md) | 各阶段任务清单、DoD 验收标准、风险应对 | **每次开工前读当前阶段章节**，对照 DoD 收尾 |
+| [docs/自建网页搜索服务.md](docs/自建网页搜索服务.md) | 可选的自建网页搜索栈（profile `search`）：五级质量漏斗、MCP 接入、评测基线、调参与排障 | 起停/排查网页搜索、调搜索质量、改引擎集时 |
 
 ## 任务 → 必读文档速查
 
@@ -54,9 +55,10 @@
 ```
 Agent平台/
 ├── README.md          ← 本文件（导航）
-├── docs/              ← 五份设计文档（见上表）
-├── docker-compose.yml ← PG17 + pgvector
-├── Makefile           ← db-up / dev / test / lint 等命令
+├── docs/              ← 设计文档（见上表）
+├── docker-compose.yml ← PG17 + pgvector（+ 可选 profile:search 网页搜索栈）
+├── Makefile           ← db-up / dev / test / lint / search-up 等命令
 ├── .env / .env.example / .pre-commit-config.yaml
+├── services/          ← 容器隔离区：websearch（五级质量漏斗搜索服务，profile `search`）
 └── backend/           ← uv + FastAPI（app/core/config.py、app/main.py）
 ```

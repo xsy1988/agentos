@@ -447,7 +447,7 @@ async def create_capability(
         cap.enabled = True
         await db.flush()
         await index_capability(db, cap)
-        await _broadcast_changed(cap.id)
+        await broadcast_changed(cap.id)
     await db.commit()
     await db.refresh(cap)
     return cap, report
@@ -501,7 +501,7 @@ async def update_capability(
     if body.description is not None or body.payload is not None:
         await index_capability(db, cap)
     if body.description is not None or body.payload is not None or body.enabled is not None:
-        await _broadcast_changed(cap.id)
+        await broadcast_changed(cap.id)
     await db.commit()
     await db.refresh(cap)
     return cap
@@ -510,7 +510,7 @@ async def update_capability(
 async def delete_capability(db: AsyncSession, cap: Capability) -> None:
     await db.delete(cap)
     await db.commit()
-    await _broadcast_changed(cap.id)
+    await broadcast_changed(cap.id)
 
 
 # ---------- 工具级开关 ----------
@@ -541,7 +541,7 @@ async def set_tool_enabled(
     tool.enabled = enabled
     await db.commit()
     await db.refresh(tool)
-    await _broadcast_changed(cap.id)
+    await broadcast_changed(cap.id)
     return tool
 
 
@@ -638,7 +638,7 @@ async def index_capability(db: AsyncSession, cap: Capability) -> bool:
 # ---------- 热注册广播 ----------
 
 
-async def _broadcast_changed(cap_id: UUID) -> None:
+async def broadcast_changed(cap_id: UUID) -> None:
     """pg_notify → engine mcp 池/检索池重建（模块详细设计 §1.3.3，M3-d 消费）。"""
     import asyncpg
 
