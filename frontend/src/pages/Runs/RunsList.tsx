@@ -13,6 +13,7 @@ const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   pending: { color: "default", label: "等待" },
   running: { color: "processing", label: "运行中" },
   paused_awaiting_confirm: { color: "warning", label: "待确认" },
+  waiting_external: { color: "processing", label: "等待外部回调" },
   done: { color: "success", label: "完成" },
   failed: { color: "error", label: "失败" },
   cancelled: { color: "default", label: "已取消" },

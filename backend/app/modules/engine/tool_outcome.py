@@ -26,6 +26,10 @@ TOOL_FAILURE_CODES: tuple[str, ...] = (
     "parse_error",  # 响应不可解析（JSON / schema）
     "internal_error",  # 平台内部异常
     "denied_by_user",  # 用户拒绝执行（高危确认点拒绝）
+    # P0-4 外部等待：等待落定失败对模型同样是"这不是业务结果"
+    "await_expired",  # 等待超时，外部流程未回传
+    "await_cancelled",  # 等待被撤销（run 收尾 / 人工撤销）
+    "await_unresolved",  # 等待行状态异常（理论上不可达的兜底）
 )
 
 # 默认是否可重试（调用方可显式覆盖）
@@ -36,6 +40,10 @@ RETRYABLE_BY_CODE: dict[str, bool] = {
     "parse_error": True,
     "internal_error": False,
     "denied_by_user": False,
+    # 超时/撤销都不自动重试：重试意味着重新派发外部流程，须由模型显式决定
+    "await_expired": False,
+    "await_cancelled": False,
+    "await_unresolved": False,
 }
 
 # error.source 取值：失败发生的通道/归属（前端与统计按此归类）

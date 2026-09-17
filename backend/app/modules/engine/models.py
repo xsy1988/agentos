@@ -20,12 +20,13 @@ UUID = PGUUID(as_uuid=True)
 # 只登记**已实现**的类型（P0-6：不得保留"声明了但没实现"的条目）：
 #   - user_input：API 建 run 后投递（conversations/scheduler）
 #   - abort：用户取消（runs/conversations router）
-#   - confirmation：request_decision 答复（runs router）
-# 两类**不经本队列**：
+#   - confirmation：确认卡片/交互决策答复（runs router）
+#   - resume：外部等待被落定（P0-4：回调/超时/撤销 → awaits/service.enqueue_resume），
+#     载荷为扁平恢复值（非列表），runtime 据此从 interrupt 检查点继续
+# 一类**不经本队列**：
 #   - capability_changed：走 PG NOTIFY 频道（capabilities/service.py:650 → mcp_client.py:509），
 #     不落 inbox_events [实测从未落库]
-#   - resume：恢复由 confirmation 载荷驱动（runtime.py `_resume_run`），无需独立类型
-INBOX_EVENT_TYPES = ("user_input", "abort", "confirmation")
+INBOX_EVENT_TYPES = ("user_input", "abort", "confirmation", "resume")
 
 
 class InboxEvent(Base):

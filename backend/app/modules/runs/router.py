@@ -133,7 +133,13 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     if run.status != "paused_awaiting_confirm":
-        raise HTTPException(status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）")
+        # P0-4：等待外部回调（waiting_external）不是"待确认"，给出可行动的提示而非裸状态
+        hint = (
+            "任务正在等待外部流程回调，无需确认；如需放弃等待可调用 POST /awaits/{await_id}/cancel"
+            if run.status == "waiting_external"
+            else f"任务不在待确认状态（当前 {run.status}）"
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, hint)
     # 统一结构化回传（§3.5）：data/applied 仅在存在时随 answer 一并投给引擎
     inbox_payload: dict[str, Any] = {"answer": body.answer}
     if body.data is not None:

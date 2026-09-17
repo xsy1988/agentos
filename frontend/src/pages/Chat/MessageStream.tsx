@@ -166,6 +166,20 @@ function extractBudgetUsed(run: RunOut | undefined): {
   };
 }
 
+/** 等待超时点（ISO → 本地时分秒），无效/缺失返回空串。 */
+function fmtClock(v: unknown): string {
+  if (typeof v !== "string" || !v) return "";
+  const t = new Date(v);
+  return Number.isNaN(t.getTime()) ? "" : t.toLocaleTimeString("zh-CN");
+}
+
+/** 等待时长（毫秒 → 人话），缺省为“未知”。 */
+function fmtWaited(v: unknown): string {
+  const ms = Number(v ?? 0);
+  if (!ms || ms <= 0) return "未知";
+  return ms >= 60000 ? `${Math.round(ms / 60000)} 分钟` : `${Math.round(ms / 1000)} 秒`;
+}
+
 function MessageItem({ msg }: { msg: MessageOut }) {
   const isUser = msg.role === "user";
   const atts = isUser ? msgAttachments(msg) : [];
@@ -540,12 +554,68 @@ export function EventItem({
     return <CardRenderer payload={{ reason: cardType, payload: inner }} runId={event.run_id} />;
   }
 
+  if (event_type === "await_started") {
+    // P0-4：平台持有的外部等待开始（等谁 / 最晚等到什么时候）
+    const tool = String(payload.tool ?? "外部流程");
+    const deadline = fmtClock(payload.deadline_at);
+    return (
+      <Tooltip
+        title={`外部流程 ${tool} 已受理本次请求，平台代为等待回调${
+          deadline ? `，最晚 ${deadline} 自动超时` : ""
+        }`}
+      >
+        <Tag color="processing" style={{ marginBottom: 4, fontSize: 11 }}>
+          等待外部回调：{tool}
+          {deadline ? `（最晚 ${deadline}）` : ""}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
+  if (event_type === "await_resolved") {
+    // 回调成功与人工撤销共用本事件，用 status 区分
+    const tool = String(payload.tool ?? "外部流程");
+    const status = String(payload.status ?? "granted");
+    if (status === "cancelled") {
+      return (
+        <Tag color="default" style={{ marginBottom: 4, fontSize: 11 }}>
+          外部等待已撤销：{tool}
+        </Tag>
+      );
+    }
+    return (
+      <Tooltip title={`等待 ${fmtWaited(payload.waited_ms)}，结果已注入本轮上下文`}>
+        <Tag color="success" style={{ marginBottom: 4, fontSize: 11 }}>
+          外部回调已返回：{tool}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
+  if (event_type === "await_expired") {
+    const tool = String(payload.tool ?? "外部流程");
+    return (
+      <Tooltip title={`等待 ${fmtWaited(payload.waited_ms)} 仍未收到回调，已按超时处理并继续执行`}>
+        <Tag color="warning" style={{ marginBottom: 4, fontSize: 11 }}>
+          外部等待超时：{tool}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
   if (event_type === "run_status") {
     const status = payload.status as string;
     if (status === "paused_awaiting_confirm") {
       return (
         <Tag color="warning" style={{ marginBottom: 4, fontSize: 11 }}>
           等待确认
+        </Tag>
+      );
+    }
+    if (status === "waiting_external") {
+      return (
+        <Tag color="processing" style={{ marginBottom: 4, fontSize: 11 }}>
+          等待外部回调
         </Tag>
       );
     }
@@ -808,7 +878,11 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
       e.event_type === "error" ||
       e.event_type === "confirmation_request" ||
       e.event_type === "card" ||
-      e.event_type === "capability_overflow",
+      e.event_type === "capability_overflow" ||
+      // P0-4：外部等待的开始/结束是用户需要看见的状态变化（不是可折叠的过程噪声）
+      e.event_type === "await_started" ||
+      e.event_type === "await_resolved" ||
+      e.event_type === "await_expired",
   );
 
   // 提交后空窗期反馈（Kimi 式）：不能只看 events.length —— 后端首发事件往往是

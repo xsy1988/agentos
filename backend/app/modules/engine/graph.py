@@ -42,6 +42,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
 from app.core.config import settings
+from app.modules.awaits import policy as await_policy
 from app.modules.engine.hooks import (
     ToolCallRequest,
     ToolFailureLoopError,
@@ -775,7 +776,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                         tool_call_id=str(c["id"]),
                     )
                 )
-            return {"messages": ask_results, "budget_state": dict(ctx.budget)}
+            return {"messages": ask_results, "budget_state": dict(ctx.budget), "pending_awaits": []}
 
         # 0b) 交互决策支线（决策2/§3.6 interactive_decision）：需要用户在侧边栏
         # plugin 前端里选/删/改一批数据才能继续。同 ask_user 纪律：登记支线 →
@@ -888,7 +889,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                         tool_call_id=str(c["id"]),
                     )
                 )
-            return {"messages": decision_results, "budget_state": dict(ctx.budget)}
+            return {
+                "messages": decision_results,
+                "budget_state": dict(ctx.budget),
+                "pending_awaits": [],
+            }
 
         # 1) 风险预查（幂等读 state，重放安全）
         risky = [
@@ -917,6 +922,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
         updated_cache: dict[str, Any] | None = None
+        # 3a) 外部等待拆分（P0-4）：派发类建单工具不在本节点出网——登记等待行后由
+        # await_gate 挂起等回调。判定放在 hooks.on_tool_call 之前：恢复重放不重复计账
+        # （等待时长与等待轮次都不计入 iterations/tool_calls）。
+        deferred: list[dict[str, Any]] = []
         # 连续失败熔断账本（P0-3）：阈值 run 预算可覆盖，默认 settings.tool_failure_limit
         _budget: dict[str, Any] = dict(state.get("budget_state") or {})
         streak = int(_budget.get("tool_failure_streak") or 0)
@@ -928,6 +937,25 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         for c in calls:
             meta = meta_by_name.get(c["name"])
             risk = (meta or {}).get("risk_level", "read")
+            builtin_key = str((meta or {}).get("builtin") or "")
+            if (
+                meta is not None
+                and meta.get("kind") == "builtin"
+                and await_policy.await_enabled()
+                and (approved or risk not in ("write", "dangerous"))
+                and await_policy.is_dispatch_builtin(builtin_key)
+            ):
+                deferred.append(
+                    {
+                        "id": str(c["id"]),
+                        "name": c["name"],
+                        "args": dict(c["args"]),
+                        "builtin": builtin_key,
+                        "capability_id": meta.get("capability_id"),
+                        "risk_level": risk,
+                    }
+                )
+                continue
             req = ToolCallRequest(name=c["name"], args=dict(c["args"]), risk_level=risk)
             await hooks.on_tool_call(ctx, req)
 
@@ -1035,7 +1063,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         budget_state = dict(ctx.budget)
         budget_state["tool_failure_streak"] = streak
         budget_state["tool_failure_tools"] = recent_failed
-        out: dict[str, Any] = {"messages": results, "budget_state": budget_state}
+        out: dict[str, Any] = {
+            "messages": results,
+            "budget_state": budget_state,
+            # 恒返回（含空列表）：await_gate 消费后必须清空，否则陈旧值会再次触发等待
+            "pending_awaits": deferred,
+        }
         if updated_cache is not None:
             out["capability_cache"] = updated_cache
         # 连续失败熔断（第二道闸）：本批结果已全部落妥再抛，检查点里不留悬空 tool_calls
@@ -1047,6 +1080,159 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 tools=recent_failed,
             )
         return out
+
+    async def await_gate(state: LoopState, config: RunnableConfig) -> dict:
+        """外部等待门（P0-4）：登记等待行 → 出网派发一次 → interrupt 挂起 → 按落库结果回填。
+
+        每次节点执行最多处理**一笔**等待（最多 interrupt 一次），故 runtime 读
+        `snapshot.tasks[].interrupts[0]` 与之一一对应；同一批多笔等待由自环边逐笔消费。
+
+        恢复路径不消费 interrupt 的返回值，一律以 DB 行为准（granted → 成功观察，
+        expired/cancelled → 结构化失败）：同一笔外部请求无论被回调、超时还是重投唤醒，
+        模型看到的上下文都一致，重放幂等。
+        """
+        from app.modules.awaits import service as awaits_service
+        from app.modules.engine.tools_builtin import BUILTIN_TOOLS
+
+        conf = config["configurable"]
+        run_id = str(conf["run_id"])
+        ctx = _ctx(run_id)
+        hooks = runtime.hooks
+
+        pending = list(state.get("pending_awaits") or [])
+        if not pending:
+            return {"pending_awaits": []}
+        item = pending[0]
+        rest = pending[1:]
+        name = str(item["name"])
+        args = dict(item.get("args") or {})
+        idempotency_key = awaits_service.make_idempotency_key(args)
+        row = await runtime.backend.ensure_await(
+            run_id=run_id,
+            tool_name=name,
+            idempotency_key=idempotency_key,
+            builtin=str(item.get("builtin") or ""),
+            capability_id=item.get("capability_id"),
+            args=args,
+        )
+        await_id = str(row["await_id"])
+
+        if row.get("status") == "waiting":
+            if not row.get("notified_at"):
+                # 首次进入：派发（interrupt 之前，重放靠 notified_at 短路，绝不重复出网）
+                req = ToolCallRequest(
+                    name=name, args=args, risk_level=str(item.get("risk_level") or "write")
+                )
+                await hooks.on_tool_call(ctx, req)
+                t0 = time.monotonic()
+                fn = BUILTIN_TOOLS.get(str(item.get("builtin") or ""))
+                call_args = dict(args)
+                call_args["await_callback"] = {
+                    "await_id": await_id,
+                    "url": awaits_service.callback_url(await_id),
+                    "token": row.get("callback_token"),
+                    "idempotency_key": idempotency_key,
+                }
+                dispatched: Any = None
+                error: dict[str, Any] | None = None
+                if fn is None:
+                    ok = False
+                    error = failure_error("internal_error", f"builtin 注册键缺失：{name}")
+                else:
+                    dispatched, ok, error = await _guarded_call(fn(call_args), source="builtin")
+                if not ok:
+                    # 派发失败：不等了，撤销等待行并按失败观察回填（不留悬挂行）
+                    err = error or failure_error("internal_error", "未知失败")
+                    content = failure_content(name, err)
+                    await runtime.backend.cancel_await(
+                        await_id, reason=str(err.get("code") or "dispatch_failed")
+                    )
+                    await hooks.on_tool_result(
+                        ctx,
+                        ToolResultInfo(
+                            name=name,
+                            ok=False,
+                            content=content,
+                            elapsed_ms=int((time.monotonic() - t0) * 1000),
+                            args_snapshot=args,
+                            error=err,
+                        ),
+                    )
+                    return {
+                        "messages": [
+                            ToolMessage(content=str(content), tool_call_id=str(item["id"]))
+                        ],
+                        "pending_awaits": rest,
+                        "budget_state": dict(ctx.budget),
+                    }
+                await runtime.backend.mark_await_dispatched(
+                    await_id, response=dispatched if isinstance(dispatched, dict) else None
+                )
+                fresh = await runtime.backend.get_await(await_id)
+                if fresh is not None:
+                    row = fresh
+            # interrupt 之前不产生新副作用（重放靠 notified_at 短路），故 interrupt 放在派发之后
+            interrupt(
+                {
+                    "reason": "external_await",
+                    "payload": {
+                        "await_id": await_id,
+                        "tool": name,
+                        "idempotency_key": idempotency_key,
+                        "deadline_at": row.get("deadline_at"),
+                        "args": args,
+                        "kind": "await",
+                    },
+                }
+            )
+            # 唤醒后以 DB 为唯一事实源（回调/超时/撤销都已 CAS 落定）
+            fresh = await runtime.backend.get_await(await_id)
+            if fresh is not None:
+                row = fresh
+
+        status = str(row.get("status") or "")
+        waited_ms = int(row.get("waited_ms") or 0)
+        if status == "granted":
+            content = json.dumps(
+                {
+                    "status": "resolved",
+                    "await_id": await_id,
+                    "tool": name,
+                    "waited_ms": waited_ms,
+                    "result": row.get("payload_out") or row.get("dispatch_response") or {},
+                },
+                ensure_ascii=False,
+            )
+        else:
+            code = "await_expired" if status == "expired" else "await_cancelled"
+            detail = (
+                f"外部等待已超时（{waited_ms}ms），未拿到 {name} 的回传结果"
+                if status == "expired"
+                else f"外部等待已被撤销（{name}），未拿到回传结果"
+            )
+            if status not in ("expired", "cancelled"):
+                code, detail = "await_unresolved", f"外部等待状态未知：{status or 'unknown'}"
+            err = row.get("error") if isinstance(row.get("error"), dict) else {}
+            content = failure_content(
+                name,
+                failure_error(code, str(err.get("message") or detail), source="builtin"),
+            )
+        await hooks.on_tool_result(
+            ctx,
+            ToolResultInfo(
+                name=name,
+                ok=status == "granted",
+                content=content,
+                elapsed_ms=waited_ms,
+                args_snapshot=args,
+                error=None if status == "granted" else {"code": code},
+            ),
+        )
+        return {
+            "messages": [ToolMessage(content=str(content), tool_call_id=str(item["id"]))],
+            "pending_awaits": rest,
+            "budget_state": dict(ctx.budget),
+        }
 
     async def verify(state: LoopState, config: RunnableConfig) -> dict:
         """独立验证 LLM：评估任务是否达成；不达标带反馈回环（限 3 次）。"""
@@ -1148,6 +1334,14 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             return END
         return "verify"
 
+    def route_tools(state: LoopState) -> str:
+        # 本批有派发类建单调用 → 先进等待门（P0-4）；否则照旧回 agent
+        return "await_gate" if state.get("pending_awaits") else "agent"
+
+    def route_await_gate(state: LoopState) -> str:
+        # 一次只挂一笔等待（每个节点执行最多 interrupt 一次）；剩余的自环继续
+        return "await_gate" if state.get("pending_awaits") else "agent"
+
     def route_verify(state: LoopState) -> str:
         verdict = (state.get("protected_context") or {}).get("verify_verdict") or {}
         if verdict.get("achieved"):
@@ -1163,6 +1357,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g.add_node("confirm_plan", confirm_plan)
     g.add_node("agent", agent)
     g.add_node("tools", tools)
+    g.add_node("await_gate", await_gate)
     g.add_node("verify", verify)
     g.add_edge(START, "intent_router")
     g.add_conditional_edges(
@@ -1176,6 +1371,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g.add_edge("planner", "confirm_plan")
     g.add_conditional_edges("confirm_plan", route_confirm, {END: END, "agent": "agent"})
     g.add_conditional_edges("agent", route_agent, {"tools": "tools", "verify": "verify", END: END})
-    g.add_edge("tools", "agent")
+    g.add_conditional_edges("tools", route_tools, {"await_gate": "await_gate", "agent": "agent"})
+    g.add_conditional_edges(
+        "await_gate", route_await_gate, {"await_gate": "await_gate", "agent": "agent"}
+    )
     g.add_conditional_edges("verify", route_verify, {END: END, "agent": "agent"})
     return g.compile(checkpointer=runtime.saver)

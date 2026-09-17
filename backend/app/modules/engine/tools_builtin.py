@@ -214,16 +214,28 @@ def _require_arg(args: dict[str, Any], key: str) -> str:
 
 
 async def _procurement_trigger(args: dict[str, Any]) -> str:
-    """write 级：异步触发报价单解析，立即返回 task_id（不等完成，同法规爬虫范式）。"""
+    """write 级：异步触发报价单解析，立即返回 task_id（不等完成，同法规爬虫范式）。
+
+    P0-4：当平台进入等待模式（`await_external_enabled`）时，args 会带 `await_callback`
+    （{await_id, url, token, idempotency_key}），原样透传给采购 Agent 作为回传地址；
+    外部服务完成后 POST 结果到该地址，平台据此唤醒 run（模型零轮询）。
+    """
     text = str(args.get("text") or "").strip()
     report_ref = str(args.get("report_ref") or "").strip()
     if not text and not report_ref:
         raise ToolError(
             "invalid_args", "需提供 text（报价单文本）或 report_ref（报价单文件引用）之一"
         )
-    return await _procurement_request(
-        "POST", "/worker/trigger", json_body={"text": text, "report_ref": report_ref}, timeout=30.0
-    )
+    body: dict[str, Any] = {"text": text, "report_ref": report_ref}
+    callback = args.get("await_callback")
+    if isinstance(callback, dict) and callback.get("url"):
+        body["await_callback"] = {
+            "await_id": callback.get("await_id"),
+            "url": callback.get("url"),
+            "token": callback.get("token"),
+            "idempotency_key": callback.get("idempotency_key"),
+        }
+    return await _procurement_request("POST", "/worker/trigger", json_body=body, timeout=30.0)
 
 
 async def _procurement_status(args: dict[str, Any]) -> str:

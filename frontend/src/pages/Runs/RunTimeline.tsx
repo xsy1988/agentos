@@ -26,6 +26,7 @@ import {
   WarningOutlined,
   MessageOutlined,
   ScheduleOutlined,
+  ClockCircleOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
@@ -44,6 +45,9 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   tool_result: { icon: <ToolOutlined />, color: "green" },
   context_compacted: { icon: <RobotOutlined />, color: "orange" },
   capability_overflow: { icon: <WarningOutlined />, color: "volcano" },
+  await_started: { icon: <ClockCircleOutlined />, color: "blue" },
+  await_resolved: { icon: <ClockCircleOutlined />, color: "green" },
+  await_expired: { icon: <ClockCircleOutlined />, color: "orange" },
   error: { icon: <RobotOutlined />, color: "red" },
 };
 

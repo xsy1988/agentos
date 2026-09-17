@@ -305,6 +305,73 @@ xxx_status   (read)   → 按 task_id 查询进度/产出
 
 产出报告建议回流平台知识库（入库并向量化），供 `search_knowledge` 跨任务检索复用。
 
+#### 2.6.1 平台持有等待（P0-4，推荐；需外部服务实现回调）
+
+上一小节的 `xxx_status` 范式有一个固有代价：**等待期间 run 被模型自己的轮询占住**——
+每次轮询都是一次 iteration + 一次工具调用 + 一段上下文，分钟级流程会吃掉可观的时长与
+token 预算，且 run 一旦被重启对账收殓就前功尽弃。
+
+平台因此提供**一等外部等待**：派发类工具只出网一次，随后**平台**持有等待状态，外部服务
+完成后主动回调——模型侧**零轮询**。
+
+**工作方式**（平台内建，无需 Worker 侧改动接口）：
+
+1. 平台登记 `await_broker` 行（`waiting`），把回传地址注入派发工具的 args：
+
+   ```json
+   {"await_callback": {
+      "await_id": "...", "url": "https://<平台>/api/v1/open/awaits/<await_id>/resolve",
+      "token": "<回调专属凭据>", "idempotency_key": "<参数指纹>"}}
+   ```
+
+   > 示例见 `app/modules/engine/tools_builtin.py:_procurement_trigger`：**原样透传**给外部服务即可。
+
+2. 派发成功后 run 进入 `waiting_external`（暂停执行段：`active_ms` 停表、`deadline_at` 顺延、
+   `iterations`/`tool_calls` 不增长），可安全重启。
+3. 外部服务完成后回调平台：
+
+   ```bash
+   curl -X POST "$PLATFORM/api/v1/open/awaits/$AWAIT_ID/resolve" \
+     -H "X-API-Key: $OPEN_API_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"callback_token":"<注册响应里的 token>","idempotency_key":"<同上>","payload":{"score":92}}'
+   ```
+
+   | 返回 | 含义与处置 |
+   |---|---|
+   | `200 {"resumed":true}` | 首次落定，已唤醒 run；**正常路径** |
+   | `200 {"resumed":false}` | 幂等重放或已被超时/撤销先落定：**不要重试派发**，这不是错误 |
+   | `401` | `X-API-Key` 缺失/错误（或平台未配置 `open_api_token` → `503`） |
+   | `403` | `callback_token` 与 `await_id` 不匹配（勿在日志里打印 token） |
+   | `404` | 等待记录不存在（`await_id` 错） |
+   | `409` | 带了 `idempotency_key` 但与登记时不一致（串号回调） |
+
+**外部服务必须做到的三件事**
+
+1. **按 `idempotency_key` 去重**：平台的重放边界是 `at-most-once`——派发已出网但进程在
+   落库前崩溃时，重放会**再出网一次**。外部服务据此键去重才能避免重复计费/重复入库。
+2. **回调失败要重试**（带同一个 `idempotency_key`）：网络抖动导致的回调丢失只能靠外部侧
+   重试补齐；平台侧的超时（`deadline_at`）是**兜底**而不是主路径——超时后 run 收到的是
+   结构化失败 `await_expired`，成果会丢。
+3. **不依赖平台主动回调**：一期只做**拉取式**（外部服务调平台）。平台不会主动 POST 到外部
+   地址（避免 SSRF 面），所以 `await_callback.url` 是你唯一要实现的通道。
+
+**灰度与前置条件**
+
+平台的等待模式由 `settings.await_external_enabled` 控制，**默认 `false`**：开关关闭时行为与
+旧版完全一致（派发工具照常同步执行、`xxx_status` 轮询工具模型可见），因此**外部服务在实现
+回调契约之前，平台侧必须保持 `false`**。开关打开后：
+
+- 派发类工具（`app/modules/awaits/policy.py:AWAIT_DISPATCH_BUILTINS`）不再由模型侧等到结果；
+- 被取代的轮询工具（同文件 `AWAIT_SUPERSEDED_BUILTINS`）**从模型可见列表中移除**
+  （能力仍保留给平台/人工使用）——这是"模型不可能轮询"的硬保证。
+
+**观测与人工干预**（用户 JWT）
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/api/v1/awaits?run_id=&status=` | 等待全貌（等谁、等到何时、等了多久）；**不含** `callback_token` |
+| `POST` | `/api/v1/awaits/{await_id}/cancel` | 人工撤销等待；run 收到结构化 `await_cancelled` |
+
 ---
 
 ## 3. Worker 编写规范

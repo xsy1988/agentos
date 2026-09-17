@@ -34,6 +34,7 @@ function statusTag(status: string) {
     aborted: "已中止",
     timeout: "超时",
     paused_awaiting_confirm: "等待确认",
+    waiting_external: "等待外部回调",
     running: "运行中",
     pending: "排队中",
   };

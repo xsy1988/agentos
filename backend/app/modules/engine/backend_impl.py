@@ -1,6 +1,7 @@
 """InProcessBackend —— EngineBackend 协议的一期进程内实现（M2-2a 冻结协议）。
 
-增量扩展：M7a 任务架构、M9a 结果产物（P0-5，`save_artifact`/`list_artifacts`）。
+增量扩展：M7a 任务架构、M9a 结果产物（P0-5，`save_artifact`/`list_artifacts`）、
+M9b 外部等待（P0-4，`ensure_await` 等 4 个方法）。
 """
 
 import json
@@ -367,6 +368,89 @@ class InProcessBackend:
                 .order_by(RunArtifact.created_at)
             )
             return [_artifact_brief(a) for a in rows]
+
+    # ---- M9b 增量扩展（方案 §4 P0-4：外部等待一等化）----
+
+    async def ensure_await(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        idempotency_key: str,
+        builtin: str,
+        capability_id: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.runs.models import Run
+
+        async with session_factory() as db:
+            run = await db.get(Run, uuid.UUID(run_id))
+            row, _created = await awaits_service.ensure_await(
+                db,
+                run_id=run_id,
+                tool_name=tool_name,
+                idempotency_key=idempotency_key,
+                conversation_id=run.conversation_id if run else None,
+                task_id=(run.input or {}).get("task_id") if run else None,
+                capability_id=capability_id,
+                payload_in={"builtin": builtin, "args": args or {}},
+            )
+            return _await_view(row, with_token=True)
+
+    async def get_await(self, await_id: str) -> dict[str, Any] | None:
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            return _await_view(row, with_token=True) if row is not None else None
+
+    async def mark_await_dispatched(self, await_id: str, *, response: Any = None) -> None:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            if row is None:
+                return
+            await awaits_service.mark_notified(
+                db, row, response=response if isinstance(response, dict) else None
+            )
+
+    async def cancel_await(self, await_id: str, *, reason: str | None = None) -> bool:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            if row is None:
+                return False
+            won = await awaits_service.cancel(db, row, reason=reason)
+            await db.commit()
+            return won
+
+
+def _await_view(row: Any, *, with_token: bool = False) -> dict[str, Any]:
+    """等待行摘要（引擎内部视图）：时间戳转 ISO，凭据仅在登记/重读时下发。"""
+    payload_in = row.payload_in or {}
+    view: dict[str, Any] = {
+        "await_id": str(row.id),
+        "run_id": str(row.run_id),
+        "tool_name": row.tool_name,
+        "builtin": payload_in.get("builtin"),
+        "args": payload_in.get("args") or {},
+        "dispatch_response": payload_in.get("dispatch_response"),
+        "idempotency_key": row.idempotency_key,
+        "status": row.status,
+        "deadline_at": row.deadline_at.isoformat() if row.deadline_at else None,
+        "notified_at": row.notified_at.isoformat() if row.notified_at else None,
+        "payload_out": row.payload_out,
+        "error": row.error,
+        "waited_ms": int(row.waited_ms or 0),
+    }
+    if with_token:
+        view["callback_token"] = row.callback_token
+    return view
 
 
 def _artifact_brief(artifact: Any) -> dict[str, Any]:

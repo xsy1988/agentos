@@ -25,6 +25,10 @@ EVENT_TYPES = (
     "context_compacted",
     "card",
     "capability_overflow",
+    # M9b 增量扩展（方案 §4 P0-4：外部等待一等化）
+    "await_started",
+    "await_resolved",
+    "await_expired",
 )
 
 
@@ -138,4 +142,38 @@ class EngineBackend(Protocol):
 
     async def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
         """run 的产物清单（按 created_at 升序），结果卡与产物面板共用。"""
+        ...
+
+    # ---- M9b 增量扩展（方案 §4 P0-4：外部等待一等化）----
+
+    async def ensure_await(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        idempotency_key: str,
+        builtin: str,
+        capability_id: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """登记（或复用）一笔外部等待，返回等待行摘要（含一次性 callback 凭据）。
+
+        幂等键 `(run_id, tool_name, idempotency_key)` 唯一：重放/重试复用同一行，
+        绝不重复派发外部请求。返回值含 `await_id/status/deadline_at/callback_url/
+        callback_token/notified_at/idempotency_key`。
+        """
+        ...
+
+    async def get_await(self, await_id: str) -> dict[str, Any] | None:
+        """读等待行当前状态（恢复路径以 DB 为准，不消费 interrupt 返回值）。"""
+        ...
+
+    async def mark_await_dispatched(
+        self, await_id: str, *, response: Any = None
+    ) -> None:
+        """记「已派发」：置 notified_at 并存派发响应（重放不再重复派发）。"""
+        ...
+
+    async def cancel_await(self, await_id: str, *, reason: str | None = None) -> bool:
+        """撤销等待（派发失败/放弃等待）：CAS waiting → cancelled，返回是否翻转。"""
         ...

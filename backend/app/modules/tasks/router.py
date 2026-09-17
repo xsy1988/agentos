@@ -40,8 +40,8 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-# 未终态 run：看板据此显示「执行中 / 待确认」
-NON_TERMINAL_RUN_STATUSES = ("pending", "running", "paused_awaiting_confirm")
+# 未终态 run：看板据此显示「执行中 / 待确认 / 等待外部」
+NON_TERMINAL_RUN_STATUSES = ("pending", "running", "paused_awaiting_confirm", "waiting_external")
 
 
 # ---------- 序列化辅助 ----------

@@ -166,8 +166,9 @@ export default function ChatPage() {
       setActiveConvId(convId);
       setConfirming(null);
       // 恢复未终态 run：优先显式 runId，其次看板返回的 active_run_id
-      // （后端 NON_TERMINAL_RUN_STATUSES：pending / running / paused_awaiting_confirm）。
-      // 恢复后 useSSE 以 after=0 重放全部事件，执行过程/确认卡都能重建。
+      // （后端 NON_TERMINAL_RUN_STATUSES：pending / running / paused_awaiting_confirm /
+      //  waiting_external）。恢复后 useSSE 以 after=0 重放全部事件，
+      // 执行过程/确认卡/外部等待状态都能重建。
       const resumeRunId = runId ?? task.active_run_id ?? null;
       if (resumeRunId) {
         setActiveRun({ runId: resumeRunId, status: "running" });

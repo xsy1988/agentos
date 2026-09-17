@@ -11,6 +11,7 @@ from app.db import models  # noqa: F401 注册全部模型，保证 FK 可解析
 from app.modules.agents.router import router as agents_router
 from app.modules.agents.service import seed_default_agent
 from app.modules.auth.router import router as auth_router
+from app.modules.awaits.router import router as awaits_router
 from app.modules.capabilities.mcp_client import mcp_pool
 from app.modules.capabilities.router import (
     bindings_router as capability_bindings_router,
@@ -86,6 +87,8 @@ app.include_router(notifications_router, prefix=API_PREFIX)
 app.include_router(skills_router, prefix=API_PREFIX)
 app.include_router(workers_router, prefix=API_PREFIX)
 app.include_router(tasks_router, prefix=API_PREFIX)
+# 外部等待观测面（P0-4：等待清单 + 人工撤销；回调入口在 open_api）
+app.include_router(awaits_router, prefix=API_PREFIX)
 # 第三方开发者开放注册接口（静态令牌鉴权，与用户 JWT 体系隔离）
 app.include_router(open_api_router, prefix=API_PREFIX)
 

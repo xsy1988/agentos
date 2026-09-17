@@ -14,6 +14,9 @@ from app.modules.engine.state import LoopState
 # 显式期望清单（评审时一眼可见变更）。EVENT_TYPES 是唯一真源，
 # 这里断言"真源 = 期望清单"——两边各改一半会红灯（P0-6）。
 EXPECTED_EVENT_TYPES = (
+    "await_expired",  # 外部等待超时（P0-4，runtime._emit_await_outcome / graph.await_gate）
+    "await_resolved",  # 外部等待被回调/撤销（P0-4）
+    "await_started",  # 平台开始持有外部等待（P0-4，runtime._pause_for_await）
     "budget_warning",
     "card",  # 结果卡/过程卡（P0-5，runtime._emit_result_card 发射）
     "confirmation_request",
@@ -31,7 +34,7 @@ EXPECTED_EVENT_TYPES = (
 
 
 def test_loop_state_keys() -> None:
-    # 冻结的六个键，多一个少一个都算接口变更
+    # 冻结的七个键，多一个少一个都算接口变更（pending_awaits 为 P0-4 增量）
     assert set(LoopState.__annotations__) == {
         "messages",
         "protected_context",
@@ -39,6 +42,7 @@ def test_loop_state_keys() -> None:
         "plan_ref",
         "budget_state",
         "confirmation",
+        "pending_awaits",
     }
 
 

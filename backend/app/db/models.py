@@ -2,6 +2,7 @@
 
 from app.modules.agents.models import Agent
 from app.modules.auth.models import User
+from app.modules.awaits.models import AwaitBroker
 from app.modules.capabilities.models import Capability, CapabilityBinding, CapabilityTool
 from app.modules.conversations.models import Conversation, Message
 from app.modules.engine.models import InboxEvent, Plan
@@ -21,6 +22,7 @@ from app.modules.tasks.models import (
 __all__ = [
     "Agent",
     "Alarm",
+    "AwaitBroker",
     "Capability",
     "CapabilityBinding",
     "CapabilityTool",

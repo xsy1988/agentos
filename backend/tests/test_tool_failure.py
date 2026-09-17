@@ -52,6 +52,9 @@ def test_failure_code_table_is_closed() -> None:
         "parse_error",
         "internal_error",
         "denied_by_user",
+        "await_expired",
+        "await_cancelled",
+        "await_unresolved",
     )
     assert set(RETRYABLE_BY_CODE) == set(TOOL_FAILURE_CODES)
     assert set(TOOL_FAILURE_CODES) >= STREAK_CODES

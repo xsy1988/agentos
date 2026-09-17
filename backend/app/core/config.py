@@ -58,6 +58,17 @@ class Settings(BaseSettings):
     artifact_inline_max_chars: int = 4000
     # 外置后留在上下文/终答里的预览字符数（引用行不计入）
     artifact_preview_chars: int = 800
+    # ---- 外部等待一等化（方案 §4 P0-4）----
+    # 灰度开关：外部服务（采购 Agent）实现回调契约前保持关闭——
+    # 关闭时派发类工具照旧返回并对模型可见轮询工具，等待不进平台
+    await_external_enabled: bool = False
+    # 等待缺省超时（秒）：超时后置 expired 并注入结构化失败（error.code=await_expired）
+    await_default_timeout_seconds: int = 900
+    # 等待巡检间隔（秒）：扫到期未回的行，翻状态并唤醒 run
+    await_sweep_interval_seconds: int = 15
+    # 平台对外可达基址：外部服务回调 await 结果时用的地址前缀
+    # （开发默认本机；容器/部署环境必须配成外部服务能访问的实际地址）
+    platform_base_url: str = "http://localhost:8000"
 
 
 settings = Settings()

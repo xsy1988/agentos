@@ -128,6 +128,7 @@ class EngineRuntime:
         self.hooks: Any = None  # HookChain（audit → metering → budget → loop-detect）
         self._worker_task: asyncio.Task | None = None
         self._listener_task: asyncio.Task | None = None
+        self._await_sweeper_task: asyncio.Task | None = None
         self._listen_conn: asyncpg.Connection | None = None
         self._wakeup = asyncio.Event()
         self._run_tasks: dict[str, asyncio.Task] = {}
@@ -156,12 +157,17 @@ class EngineRuntime:
         await self._reconcile_orphans()
         self._listener_task = asyncio.create_task(self._listen_inbox(), name="engine-listen")
         self._worker_task = asyncio.create_task(self._worker(), name="engine-worker")
+        self._await_sweeper_task = asyncio.create_task(
+            self._await_sweeper(), name="engine-await-sweeper"
+        )
         logger.info("EngineRuntime started")
 
     async def _reconcile_orphans(self) -> None:
         """重启对账：单进程纪律下，上个进程遗留的 running run 必已死，标记 failed。
 
         paused_awaiting_confirm 保留——检查点在 PG，confirm 后可恢复（2c DoD 之三）。
+        waiting_external 同样保留（P0-4）：引擎进程重启不影响外部流程，
+        **只在匹配 status = 'running' 时收殓**，等待中的 run 不能被"重启即失败"误杀。
         """
         async with session_factory() as db:
             await db.execute(
@@ -177,7 +183,7 @@ class EngineRuntime:
     async def stop(self) -> None:
         for task in self._run_tasks.values():
             task.cancel()
-        for t in (self._worker_task, self._listener_task):
+        for t in (self._worker_task, self._listener_task, self._await_sweeper_task):
             if t:
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -308,6 +314,13 @@ class EngineRuntime:
                 running = self._run_tasks.get(run_id)
                 if running:
                     running.cancel()
+        elif et == "resume":
+            # P0-4：外部等待被落定（回调/超时/撤销）后唤醒 run，从 interrupt 检查点继续。
+            # 载荷是扁平恢复值（非列表）：{kind: "await", await_id, tool, status, payload, ...}
+            run_id = event.get("target_run_id")
+            payload = event.get("payload") or {}
+            if run_id and payload:
+                self._spawn_run_task(str(run_id), self._resume_run(str(run_id), payload))
         else:
             # P0-6：未知类型绝不静默丢弃——告警 + 落 failed 供排查（认领时已置 consumed）
             logger.warning(
@@ -322,6 +335,29 @@ class EngineRuntime:
                     {"id": event["id"]},
                 )
                 await db.commit()
+
+    async def _await_sweeper(self) -> None:
+        """等待巡检（P0-4）：周期扫到期未回传的等待，翻 expired 并唤醒 run。
+
+        与回调路径竞争同一行 CAS：只有翻成功的那一路投递唤醒事件，
+        故"超时先到"与"回调先到"都只唤醒一次（幂等）。
+        引擎只在本进程跑一份（单进程纪律），巡检不会重复执行。
+        """
+        from app.modules.awaits import service as awaits_service
+
+        while True:
+            try:
+                await asyncio.sleep(settings.await_sweep_interval_seconds)
+                async with session_factory() as db:
+                    rows = await awaits_service.expire_due(db)
+                    for row in rows:
+                        await awaits_service.enqueue_resume(db, row, status="expired")
+                    if rows:
+                        await db.commit()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 —— 巡检永不退出
+                logger.exception("await sweeper iteration failed")
 
     def _spawn_run_task(self, run_id: str, coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -359,7 +395,10 @@ class EngineRuntime:
                     run.budget, default=settings.run_default_timeout_seconds
                 )
                 run.deadline_at = timing.compute_deadline(run.started_at, timeout)
-            if prev_status == "paused_awaiting_confirm" and run.paused_at is not None:
+            if (
+                prev_status in ("paused_awaiting_confirm", "waiting_external")
+                and run.paused_at is not None
+            ):
                 extension = timing.pause_extension(
                     run.paused_at, now, settings.max_run_pause_seconds
                 )
@@ -545,14 +584,17 @@ class EngineRuntime:
             )
 
     async def _resume_run(self, run_id: str, answer: Any) -> None:
-        """confirmation 入口：从 interrupt 检查点恢复（Command(resume=answer)）。
+        """恢复入口：从 interrupt 检查点恢复（Command(resume=answer)）。
 
-        answer 可为字符串（approved/rejected/支线文本答复）或 dict（侧边栏结构化
-        回传 {answer, data, applied}，§3.5）——原样注入 Command(resume=...)，由对应 interrupt 消费。
+        answer 可为字符串（approved/rejected/支线文本答复）、dict（侧边栏结构化
+        回传 {answer, data, applied}，§3.5），或外部等待落定后的恢复包
+        （{kind: "await", ...}，P0-4）——原样注入 Command(resume=...)，由对应 interrupt 消费。
+        等待恢复不读 interrupt 的返回值，`await_gate` 一律以 DB 行为准。
         """
         try:
             run = await self._load_run(run_id)
-            if run is None or run.status != "paused_awaiting_confirm":
+            # 等待态（waiting_external）同样可恢复：外部流程落定后唤醒
+            if run is None or run.status not in ("paused_awaiting_confirm", "waiting_external"):
                 return
             thread_id = str(run.conversation_id) if run.conversation_id else run_id
             # 重启后内存 ctx 丢失：重建（含预算续跑账本）；
@@ -560,7 +602,11 @@ class EngineRuntime:
             if run_id not in self._run_ctx:
                 self._build_ctx(run)
             timing_payload = await self._set_run_status(run_id, "running")
-            resumed_with = answer.get("answer", "") if isinstance(answer, dict) else answer
+            if isinstance(answer, dict) and answer.get("kind") == "await":
+                await self._emit_await_outcome(run_id, answer)
+                resumed_with = f"await:{answer.get('status')}"
+            else:
+                resumed_with = answer.get("answer", "") if isinstance(answer, dict) else answer
             await self.emit_event(
                 run_id,
                 "run_status",
@@ -593,6 +639,36 @@ class EngineRuntime:
                 extra={"partial": False, "code": error["code"]},
                 achieved=False,
                 error=error,
+            )
+
+    async def _emit_await_outcome(self, run_id: str, answer: dict[str, Any]) -> None:
+        """等待落定事件（P0-4）：回调/超时/撤销三条路都经此发射。
+
+        `await_resolved` 承载已落定的终局（granted / cancelled），`await_expired`
+        单独成类以便前端区分"等到了"与"等超时"；`expired` 与 `cancelled` 都对模型
+        表现为结构化失败，但事件语义不同。
+        """
+        await_id = str(answer.get("await_id") or "")
+        status = str(answer.get("status") or "")
+        waited_ms = int(answer.get("waited_ms") or 0)
+        timing_payload = await self._timing_payload_for(run_id)
+        # `deadline_at` 恒为等待超时点，run 时长截止点另用 `run_deadline_at`（与
+        # `await_started` 保持一致，故 timing_payload 必须先展开）。
+        base = {
+            **timing_payload,
+            "await_id": await_id,
+            "tool": answer.get("tool"),
+            "waited_ms": waited_ms,
+            "deadline_at": answer.get("deadline_at"),
+            "run_deadline_at": timing_payload.get("deadline_at"),
+        }
+        if status == "expired":
+            await self.emit_event(run_id, "await_expired", base)
+        else:
+            await self.emit_event(
+                run_id,
+                "await_resolved",
+                {**base, "status": status, "payload": answer.get("payload")},
             )
 
     def _build_ctx(self, run: Run) -> RunContext:
@@ -672,10 +748,10 @@ class EngineRuntime:
             await self._finalize_timeout(run_id, phase="graph", thread_id=thread_id)
             return
 
-        # 确认点：图停在 interrupt → run 暂停，等 confirmation 事件恢复
+        # 暂停点：图停在 interrupt → run 暂停，等 confirmation / 外部回调恢复（P0-4 统一出口）
         snapshot = await self.graph.aget_state(config)
         if snapshot.next:
-            await self._pause_for_confirmation(run_id, snapshot)
+            await self._pause(run_id, snapshot)
             return
 
         confirmation = final_state.get("confirmation")
@@ -706,14 +782,29 @@ class EngineRuntime:
         )
         await self._finalize(run_id, "done", final_text, achieved=achieved)
 
-    async def _pause_for_confirmation(self, run_id: str, snapshot: Any) -> None:
-        payload: dict[str, Any] = {"reason": "unknown", "payload": {}}
+    @staticmethod
+    def _interrupt_value(snapshot: Any) -> dict[str, Any]:
         for task in snapshot.tasks:
             if task.interrupts:
                 value = task.interrupts[0].value
                 if isinstance(value, dict):
-                    payload = value
+                    return value
                 break
+        return {"reason": "unknown", "payload": {}}
+
+    async def _pause(self, run_id: str, snapshot: Any) -> None:
+        """统一暂停出口（P0-4）：按 interrupt 的 reason 分派"等用户"或"等外部"。
+
+        两类暂停的落库语义相同（结束执行段 + 记 paused_at + 落预算账本），
+        差异只在状态值与后续唤醒事件，故共用一个分派点避免再次漂移。
+        """
+        payload = self._interrupt_value(snapshot)
+        if payload.get("reason") == "external_await":
+            await self._pause_for_await(run_id, payload.get("payload") or {})
+        else:
+            await self._pause_for_confirmation(run_id, payload)
+
+    async def _pause_for_confirmation(self, run_id: str, payload: dict[str, Any]) -> None:
         # 暂停即落账本：重启恢复后预算续跑不重置（DoD：kill 后可恢复）；
         # paused_at 是恢复时顺延截止点的依据，暂停时长不计入 active_ms（P0-1）
         ctx = self.get_run_ctx(run_id)
@@ -734,6 +825,37 @@ class EngineRuntime:
             run_id,
             "run_status",
             {"status": "paused_awaiting_confirm", "reason": payload.get("reason"), **paused_timing},
+        )
+
+    async def _pause_for_await(self, run_id: str, payload: dict[str, Any]) -> None:
+        """等待外部回调（P0-4）：run 置 waiting_external，本执行段到此结束。
+
+        等待时长不计入 active_ms（`_close_segment` 收段），暂停顺延权在恢复时由
+        `_open_segment` 兑现；等待期间 iterations/tool_calls 均不增长。
+        """
+        ctx = self.get_run_ctx(run_id)
+        budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
+        now = datetime.now(UTC)
+        paused_timing: dict[str, Any] = {}
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run:
+                self._close_segment(run, now)
+                run.status = "waiting_external"
+                run.paused_at = now
+                run.budget_used = budget_used
+                await db.commit()
+                paused_timing = self._timing_payload(run)
+        # 等待自身字段优先于时长字段（两者都有 deadline_at，语义不同）：
+        # deadline_at = 等待超时点，run_deadline_at = run 时长预算截止点
+        event_payload: dict[str, Any] = dict(paused_timing)
+        event_payload.update(payload)
+        event_payload["run_deadline_at"] = paused_timing.get("deadline_at")
+        await self.emit_event(run_id, "await_started", event_payload)
+        await self.emit_event(
+            run_id,
+            "run_status",
+            {"status": "waiting_external", "reason": "external_await", **event_payload},
         )
 
     async def _externalize(
@@ -909,6 +1031,9 @@ class EngineRuntime:
         elif task_id:
             # 非正常终态（如用户拒绝计划 → cancelled）：收敛挂起的待确认支线
             await self._reconcile_awaiting_steps(run_id)
+        # 等待行收殓（P0-4）：run 已终态，残留的 waiting 行必须翻 cancelled，
+        # 否则巡检/回调会唤醒一个已结束的 run（僵尸等待）。
+        await self._cancel_run_awaits(run_id)
         await self.hooks.on_run_end(ctx, status, envelope)
         await self.emit_event(
             run_id,
@@ -1119,6 +1244,17 @@ class EngineRuntime:
             achieved=False,
             error=error,
         )
+
+    async def _cancel_run_awaits(self, run_id: str) -> int:
+        """run 终态收殓：把仍 waiting 的等待行翻 cancelled（防僵尸唤醒）。"""
+        try:
+            from app.modules.awaits import service as awaits_service
+
+            async with session_factory() as db:
+                return await awaits_service.cancel_run_awaits(db, run_id)
+        except Exception:  # noqa: BLE001 —— 收尾失败不能影响 run 落库
+            logger.exception("run %s 等待行收殓失败", run_id)
+            return 0
 
     async def _reconcile_awaiting_steps(self, run_id: str) -> None:
         """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。

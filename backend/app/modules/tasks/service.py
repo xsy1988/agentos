@@ -20,6 +20,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.modules.awaits.models import AwaitBroker
 from app.modules.tasks.models import Task, TaskStep
 from app.modules.workers import registry
 from app.modules.workers.registry import (
@@ -733,8 +734,39 @@ async def render_task_card(db: AsyncSession, task_id: uuid.UUID) -> str:
             "\n注意：用户曾明确要求在本会话处理其它主任务（越界 "
             f"{len(task.out_of_scope)} 次），请聚焦当前主任务，必要时提示新开会话。\n"
         )
+    waiting_section = await _render_waiting_section(db, task.id)
     return (
         f"# {header}\n{playbook_section}{step_section}\n"
         f"## 子任务清单（进度 {task.progress_done}/{task.progress_total}）\n"
-        f"{body}\n{out_of_scope}"
+        f"{body}\n{out_of_scope}{waiting_section}"
+    )
+
+
+async def _render_waiting_section(db: AsyncSession, task_id: uuid.UUID) -> str:
+    """P0-4：把本主任务仍在等待的外部回调渲染进任务卡（新执行段可直接看到等待状态）。
+
+    等待由平台持有，外部流程回调后自动继续；此处只为让模型知道「在等什么、等多久」，
+    避免其重新派发或轮询状态查询工具。
+    """
+    rows = list(
+        (
+            await db.scalars(
+                select(AwaitBroker)
+                .where(AwaitBroker.task_id == task_id, AwaitBroker.status == "waiting")
+                .order_by(AwaitBroker.created_at)
+            )
+        ).all()
+    )
+    if not rows:
+        return ""
+    now = datetime.now(UTC)
+    items: list[str] = []
+    for row in rows:
+        waited_s = int((now - row.created_at).total_seconds()) if row.created_at else 0
+        deadline = row.deadline_at.strftime("%Y-%m-%d %H:%M:%S") if row.deadline_at else "—"
+        items.append(f"- {row.tool_name}：已等待 {max(waited_s, 0)}s，最晚 {deadline} 自动超时")
+    return (
+        "\n## 等待外部回调（平台持有，勿轮询）\n"
+        + "\n".join(items)
+        + "\n外部流程完成后平台会自动注入结果并继续；未结束前请勿重新派发该请求。\n"
     )

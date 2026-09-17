@@ -5,7 +5,10 @@
 - GET  /open/workers                 Worker 目录
 - GET  /open/workers/{name}          Worker 概览 + 引用清单校验
 - POST /open/workers/register        一键注册（Worker + 能力捆绑包）
+- POST /open/awaits/{id}/resolve     外部流程回传等待结果（P0-4，回调契约）
 """
+
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
@@ -13,6 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
+from app.modules.awaits.models import AwaitBroker
+from app.modules.awaits.schemas import AwaitResolveIn, AwaitResolveOut
+from app.modules.awaits.service import enqueue_resume, resolve, verify_callback_token
 from app.modules.capabilities.models import Capability
 from app.modules.open_api.schemas import (
     OpenCapabilityBriefOut,
@@ -120,3 +126,40 @@ async def register_open_worker(
 ) -> OpenWorkerRegisterOut:
     """一键注册：Worker 文件包 + 其依赖的 mcp/tool/plugin/skill 能力捆绑提交。"""
     return await register_bundle(db, body)
+
+
+@router.post("/awaits/{await_id}/resolve", response_model=AwaitResolveOut)
+async def resolve_await(
+    await_id: UUID, body: AwaitResolveIn, db: AsyncSession = Depends(get_db)
+) -> AwaitResolveOut:
+    """外部流程回传等待结果（P0-4）：唤醒 run 从 interrupt 检查点继续。
+
+    双重鉴权：X-API-Key（路由依赖）+ callback_token（本次等待专属）；
+    幂等：CAS `waiting → granted`，只有翻成功的那一路投递唤醒事件——
+    重复回调/超时先到都只回既有状态，不产生第二次唤醒。
+    """
+    row = await db.get(AwaitBroker, await_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "等待记录不存在")
+    if not verify_callback_token(str(row.id), body.callback_token):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "callback_token 无效")
+    if body.idempotency_key and body.idempotency_key != row.idempotency_key:
+        raise HTTPException(status.HTTP_409_CONFLICT, "idempotency_key 与登记时不一致")
+    resolved, won = await resolve(
+        db,
+        row.id,
+        status="granted",
+        payload=body.payload,
+        error=body.error,
+    )
+    assert resolved is not None
+    if won:
+        await enqueue_resume(db, resolved, status="granted")
+    await db.commit()
+    return AwaitResolveOut(
+        await_id=str(resolved.id),
+        run_id=str(resolved.run_id),
+        status=resolved.status,
+        resumed=won,
+        waited_ms=int(resolved.waited_ms or 0),
+    )

@@ -20,11 +20,14 @@ from app.db.base import Base, TimestampMixin, UUIDPkMixin
 
 UUID = PGUUID(as_uuid=True)
 
-# 状态机：pending → running → (paused_awaiting_confirm) → done | failed | cancelled
+# 状态机：pending → running → (paused_awaiting_confirm | waiting_external)
+#         → done | failed | cancelled
 RUN_STATUSES = (
     "pending",
     "running",
     "paused_awaiting_confirm",
+    # P0-4：平台持有外部等待（等外部流程回调），非终态、可重启恢复
+    "waiting_external",
     "done",
     "failed",
     "cancelled",

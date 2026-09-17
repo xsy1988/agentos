@@ -25,6 +25,7 @@ from langchain_core.messages import (
 )
 
 from app.core.config import settings
+from app.modules.awaits import policy as await_policy
 from app.modules.engine import artifacts
 from app.modules.engine.hooks import ToolCapacityExceededError
 
@@ -204,6 +205,11 @@ async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, 
     payload = cap.get("payload") or {}
     risk = cap.get("risk_level") or "read"
     if cap["type"] == "tool":
+        # P0-4：平台持有等待后，被取代的轮询类工具不再暴露给模型（模型零轮询）。
+        # 放在本函数（两条装配入口的唯一汇聚点）保证 assemble_tools 与
+        # search_more_tools 行为一致，不会从检索后门再漏进来。
+        if await_policy.is_model_hidden_builtin(payload.get("builtin")):
+            return out
         schema = payload.get("schema")
         if schema:
             out.append(

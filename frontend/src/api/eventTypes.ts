@@ -19,6 +19,9 @@ export const EVENT_TYPES = [
   "context_compacted",
   "card",
   "capability_overflow",
+  "await_started",
+  "await_resolved",
+  "await_expired",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];
