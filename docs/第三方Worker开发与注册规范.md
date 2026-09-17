@@ -325,6 +325,10 @@ token 预算，且 run 一旦被重启对账收殓就前功尽弃。
    ```
 
    > 示例见 `app/modules/engine/tools_builtin.py:_procurement_trigger`：**原样透传**给外部服务即可。
+   > 另：派发工具如声明了**第 2 个形参**，还能从**工具执行上下文**（P1-10，`engine/tool_context.py`）直接取到
+   > `callback_token` / `await_id` / `callback_url` 与 `run_id` / 工具幂等键，不必再从 `args` 里抠。MCP 通道的
+   > 上下文走协议 `_meta`（`_meta.agentos`），**不并入工具入参 JSON**——多塞未知键会撞 Server 的
+   > `inputSchema` 校验（对端如何对待未知 `_meta` 尚未在真实 Server 上验证）。
 
 2. 派发成功后 run 进入 `waiting_external`（暂停执行段：`active_ms` 停表、`deadline_at` 顺延、
    `iterations`/`tool_calls` 不增长），可安全重启。
