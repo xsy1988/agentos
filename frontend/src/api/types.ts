@@ -390,6 +390,14 @@ export interface FileOut {
 /** L3 引用资源条目（references/*.md 等，LLM 按需拉取） */
 export type WorkerReference = Record<string, unknown>;
 /** 子任务（sub_workers/<ref>/WORKER.md 的摘要） */
+/** 一条输入声明（P1-4）：Worker 声明后平台在调用模型前预检，缺必填即拦截 */
+export interface WorkerInputSpec {
+  name: string;
+  type: "text" | "number" | "date" | "file" | "url" | "json";
+  required: boolean;
+  description: string;
+  example: string;
+}
 export interface SubWorkerOut {
   /** sub_workers 文件夹名（= task_steps.worker_step_ref） */
   ref: string;
@@ -399,6 +407,8 @@ export interface SubWorkerOut {
   optional: boolean;
   description: string;
   capability_hint: string[];
+  /** 子任务级输入声明（只做展示与校验，run 级门由主 Worker 声明） */
+  inputs: WorkerInputSpec[];
 }
 export interface WorkerVersionOut {
   version: string;
@@ -423,6 +433,8 @@ export interface WorkerOut {
   capabilities: string[];
   references: WorkerReference[] | null;
   playbook: string;
+  /** 输入契约（P1-4）：缺任一必填项时 run 在调用模型前失败（前端展示失败卡） */
+  inputs: WorkerInputSpec[];
   sub_workers: SubWorkerOut[];
   has_files: boolean;
 }

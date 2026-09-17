@@ -33,6 +33,9 @@ class MessageIn(BaseModel):
     # 幂等键（P1-9）：前端为一次「提交意图」生成，重试复用同一个键；
     # 同会话同键的重复提交返回首次的 run，不再新建
     client_message_id: str | None = Field(default=None, max_length=64)
+    # 输入契约取值（P1-4）：{输入名: 取值}，由外部系统/前端表单提供；
+    # 只接受 Worker 声明过的键会被采用，未声明的键忽略（值校验见 workers.inputs）
+    inputs: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _check_non_empty(self) -> "MessageIn":

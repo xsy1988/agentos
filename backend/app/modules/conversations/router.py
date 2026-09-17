@@ -29,6 +29,7 @@ from app.modules.conversations.schemas import (
 from app.modules.runs.models import Run
 from app.modules.tasks import service as tasks_service
 from app.modules.tasks.service import COMMON_WORKER, worker_display
+from app.modules.workers.inputs import InputContractError, sanitize_provided_inputs
 
 router = APIRouter(
     prefix="/conversations",
@@ -159,6 +160,11 @@ async def send_message(
     if agent is None or agent.status != "enabled":
         raise HTTPException(status.HTTP_409_CONFLICT, "会话绑定的 Agent 不可用")
 
+    try:
+        provided_inputs = sanitize_provided_inputs(body.inputs)
+    except InputContractError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
     attachments, has_image = await conv_service.collect_attachments(db, body.attachment_ids)
     await conv_service.assert_image_upload_confirmed(
@@ -210,6 +216,7 @@ async def send_message(
         confirm_upload=body.confirm_upload,
         task=task,
         client_message_id=body.client_message_id,
+        provided_inputs=provided_inputs,
     )
     await db.commit()
     return SendMessageRunCreated(conversation_id=conv.id, run_id=run.id)

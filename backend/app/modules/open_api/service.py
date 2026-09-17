@@ -86,6 +86,7 @@ def _normalize_sub_workers(subs: list[OpenSubWorkerIn]) -> list[dict]:
             "description": s.description,
             "capability_hint": s.capability_hint,
             "playbook": s.playbook,
+            "inputs": [i.to_registry() for i in s.inputs],
         }
         for s in subs
     ]
@@ -155,6 +156,7 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
                 references=body.worker.references,
                 playbook=body.worker.playbook,
                 sub_workers=_normalize_sub_workers(body.worker.sub_workers),
+                inputs=[i.to_registry() for i in body.worker.inputs],
             )
             action, version = "created", meta.effective_version
         elif body.if_exists == "fail":
@@ -175,6 +177,7 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
                 references=body.worker.references,
                 playbook=body.worker.playbook,
                 sub_workers=_normalize_sub_workers(body.worker.sub_workers),
+                inputs=[i.to_registry() for i in body.worker.inputs],
             )
             action = "new_version"
     except WorkerError as e:

@@ -529,6 +529,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             task_ctx = await runtime.backend.get_task_context(str(task_id))
             if task_ctx and task_ctx.get("card"):
                 system_prompt = f"{system_prompt}\n\n{task_ctx['card']}"
+        # 输入契约区（P1-4）：预检已把必需输入判定完，这里把「声明 + 实测取值」
+        # 随固定区注入——模型不必猜自己拿到什么，也不会把缺的可选项当已有的事实。
+        input_contract = conf.get("input_contract")
+        if input_contract:
+            system_prompt = f"{system_prompt}\n\n{input_contract}"
         return {
             "protected_context": {
                 "intent": "task",

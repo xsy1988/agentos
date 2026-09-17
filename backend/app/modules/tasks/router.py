@@ -34,6 +34,7 @@ from app.modules.tasks.schemas import (
     WorkerGroupBrief,
 )
 from app.modules.workers import registry
+from app.modules.workers.inputs import InputContractError, sanitize_provided_inputs
 from app.modules.workers.registry import COMMON_WORKER, COMMON_WORKER_DISPLAY
 
 router = APIRouter(
@@ -299,6 +300,10 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     if not meta.enabled:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Worker「{body.worker_name}」已停用")
     agent = await conv_service.resolve_agent(db, body.agent_id)
+    try:
+        provided_inputs = sanitize_provided_inputs(body.inputs)
+    except InputContractError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
 
     # 幂等（P1-9）：判重必须发生在建会话/任务之前——重复提交若走到 create_user_run
@@ -339,6 +344,7 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
             model_override=model_override,
             task=task,
             client_message_id=key,
+            provided_inputs=provided_inputs,
         )
     await db.commit()
     await db.refresh(task)

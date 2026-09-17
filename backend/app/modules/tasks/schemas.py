@@ -102,6 +102,8 @@ class TaskCreateIn(BaseModel):
     model_provider_id: UUID | None = None
     # 幂等键（P1-9）：「新开会话并发送」连点两次不会建出两个主任务
     client_message_id: str | None = Field(default=None, max_length=64)
+    # 输入契约取值（P1-4）：新建即提供输入，首条 run 就不必再问一轮
+    inputs: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class TaskCreateOut(BaseModel):

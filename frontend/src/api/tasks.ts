@@ -34,6 +34,8 @@ export const tasksApi = {
     model_provider_id?: string | null;
     // 幂等键（P1-9）：连点「新开会话并发送」/超时重试都命中同一个主任务
     client_message_id?: string | null;
+    // 输入契约取值（P1-4）：新建即提供输入，首条 run 不必再多问一轮
+    inputs?: Record<string, string | number | boolean | null>;
   }) => api.post<TaskCreateOut>("/tasks", body),
   update: (taskId: string, body: { title?: string; status?: string }) =>
     api.patch<TaskDetailOut>(`/tasks/${taskId}`, body),

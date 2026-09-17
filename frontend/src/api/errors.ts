@@ -21,6 +21,8 @@ const CODE_TEXT: Record<string, string> = {
   denied_by_user: "用户拒绝执行",
   // run 级 / 引擎码
   tool_failure_loop: "连续工具失败已熔断",
+  tool_capacity_exceeded: "必备工具数超上限",
+  missing_inputs: "缺少必需输入",
   budget_exceeded: "预算耗尽",
   timeout: "执行超时",
   cancelled: "已取消",

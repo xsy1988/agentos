@@ -31,6 +31,7 @@ from app.modules.workers.schemas import (
     WorkerFileCreateIn,
     WorkerFileIn,
     WorkerFileOut,
+    WorkerInputSpec,
     WorkerOut,
     WorkerPatchIn,
     WorkerVersionOut,
@@ -70,9 +71,7 @@ async def _expanded_tool_count(db: AsyncSession, names: list[str]) -> int:
 
     if not names:
         return 0
-    rows = list(
-        (await db.scalars(select(Capability).where(Capability.name.in_(names)))).all()
-    )
+    rows = list((await db.scalars(select(Capability).where(Capability.name.in_(names)))).all())
     return await count_capability_tools([cap_dict(c) for c in rows])
 
 
@@ -100,6 +99,7 @@ def _to_out(meta) -> WorkerOut:
         capabilities=wdef.capabilities if wdef else [],
         references=wdef.references if wdef else None,
         playbook=wdef.playbook if wdef else "",
+        inputs=[WorkerInputSpec(**i.to_dict()) for i in (wdef.inputs if wdef else [])],
         sub_workers=[
             SubWorkerOut(
                 ref=s.ref,
@@ -109,6 +109,7 @@ def _to_out(meta) -> WorkerOut:
                 optional=s.optional,
                 description=s.description,
                 capability_hint=s.capability_hint,
+                inputs=[WorkerInputSpec(**i.to_dict()) for i in s.inputs],
             )
             for s in (wdef.ordered_sub_workers() if wdef else [])
         ],
@@ -128,7 +129,11 @@ async def list_workers() -> list[WorkerOut]:
 async def create_worker(body: WorkerCreateIn) -> WorkerOut:
     try:
         meta = registry.create_worker(
-            body.name, description=body.description, icon=body.icon, color=body.color
+            body.name,
+            description=body.description,
+            icon=body.icon,
+            color=body.color,
+            inputs=[i.to_registry() for i in body.inputs],
         )
     except WorkerError as e:
         raise _err(e) from e
@@ -276,7 +281,9 @@ async def create_sub_worker(name: str, body: SubWorkerCreateIn, version: str | N
     """新建子任务文件夹脚手架（sub_workers/<名>/WORKER.md）。"""
     v = _resolve_version(name, version)
     try:
-        registry.create_sub_worker(name, v, body.name, kind=body.kind)
+        registry.create_sub_worker(
+            name, v, body.name, kind=body.kind, inputs=[i.to_registry() for i in body.inputs]
+        )
     except WorkerError as e:
         raise _err(e) from e
     wdef = registry.get_def(name, v)
@@ -291,6 +298,7 @@ async def create_sub_worker(name: str, body: SubWorkerCreateIn, version: str | N
         optional=sub.optional,
         description=sub.description,
         capability_hint=sub.capability_hint,
+        inputs=[WorkerInputSpec(**i.to_dict()) for i in sub.inputs],
     )
 
 

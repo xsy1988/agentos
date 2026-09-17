@@ -136,6 +136,7 @@ async def create_user_run(
     confirm_upload: bool = False,
     task: Task | None = None,
     client_message_id: str | None = None,
+    provided_inputs: dict[str, Any] | None = None,
 ) -> Run:
     """落用户消息 + 创建 run + 投 inbox 事件（**不 commit**，由调用方事务收口）。
 
@@ -189,6 +190,11 @@ async def create_user_run(
     if key is not None:
         # 键进 run.input 快照：唯一索引建在这个表达式上，重放/排障也能直接看到
         run_input["client_message_id"] = key
+
+    if provided_inputs:
+        # 输入契约取值快照（P1-4）：引擎预检据此判定必需输入是否齐备；
+        # 快照进 run.input 也让"这一轮到底给了什么"可追溯、可重放
+        run_input["inputs"] = provided_inputs
 
     if task is not None:
         run_input["task_id"] = str(task.id)

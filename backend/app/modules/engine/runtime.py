@@ -47,6 +47,8 @@ from app.modules.engine.hooks import (
 from app.modules.engine.state import BudgetState
 from app.modules.runs import events as run_events
 from app.modules.runs.models import Run
+from app.modules.workers import preflight
+from app.modules.workers.preflight import RunInputResolution
 
 logger = logging.getLogger(__name__)
 
@@ -841,6 +843,21 @@ class EngineRuntime:
         task_id = (run.input or {}).get("task_id") if run else None
         if not task_id and run is not None and run.conversation_id:
             task_id = await self.backend.ensure_task_id(str(run.conversation_id))
+        # 输入预检（P1-4）：必需输入缺失 → 图与模型都不调用，直接结构化失败。
+        # 只在首次进入时设门：确认/等待恢复（Command）时计划已批准、执行已过半，
+        # 此刻拦下来只会丢已产出的进度（取值只会累积，首次已通过则此后必然齐备）。
+        resolution = await preflight.resolve_run_inputs(run) if run is not None else None
+        if resolution is not None and not resolution.ok and not isinstance(input_payload, Command):
+            logger.warning(
+                "run %s 缺少必需输入 %s（Worker=%s），调用模型前拦截",
+                run_id,
+                resolution.missing_names,
+                resolution.worker_name,
+            )
+            await self._finalize_input_contract(
+                run_id, resolution, phase="pre_invoke", thread_id=thread_id
+            )
+            return
         config: RunnableConfig = {
             "configurable": {
                 "thread_id": thread_id,
@@ -851,6 +868,8 @@ class EngineRuntime:
                 "trigger": run.trigger if run else None,
                 # 对话内临时换模型（run 级覆盖，随 run.input 快照固化）
                 "model_provider_id": (run.input or {}).get("model_provider_id") if run else None,
+                # 输入契约（P1-4）：由 context_assembly 注入固定区（protected_context）
+                "input_contract": resolution.contract if resolution else None,
             }
         }
         deadline_at = self._deadline_for(run, run_id)
@@ -1366,6 +1385,58 @@ class EngineRuntime:
                 "partial": False,
                 "required_count": e.required,
                 "hard_limit": e.hard_limit,
+                "deadline_at": deadline_at.isoformat() if deadline_at else None,
+            },
+            achieved=False,
+            error=error,
+        )
+
+    async def _finalize_input_contract(
+        self,
+        run_id: str,
+        resolution: RunInputResolution,
+        *,
+        phase: str,
+        thread_id: str | None = None,
+    ) -> None:
+        """必需输入缺失，run **调用模型之前**显式失败（P1-4）。
+
+        为什么不当成"让模型自己问"：模型反问要走一轮推理与工具调用，成本远高于
+        平台按声明判定一次；更糟的是它可能选择硬干（编数据），失败还要人从输出里找。
+        这里把「差哪个输入、这个输入是干什么用的」结构化回传，补齐后可原样重发。
+        """
+        now = datetime.now(UTC)
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is None:
+                return
+            self._close_segment(run, now)
+            run.paused_at = None
+            deadline_at = run.deadline_at or self._clock(run_id).deadline_at
+            error: dict[str, Any] = {
+                "code": "missing_inputs",
+                "detail": resolution.message,
+                "phase": phase,
+                "retryable": False,
+                "source": "worker",
+                "worker": resolution.worker_name,
+                "worker_version": resolution.worker_version,
+                "missing": resolution.missing_names,
+                "inputs": resolution.inputs_payload(),
+            }
+            await db.commit()
+            timing_payload = self._timing_payload(run)
+        logger.warning("run %s 缺少必需输入 %s", run_id, resolution.missing_names)
+        await self.emit_event(run_id, "error", {**error, **timing_payload})
+        await self._finalize(
+            run_id,
+            "failed",
+            resolution.message,
+            outcome="failed",
+            reason="missing_inputs",
+            extra={
+                "partial": False,
+                "missing": resolution.missing_names,
                 "deadline_at": deadline_at.isoformat() if deadline_at else None,
             },
             achieved=False,

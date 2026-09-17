@@ -9,6 +9,8 @@ export interface SendMessageOptions {
   confirmUpload?: boolean;
   forceCurrentTask?: boolean;
   clientMessageId?: string;
+  /** 输入契约取值（P1-4）：{输入名: 取值}，键需与 Worker 声明的 inputs 同名 */
+  inputs?: Record<string, string | number | boolean | null>;
 }
 
 export const conversationsApi = {
@@ -40,5 +42,7 @@ export const conversationsApi = {
       // 「仍在本会话继续」：跳过新主任务检测，直接在当前任务里执行（ADR-27）
       force_current_task: opts.forceCurrentTask ?? false,
       client_message_id: opts.clientMessageId ?? null,
+      // 输入契约取值（P1-4）：随 run.input 快照固化，引擎据此预检必需输入
+      inputs: opts.inputs ?? {},
     }),
 };

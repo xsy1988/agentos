@@ -8,9 +8,30 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.modules.capabilities.schemas import CapabilityCreateIn
+
+
+class OpenInputSpec(BaseModel):
+    """一条输入声明（P1-4）；未知字段直接 422（拼错的声明比缺声明更危险）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=40)
+    type: Literal["text", "number", "date", "file", "url", "json"] = "text"
+    required: bool = False
+    description: str = Field(default="", max_length=500)
+    example: str = Field(default="", max_length=200)
+
+    def to_registry(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.type,
+            "required": self.required,
+            "description": self.description,
+            "example": self.example,
+        }
 
 
 class OpenSubWorkerIn(BaseModel):
@@ -24,6 +45,8 @@ class OpenSubWorkerIn(BaseModel):
     description: str = Field(default="", max_length=4000)
     playbook: str = Field(default="", max_length=200_000)
     capability_hint: list[str] = Field(default_factory=list, max_length=32)
+    # 输入声明（P1-4）：子任务级只做解析/校验/展示，run 级门由主 Worker 声明
+    inputs: list[OpenInputSpec] = Field(default_factory=list, max_length=16)
 
 
 class OpenWorkerIn(BaseModel):
@@ -40,6 +63,8 @@ class OpenWorkerIn(BaseModel):
     references: list[dict[str, Any]] | None = None
     # L2 正文 playbook（五件事 + 第零步依赖预检）；空则落脚手架模板（注册后需补写）
     playbook: str = Field(default="", max_length=200_000)
+    # 输入契约（P1-4）：缺任一必填项时平台在调用模型前拦截（不靠模型自觉）
+    inputs: list[OpenInputSpec] = Field(default_factory=list, max_length=16)
     sub_workers: list[OpenSubWorkerIn] = Field(default_factory=list, max_length=64)
 
     @field_validator("name")
