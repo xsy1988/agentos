@@ -37,7 +37,7 @@ from app.core.config import settings
 from app.core.db import session_factory
 from app.modules.engine import timing
 from app.modules.engine.graph import build_graph
-from app.modules.engine.hooks import BudgetExceededError, RunContext
+from app.modules.engine.hooks import BudgetExceededError, RunContext, ToolFailureLoopError
 from app.modules.engine.state import BudgetState
 from app.modules.runs.models import Run
 
@@ -54,6 +54,17 @@ ATTACHMENT_PARSE_TIMEOUT = 60.0
 def _pg_dsn() -> str:
     """postgresql+asyncpg://… → postgresql://…（psycopg/asyncpg 原生连接用）。"""
     return settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+def _run_error(e: Exception, *, phase: str) -> dict[str, Any]:
+    """未预期异常的 run 级失败载荷（§4 P0-3）：字段固定，前端失败卡据此渲染。"""
+    return {
+        "code": type(e).__name__,
+        "detail": str(e)[:500],
+        "phase": phase,
+        "retryable": True,
+        "source": "engine",
+    }
 
 
 @dataclass
@@ -469,14 +480,13 @@ class EngineRuntime:
         except TimeoutError:
             # _invoke_and_finalize 内部已按段超时收尾；此处兜底覆盖其之外的超时
             await self._finalize_timeout(run_id, phase="run", thread_id=thread_id)
+        except ToolFailureLoopError as e:
+            await self._finalize_tool_failure(run_id, e, phase="tools", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001 —— 结构化错误统一落库
             logger.exception("run %s failed", run_id)
-            timing_payload = await self._set_run_status(
-                run_id, "failed", error={"code": type(e).__name__, "detail": str(e)[:500]}
-            )
-            await self.emit_event(
-                run_id, "error", {"code": type(e).__name__, "detail": str(e)[:500]}
-            )
+            error = _run_error(e, phase="run")
+            timing_payload = await self._set_run_status(run_id, "failed", error=error)
+            await self.emit_event(run_id, "error", {**error, **timing_payload})
             await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
 
     async def _resume_run(self, run_id: str, answer: Any) -> None:
@@ -510,14 +520,13 @@ class EngineRuntime:
             await self._finalize_budget(run_id, e)
         except TimeoutError:
             await self._finalize_timeout(run_id, phase="resume", thread_id=thread_id)
+        except ToolFailureLoopError as e:
+            await self._finalize_tool_failure(run_id, e, phase="resume", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001
             logger.exception("run %s resume failed", run_id)
-            timing_payload = await self._set_run_status(
-                run_id, "failed", error={"code": type(e).__name__, "detail": str(e)[:500]}
-            )
-            await self.emit_event(
-                run_id, "error", {"code": type(e).__name__, "detail": str(e)[:500]}
-            )
+            error = _run_error(e, phase="resume")
+            timing_payload = await self._set_run_status(run_id, "failed", error=error)
+            await self.emit_event(run_id, "error", {**error, **timing_payload})
             await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
 
     def _build_ctx(self, run: Run) -> RunContext:
@@ -533,6 +542,10 @@ class EngineRuntime:
             # 与时长账本同一解析链，audit 里看到的即实际生效的（P0-1）
             "timeout_seconds": timing.resolve_timeout_seconds(
                 budget, default=settings.run_default_timeout_seconds
+            ),
+            # 连续工具失败熔断阈值（P0-3）：run 预算可覆盖
+            "tool_failure_limit": int(
+                budget.get("tool_failure_limit") or settings.tool_failure_limit
             ),
         }
         # 重启续跑：从上次实耗恢复账本（DoD：kill 进程后 run 可恢复）
@@ -616,8 +629,9 @@ class EngineRuntime:
         # 复杂任务以验收结论为准（verify 未达成时预算已耗尽才结束，此时不推进）。
         protected = final_state.get("protected_context") or {}
         verdict = protected.get("verify_verdict") or {}
+        # 验收可信（P0-3）：以验收员真实结论（passed）为准；旧行无 passed 时退回 achieved
         achieved = protected.get("intent", "task") != "chitchat" and bool(
-            verdict.get("achieved", True)
+            verdict.get("passed", verdict.get("achieved", True))
         )
         await self._finalize(run_id, "done", {"text": final_text}, achieved=achieved)
 
@@ -777,6 +791,58 @@ class EngineRuntime:
         await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
         self._run_ctx.pop(run_id, None)
         self._clocks.pop(run_id, None)
+
+    async def _finalize_tool_failure(
+        self, run_id: str, e: ToolFailureLoopError, *, phase: str, thread_id: str | None = None
+    ) -> None:
+        """连续工具失败熔断收尾（P0-3）：保留已产出文字 + 结构化失败，不进入终答。
+
+        与超时同构：**失败也有结果**，前端失败卡按 `code` 渲染文案与重试入口。
+        """
+        now = datetime.now(UTC)
+        ctx = self.get_run_ctx(run_id)
+        partial_text = await self._partial_text(thread_id) if thread_id else ""
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is None:
+                return
+            self._close_segment(run, now)
+            run.paused_at = None
+            started_at = run.started_at or self._clock(run_id).started_at
+            active_ms = int(run.active_ms or 0)
+            deadline_at = run.deadline_at or self._clock(run_id).deadline_at
+            metrics = timing.budget_metrics(
+                ctx.budget,
+                elapsed_ms=timing.elapsed_ms(started_at, now),
+                active_ms=active_ms,
+            )
+            text = partial_text or (
+                f"工具连续失败 {len(e.tools)} 次（最后失败码 {e.code}），已终止本次执行。"
+            )
+            error: dict[str, Any] = {
+                "code": "tool_failure_loop",
+                "detail": e.detail,
+                "phase": phase,
+                "retryable": True,
+                "source": e.source,
+                "failure_code": e.code,
+                "tools": e.tools,
+            }
+            result = timing.failure_result(
+                text=text,
+                reason="tool_failure_loop",
+                metrics=metrics,
+                extra={
+                    "failure_code": e.code,
+                    "tools": e.tools,
+                    "deadline_at": deadline_at.isoformat() if deadline_at else None,
+                },
+            )
+            await db.commit()
+            timing_payload = self._timing_payload(run)
+        logger.warning("run %s 工具连续失败熔断收尾（code=%s）", run_id, e.code)
+        await self.emit_event(run_id, "error", {**error, **timing_payload})
+        await self._finalize(run_id, "failed", result, achieved=False, error=error)
 
     async def _reconcile_awaiting_steps(self, run_id: str) -> None:
         """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。

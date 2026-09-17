@@ -21,6 +21,7 @@ import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
 import { TRACE_EVENT_TYPES } from "@/api/eventTypes";
+import { describeError } from "@/api/errors";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
@@ -452,10 +453,12 @@ export function EventItem({
   }
 
   if (event_type === "tool_result") {
-    // 后端 payload：{name, ok, elapsed_ms, content}
-    const name = (payload.name ?? payload.tool_name ?? "") as string;
+    // 后端 payload：{tool, ok, elapsed_ms, result, error?}（P0-3 起）
+    const name = (payload.tool ?? payload.name ?? payload.tool_name ?? "") as string;
     const result = payload.result ?? payload.content ?? "";
     const resultStr = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    const failed = payload.ok === false;
+    const err = failed ? describeError(payload.error) : null;
     return (
       <Collapse
         size="small"
@@ -464,25 +467,41 @@ export function EventItem({
           key: "1",
           label: (
             <Space size={6}>
-              <ToolOutlined style={{ color: "var(--ant-color-success)" }} />
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                {name} · 结果
+              <ToolOutlined
+                style={{
+                  color: failed ? "var(--ant-color-error)" : "var(--ant-color-success)",
+                }}
+              />
+              <Typography.Text
+                type={failed ? "danger" : "secondary"}
+                style={{ fontSize: 12 }}
+              >
+                {name} · {failed ? `失败 [${err?.code}]` : "结果"}
               </Typography.Text>
             </Space>
           ),
           children: (
-            <pre
-              className="font-mono-tight"
-              style={{
-                fontSize: 12,
-                margin: 0,
-                whiteSpace: "pre-wrap",
-                maxHeight: 200,
-                overflow: "auto",
-              }}
-            >
-              {resultStr.slice(0, 2000)}
-            </pre>
+            <>
+              {err && (
+                <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                  {err.title}
+                  {err.retryable ? "（可重试）" : ""}
+                  {err.detail ? `：${err.detail.replace(/\s+/g, " ").slice(0, 160)}` : ""}
+                </Typography.Text>
+              )}
+              <pre
+                className="font-mono-tight"
+                style={{
+                  fontSize: 12,
+                  margin: 0,
+                  whiteSpace: "pre-wrap",
+                  maxHeight: 200,
+                  overflow: "auto",
+                }}
+              >
+                {resultStr.slice(0, 2000)}
+              </pre>
+            </>
           ),
         }]}
       />
@@ -548,11 +567,12 @@ export function EventItem({
   }
 
   if (event_type === "error") {
-    // 后端 payload：{code, detail}
-    const msg = (payload.message ?? payload.detail ?? payload.error ?? "未知错误") as string;
+    const err = describeError(payload);
     return (
       <Tag color="error" style={{ marginBottom: 4, fontSize: 11 }}>
-        错误：{msg}
+        错误：{err.title}
+        {err.detail ? `：${err.detail.replace(/\s+/g, " ").slice(0, 120)}` : ""}
+        {err.retryable ? "（可重试）" : ""}
       </Tag>
     );
   }

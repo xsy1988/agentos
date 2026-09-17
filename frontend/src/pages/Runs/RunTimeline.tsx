@@ -30,6 +30,7 @@ import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
 import { useSSEStore } from "@/store/sse";
 import { EVENT_TYPES } from "@/api/eventTypes";
+import { describeError } from "@/api/errors";
 import type { RunEventOut } from "@/api/types";
 
 // 事件类型 → 图标/颜色映射
@@ -102,9 +103,12 @@ function EventContent({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "tool_call" || event_type === "tool_result") {
-    const name = String(payload.tool_name ?? payload.name ?? "unknown");
+    const name = String(payload.tool_name ?? payload.name ?? payload.tool ?? "unknown");
     const data = event_type === "tool_call" ? payload.args : payload.result;
     const dataStr = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    // P0-3：失败结果带结构段，直接标识失败（历史实现把所有结果都画成"绿色工具"）
+    const failed = event_type === "tool_result" && payload.ok === false;
+    const err = failed ? describeError(payload.error) : null;
     return (
       <Collapse
         size="small"
@@ -112,14 +116,27 @@ function EventContent({ event }: { event: RunEventOut }) {
         items={[{
           key: "1",
           label: (
-            <Typography.Text className="font-mono-tight" style={{ fontSize: 12 }}>
-              {name} {event_type === "tool_result" ? "· 结果" : ""}
+            <Typography.Text
+              className="font-mono-tight"
+              type={err ? "danger" : undefined}
+              style={{ fontSize: 12 }}
+            >
+              {name} {event_type === "tool_result" ? (err ? "· 失败" : "· 结果") : ""}
+              {err ? ` [${err.code}]` : ""}
             </Typography.Text>
           ),
           children: (
-            <pre className="font-mono-tight" style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
-              {dataStr.slice(0, 2000)}
-            </pre>
+            <>
+              {err && (
+                <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                  {err.title}
+                  {err.retryable ? "（可重试）" : ""}
+                </Typography.Text>
+              )}
+              <pre className="font-mono-tight" style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
+                {dataStr.slice(0, 2000)}
+              </pre>
+            </>
           ),
         }]}
       />
@@ -139,7 +156,14 @@ function EventContent({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "error") {
-    return <Tag color="error">错误: {String(payload.message ?? payload.error ?? "")}</Tag>;
+    const err = describeError(payload);
+    return (
+      <Tag color="error">
+        错误: {err.title}
+        {err.code !== "unknown" ? ` [${err.code}]` : ""}
+        {err.detail ? ` ${err.detail.replace(/\s+/g, " ").slice(0, 160)}` : ""}
+      </Tag>
+    );
   }
 
   // 默认：JSON 摘要

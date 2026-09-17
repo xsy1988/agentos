@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # 暂停（等用户确认/等外部回调）对截止时间的顺延上限（秒）：
     # 超出部分不再顺延，避免"次日才确认"使超时保护形同虚设
     max_run_pause_seconds: int = 3600
+    # 连续外部/解析失败熔断阈值（方案 §4 P0-3 第二道闸）：
+    # 同一 run 内连续 N 次 external_unavailable / parse_error → 结束 run，
+    # error.code=tool_failure_loop，不进入终答。run.get("tool_failure_limit") 可覆盖
+    tool_failure_limit: int = 3
 
 
 settings = Settings()

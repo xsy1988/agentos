@@ -23,6 +23,21 @@ class ConfirmIn(BaseModel):
     applied: list[dict[str, Any]] | None = None
 
 
+class RunError(BaseModel):
+    """run 级失败载荷（§4 P0-3）：字段固定，前端失败卡据此渲染文案与重试入口。
+
+    `extra="allow"` 兼容历史行（旧数据只有 `{code, detail}`，或预算闸带 `gate`）。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    code: str = "unknown"
+    detail: str = ""
+    retryable: bool = False
+    source: str = "engine"
+    phase: str | None = None
+
+
 class RunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -33,7 +48,7 @@ class RunOut(BaseModel):
     status: str
     input: dict
     result: dict | None
-    error: dict | None
+    error: RunError | None
     budget: dict
     budget_used: dict
     started_at: datetime | None

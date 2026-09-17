@@ -45,16 +45,16 @@ class AuditHook:
 
     async def on_tool_result(self, ctx: RunContext, result: ToolResultInfo) -> None:
         content = str(result.content)
-        await self._emit(
-            ctx.run_id,
-            "tool_result",
-            {
-                "name": result.name,
-                "ok": result.ok,
-                "elapsed_ms": result.elapsed_ms,
-                "content": content[:TOOL_RESULT_EVENT_MAX_CHARS],
-            },
-        )
+        payload: dict[str, Any] = {
+            "tool": result.name,
+            "ok": result.ok,
+            "elapsed_ms": result.elapsed_ms,
+            "result": content[:TOOL_RESULT_EVENT_MAX_CHARS],
+        }
+        # 失败必须可被前端/统计消费（方案 §4 P0-3）：ok=false 时 error 必填
+        if result.error:
+            payload["error"] = result.error
+        await self._emit(ctx.run_id, "tool_result", payload)
 
 
 class MeteringHook:

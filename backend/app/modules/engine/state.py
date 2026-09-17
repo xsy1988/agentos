@@ -23,6 +23,7 @@ class BudgetState(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
     tool_calls: int  # 工具调用总次数
+    tool_failure_streak: int  # 连续工具失败计数（P0-3 熔断账本；成功即清零）
     loop_strikes: dict[str, int]  # 工具指纹 → 连续相同调用计数（死循环检测）
 
 

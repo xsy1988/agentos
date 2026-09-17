@@ -88,6 +88,27 @@ export interface SendMessageTaskSwitch {
 export type SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch;
 
 // ---- Runs ----
+/** run 级失败载荷（后端 RunError，extra=allow 兼容历史行）。 */
+export interface RunError {
+  code: string;
+  detail: string;
+  retryable: boolean;
+  source: string;
+  phase: string | null;
+  /** 熔断时透出：真实失败码 + 连续失败的连续工具名 */
+  failure_code?: string;
+  tools?: string[];
+  [key: string]: unknown;
+}
+
+/** tool_result 事件失败段（后端 tool_outcome.as_error()）。 */
+export interface ToolErrorPayload {
+  code: string;
+  detail: string;
+  retryable: boolean;
+  source: string;
+}
+
 export interface RunOut {
   id: string;
   conversation_id: string | null;
@@ -96,12 +117,18 @@ export interface RunOut {
   status: string;
   input: Record<string, unknown>;
   result: Record<string, unknown> | null;
-  error: Record<string, unknown> | null;
+  error: RunError | null;
   budget: Record<string, unknown>;
   budget_used: Record<string, unknown>;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  /** P0-1 时长账本：绝对截止时间 */
+  deadline_at?: string | null;
+  /** 活跃时长（不含暂停/等待） */
+  active_ms?: number | null;
+  /** 总存活时长（读取时计算）：用于「刚超时 / 已卡住」判断 */
+  elapsed_ms?: number | null;
 }
 export interface RunEventOut {
   id: number;

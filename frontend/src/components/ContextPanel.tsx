@@ -12,6 +12,7 @@ import { CloseOutlined } from "@ant-design/icons";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
+import { describeError } from "@/api/errors";
 import PluginHost from "@/components/PluginHost";
 import { EventItem, isConfirmationResolved, mergeToolEvents } from "@/pages/Chat/MessageStream";
 import type { RunOut, RunEventOut } from "@/api/types";
@@ -153,7 +154,7 @@ function RunDetail({ runId }: { runId: string }) {
         </div>
       )}
 
-      {/* 错误 */}
+      {/* 错误：P0-3 起 run.error 是结构化载荷，统一用 errors.ts 的文案表 */}
       {run.error && (
         <div
           style={{
@@ -165,7 +166,10 @@ function RunDetail({ runId }: { runId: string }) {
             color: "var(--ant-color-error)",
           }}
         >
-          {String((run.error as Record<string, unknown>).detail ?? JSON.stringify(run.error))}
+          {(() => {
+            const err = describeError(run.error);
+            return `${err.title}${err.retryable ? "（可重试）" : ""}${err.detail ? `：${err.detail}` : ""}`;
+          })()}
         </div>
       )}
 

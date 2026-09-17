@@ -42,6 +42,17 @@ class BudgetExceededError(HookError):
         self.detail = detail
 
 
+class ToolFailureLoopError(HookError):
+    """连续工具失败熔断（方案 §4 P0-3 第二道闸）：run 落 failed，不进入终答。"""
+
+    def __init__(self, code: str, detail: str, *, source: str, tools: list[str]) -> None:
+        super().__init__(f"tool failure loop [{code}]: {detail}")
+        self.code = code
+        self.detail = detail
+        self.source = source
+        self.tools = tools
+
+
 class ToolCallRequest:
     """pre 钩子可见的工具调用请求。"""
 
@@ -61,12 +72,15 @@ class ToolResultInfo:
         content: Any,
         elapsed_ms: int = 0,
         args_snapshot: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.ok = ok
         self.content = content
         self.elapsed_ms = elapsed_ms
         self.args_snapshot = args_snapshot or {}  # 循环检测指纹用（M2-2c 扩展）
+        # 结构化失败（方案 §4 P0-3）：{code, detail, retryable, source}；成功为 None
+        self.error = error
 
 
 class EngineHook(Protocol):

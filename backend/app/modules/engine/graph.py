@@ -25,6 +25,7 @@ import json
 import re
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable
 from typing import Any
 
 from langchain_core.messages import (
@@ -40,8 +41,21 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from app.modules.engine.hooks import ToolCallRequest, ToolResultInfo
+from app.core.config import settings
+from app.modules.engine.hooks import (
+    ToolCallRequest,
+    ToolFailureLoopError,
+    ToolResultInfo,
+)
 from app.modules.engine.state import LoopState
+from app.modules.engine.tool_outcome import (
+    ToolError,
+    classify_exception,
+    failure_content,
+    failure_error,
+    next_failure_streak,
+    normalize,
+)
 
 # verify 回环上限（设计 §1.1.1：验证不达标带反馈回环，计数限 3 次）
 VERIFY_RETRY_LIMIT = 3
@@ -185,6 +199,48 @@ def _normalize_tool_responses(
         elif i not in consumed:
             new_msgs.append(m)
     return new_msgs, patches
+
+
+def build_verify_verdict(
+    raw: str | None, *, verify_error: dict[str, Any] | None, retries: int
+) -> dict[str, Any]:
+    """验收输出 → `verify_verdict`（纯函数，便于守卫"验收失败不得记为达成"）。
+
+    - `passed`：验收员的真实结论（异常 / 输出不可解析 → False）；
+    - `achieved`：是否退出回环（仅"回环次数耗尽"才强制放行，并置 `exhausted`）；
+    - `verify_error`：验收自身失败的结构化原因（P0-3 可观测性）。
+    """
+    parsed = _extract_json(raw or "") if verify_error is None else None
+    if parsed is None and verify_error is None:
+        verify_error = failure_error(
+            "parse_error", f"验收输出不可解析：{(raw or '')[:200]}", source="engine"
+        )
+    passed = bool((parsed or {}).get("achieved"))
+    exhausted = retries + 1 >= VERIFY_RETRY_LIMIT
+    return {
+        "achieved": passed or exhausted,
+        "passed": passed,
+        "feedback": str((parsed or {}).get("feedback") or ""),
+        "retries": retries + 1,
+        "exhausted": exhausted,
+        "verify_error": verify_error,
+    }
+
+
+async def _guarded_call(
+    coro: Awaitable[Any], *, source: str
+) -> tuple[Any, bool, dict[str, Any] | None]:
+    """执行一次工具调用并收敛为契约 `(content, ok, error)`（方案 §4 P0-3）。
+
+    红线：异常一律转结构化失败码（`ToolError` / `classify_exception`），
+    **不得**在 except 分支里编造面向模型的自然语言"结果"。
+    """
+    try:
+        return normalize(await coro)
+    except ToolError as e:
+        return None, False, e.as_error()
+    except Exception as e:  # noqa: BLE001 —— 工具错误一律转结构化失败
+        return None, False, classify_exception(e, source=source).as_error()
 
 
 async def _get_llm(
@@ -856,6 +912,14 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
         updated_cache: dict[str, Any] | None = None
+        # 连续失败熔断账本（P0-3）：阈值 run 预算可覆盖，默认 settings.tool_failure_limit
+        _budget: dict[str, Any] = dict(state.get("budget_state") or {})
+        streak = int(_budget.get("tool_failure_streak") or 0)
+        limits: dict[str, int] = ctx.limits
+        limit = int(limits.get("tool_failure_limit") or settings.tool_failure_limit)
+        # 跨批次保留最近失败工具名（诊断用，上限即阈值），成功一次即清零
+        recent_failed: list[str] = list(_budget.get("tool_failure_tools") or [])
+        last_error: dict[str, Any] | None = None
         for c in calls:
             meta = meta_by_name.get(c["name"])
             risk = (meta or {}).get("risk_level", "read")
@@ -863,62 +927,93 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             await hooks.on_tool_call(ctx, req)
 
             t0 = time.monotonic()
+            content: Any = None
+            error: dict[str, Any] | None = None
             if meta is None:
-                content, ok = f"未知工具：{c['name']}", False
+                ok = False
+                error = failure_error("invalid_args", f"模型调用了未注册的工具：{c['name']}")
             elif not approved and risk in ("write", "dangerous"):
-                content, ok = "用户拒绝执行该高危操作。", False
-            else:
-                try:
-                    if meta["kind"] == "meta":
-                        if meta["name"] == "search_more_tools":
-                            from app.modules.discovery.assembler import (
-                                run_search_more_tools,
-                            )
+                ok = False
+                error = failure_error(
+                    "denied_by_user", f"用户拒绝执行 {c['name']}（风险等级 {risk}）"
+                )
+            elif meta["kind"] == "meta":
+                if meta["name"] == "search_more_tools":
+                    from app.modules.discovery.assembler import (
+                        run_search_more_tools,
+                    )
 
-                            content, updated_cache = await run_search_more_tools(
-                                dict(c["args"]),
-                                conf["agent_id"],
-                                state.get("capability_cache") or {},
-                                conf.get("task_id"),
-                            )
-                            ok = True
-                        elif meta["name"] == "declare_subtask":
-                            title = str(c["args"].get("title") or "").strip()
-                            desc = str(c["args"].get("description") or "").strip()
-                            task_id = conf.get("task_id")
-                            if not title:
-                                content, ok = "参数错误：title 不能为空", False
-                            elif not task_id:
-                                content, ok = "当前会话没有主任务，无法登记支线子任务。", False
-                            else:
-                                info = await runtime.backend.raise_subtask(
-                                    str(task_id), run_id, name=title, description=desc
-                                )
-                                if info is None:
-                                    content, ok = "登记支线子任务失败。", False
-                                else:
-                                    await _emit_task_steps(str(task_id), run_id)
-                                    content = f"已登记支线子任务：{title}（B{info['seq']}）"
-                                    ok = True
-                        else:
-                            content, ok = f"未知元工具：{c['name']}", False
-                    elif meta["kind"] == "mcp":
-                        from app.modules.capabilities.mcp_client import mcp_pool
-
-                        content = await mcp_pool.call_tool(
-                            UUID(meta["capability_id"]), meta["tool_name"], dict(c["args"])
+                    res, ok, error = await _guarded_call(
+                        run_search_more_tools(
+                            dict(c["args"]),
+                            conf["agent_id"],
+                            state.get("capability_cache") or {},
+                            conf.get("task_id"),
+                        ),
+                        source="engine",
+                    )
+                    if ok:
+                        content, updated_cache = res
+                elif meta["name"] == "declare_subtask":
+                    title = str(c["args"].get("title") or "").strip()
+                    desc = str(c["args"].get("description") or "").strip()
+                    task_id = conf.get("task_id")
+                    if not title:
+                        ok, error = False, failure_error("invalid_args", "title 不能为空")
+                    elif not task_id:
+                        ok = False
+                        error = failure_error("invalid_args", "当前会话没有主任务")
+                    else:
+                        info, ok, error = await _guarded_call(
+                            runtime.backend.raise_subtask(
+                                str(task_id), run_id, name=title, description=desc
+                            ),
+                            source="engine",
                         )
-                        ok = True
-                    else:  # builtin 占位工具（本进程内执行）
-                        fn = BUILTIN_TOOLS.get(str(meta.get("builtin") or ""))
-                        if fn is None:
-                            content = f"工具执行通道缺失：{c['name']}"
+                        if ok and info is not None:
+                            content = f"已登记支线子任务：{title}（B{info['seq']}）"
+                            await _emit_task_steps(str(task_id), run_id)
+                        elif ok:
                             ok = False
-                        else:
-                            content, ok = await fn(dict(c["args"])), True
-                except Exception as e:  # noqa: BLE001 —— 工具错误包装为观察结果
-                    content, ok = f"工具执行异常: {type(e).__name__}: {e}", False
+                            error = failure_error("internal_error", "raise_subtask 返回空")
+                else:
+                    ok = False
+                    error = failure_error("invalid_args", f"未知元工具：{c['name']}")
+            elif meta["kind"] == "mcp":
+                from app.modules.capabilities.mcp_client import mcp_pool
+
+                content, ok, error = await _guarded_call(
+                    mcp_pool.call_tool(
+                        UUID(meta["capability_id"]), meta["tool_name"], dict(c["args"])
+                    ),
+                    source="mcp",
+                )
+            else:  # builtin 占位工具（本进程内执行）
+                fn = BUILTIN_TOOLS.get(str(meta.get("builtin") or ""))
+                if fn is None:
+                    ok = False
+                    error = failure_error(
+                        "internal_error", f"builtin 注册键缺失：{c['name']}"
+                    )
+                else:
+                    # 契约：返回裸值 = 成功；失败必须抛 ToolError（P0-3）
+                    content, ok, error = await _guarded_call(
+                        fn(dict(c["args"])), source="builtin"
+                    )
             elapsed = int((time.monotonic() - t0) * 1000)
+
+            streak = next_failure_streak(
+                streak, None if ok else str((error or {}).get("code") or "")
+            )
+            if ok:
+                content = "" if content is None else content
+                recent_failed = []
+            else:
+                # 失败以结构化载荷进上下文，绝不降级成"看起来像结果"的自然语言
+                err = error or failure_error("internal_error", "未知失败")
+                content, error = failure_content(c["name"], err), err
+                recent_failed = [*recent_failed, str(c["name"])][-limit:]
+                last_error = err
 
             info = ToolResultInfo(
                 name=c["name"],
@@ -926,12 +1021,24 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 content=content,
                 elapsed_ms=elapsed,
                 args_snapshot=dict(c["args"]),
+                error=error,
             )
             await hooks.on_tool_result(ctx, info)
             results.append(ToolMessage(content=str(content), tool_call_id=str(c["id"])))
-        out: dict[str, Any] = {"messages": results, "budget_state": dict(ctx.budget)}
+        budget_state = dict(ctx.budget)
+        budget_state["tool_failure_streak"] = streak
+        budget_state["tool_failure_tools"] = recent_failed
+        out: dict[str, Any] = {"messages": results, "budget_state": budget_state}
         if updated_cache is not None:
             out["capability_cache"] = updated_cache
+        # 连续失败熔断（第二道闸）：本批结果已全部落妥再抛，检查点里不留悬空 tool_calls
+        if streak >= limit:
+            raise ToolFailureLoopError(
+                str((last_error or {}).get("code") or "external_unavailable"),
+                f"同一 run 内连续 {streak} 次工具失败（阈值 {limit}）：{', '.join(recent_failed)}",
+                source=str((last_error or {}).get("source") or "builtin"),
+                tools=recent_failed,
+            )
         return out
 
     async def verify(state: LoopState, config: RunnableConfig) -> dict:
@@ -959,6 +1066,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         final_reply = str(msgs[-1].content) if msgs else ""
 
         usage: dict[str, int] = {}
+        verify_error: dict[str, Any] | None = None
+        raw_verdict: str | None = None
         try:
             resp = await llm.ainvoke(
                 [
@@ -971,11 +1080,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     ),
                 ]
             )
-            verdict = _extract_json(str(resp.content)) or {"achieved": True, "feedback": ""}
+            raw_verdict = str(resp.content)
             if getattr(resp, "usage_metadata", None):
                 usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
-        except Exception:  # noqa: BLE001 —— 验证失败视为达成，不阻断主链路
-            verdict = {"achieved": True, "feedback": ""}
+        except Exception as e:  # noqa: BLE001 —— 验收失败一律按"未达成"处理
+            verify_error = classify_exception(e, source="engine").as_error()
 
         # verify 回环计数（BudgetState 扩展键 verify_retries，见 ADR-10）
         budget: dict[str, Any] = dict(state.get("budget_state") or {})
@@ -985,13 +1094,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 归属实际调用的 provider（轻量/覆盖模型）
         await hooks.on_turn_end(ctx, ctx.budget.get("iterations") or 0, usage, provider_id=pid)
 
-        achieved = bool(verdict.get("achieved")) or retries + 1 >= VERIFY_RETRY_LIMIT
+        verdict = build_verify_verdict(raw_verdict, verify_error=verify_error, retries=retries)
         protected = dict(state.get("protected_context") or {})
-        protected["verify_verdict"] = {
-            "achieved": achieved,
-            "feedback": verdict.get("feedback", ""),
-            "retries": retries + 1,
-        }
+        protected["verify_verdict"] = verdict
+        achieved = verdict["achieved"]
         if not achieved:
             # 反馈注入对话区，回环让 agent 继续（设计 §1.1.1 verify 回环）
             feedback = HumanMessage(

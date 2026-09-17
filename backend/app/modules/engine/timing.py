@@ -108,3 +108,24 @@ def partial_result(
         "metrics": metrics,
         "deadline_at": deadline_at.isoformat() if deadline_at else None,
     }
+
+
+def failure_result(
+    *,
+    text: str,
+    reason: str,
+    metrics: dict[str, int],
+    extra: Mapping[str, Any] | None = None,
+) -> dict:
+    """硬失败（如工具连续失败熔断）的结果信封：非 partial、带失败原因与上下文。"""
+    out: dict[str, Any] = {
+        "schema": RUN_RESULT_SCHEMA,
+        "outcome": "failed",
+        "partial": False,
+        "reason": reason,
+        "text": text,
+        "metrics": metrics,
+    }
+    if extra:
+        out.update(dict(extra))
+    return out
