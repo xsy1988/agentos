@@ -66,6 +66,19 @@ async def list_runs(
     return list((await db.scalars(stmt)).all())
 
 
+@router.get("/capacity")
+async def run_capacity() -> dict[str, Any]:
+    """并发准入观测面（P1-1）：活跃 run 数 / 上限 / 是否还能准入。
+
+    声明在 `/{run_id}` **之前**——否则 "capacity" 会被当成 run_id 解析成 422。
+    """
+    from app.modules.engine.runtime import engine_runtime
+
+    active = engine_runtime.active_run_count()
+    limit = settings.max_concurrent_runs
+    return {"active_runs": active, "max_concurrent_runs": limit, "admission_open": active < limit}
+
+
 @router.get("/{run_id}", response_model=RunOut)
 async def get_run(run_id: UUID, db: AsyncSession = Depends(get_db)) -> Run:
     run = await db.get(Run, run_id)

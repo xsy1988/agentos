@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     # 平台对外可达基址：外部服务回调 await 结果时用的地址前缀
     # （开发默认本机；容器/部署环境必须配成外部服务能访问的实际地址）
     platform_base_url: str = "http://localhost:8000"
+    # 并发 run 上限（方案 §5 P1-1）：超出即拒绝准入并给明确反馈，不静默排队。
+    # 只闸"新 run"，恢复/确认（既有 run 的续跑）不受限——续跑被丢弃会留下
+    # 永远悬停的等待行，比短暂超并发更糟
+    max_concurrent_runs: int = 4
 
 
 settings = Settings()

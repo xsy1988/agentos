@@ -294,7 +294,13 @@ class EngineRuntime:
         if et == "user_input":
             run_id = event["payload"].get("run_id")
             if run_id:
-                self._spawn_run_task(str(run_id), self._process_run(str(run_id)))
+                coro = self._process_run(str(run_id))
+                # 准入闸（P1-1）：只闸新 run。超容时不静默排队——立刻给可见反馈
+                if self._has_capacity():
+                    self._spawn_run_task(str(run_id), coro)
+                else:
+                    coro.close()  # 未 await 的协程必须显式关闭，否则留 RuntimeWarning
+                    await self._reject_over_capacity(str(run_id), event)
         elif et == "confirmation":
             run_id = event.get("target_run_id")
             payload = event.get("payload") or {}
@@ -359,10 +365,69 @@ class EngineRuntime:
             except Exception:  # noqa: BLE001 —— 巡检永不退出
                 logger.exception("await sweeper iteration failed")
 
+    # ---------- 并发准入（P1-1） ----------
+
+    def active_run_count(self) -> int:
+        """当前活跃 run 数（正在执行的 run 任务数）——并发观测面。"""
+        return len(self._run_tasks)
+
+    def _has_capacity(self) -> bool:
+        return self.active_run_count() < settings.max_concurrent_runs
+
+    async def _reject_over_capacity(self, run_id: str, event: dict[str, Any]) -> None:
+        """超容准入失败（P1-1）：明确反馈 + 落 `admitted=false`，**不排队**。
+
+        run 行保持 pending（不置 failed、不占用执行权），用户可以重发；不在进程内
+        排队是因为 `inbox_events` 没有 `available_at` 列，延迟重放要靠进程内队列，
+        重启即丢且用户不可见——"排队中的请求静默消失"比"当场被明确拒绝"更糟。
+        """
+        active = self.active_run_count()
+        limit = settings.max_concurrent_runs
+        detail = f"当前有 {active} 个任务在执行（并发上限 {limit}），本次未进入执行队列，请稍后重发"
+        logger.warning("run %s 准入被拒：%s", run_id, detail)
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is not None:
+                run.input = {
+                    **(run.input or {}),
+                    "admitted": False,
+                    "admission": {
+                        "reason": "capacity_exceeded",
+                        "active_runs": active,
+                        "max_concurrent_runs": limit,
+                        "at": datetime.now(UTC).isoformat(),
+                    },
+                }
+            # 事件本身记 failed：这一条 inbox 行不会被执行，留痕便于排查
+            await db.execute(
+                text("UPDATE inbox_events SET status = 'failed' WHERE id = :id"),
+                {"id": event["id"]},
+            )
+            await db.commit()
+            run_status = run.status if run is not None else "pending"
+        await self.emit_event(
+            run_id,
+            "run_status",
+            {
+                "status": run_status,
+                "admitted": False,
+                "reason": "capacity_exceeded",
+                "detail": detail,
+                "active_runs": active,
+                "max_concurrent_runs": limit,
+            },
+        )
+
     def _spawn_run_task(self, run_id: str, coro: Any) -> None:
         task = asyncio.create_task(coro)
         self._run_tasks[run_id] = task
-        task.add_done_callback(lambda t: self._run_tasks.pop(run_id, None))
+        # 只清理自己的登记位：同一 run 被重复派发时，先完成的任务不得把后一个
+        # 任务从计数里"抹掉"（P1-1 的活跃数就是在这张表上读的）
+        task.add_done_callback(
+            lambda t: self._run_tasks.pop(run_id, None)
+            if self._run_tasks.get(run_id) is t
+            else None
+        )
 
     # ---------- run 执行 ----------
 
