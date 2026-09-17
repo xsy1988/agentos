@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
 from app.modules.capabilities.models import Capability
+from app.modules.discovery.assembler import MAX_TOOLS_HARD
 from app.modules.workers import registry
 from app.modules.workers.registry import WorkerError
 from app.modules.workers.schemas import (
@@ -60,6 +61,19 @@ def _resolve_version(name: str, version: str | None) -> str:
     if target is None or target not in meta.versions:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"版本「{version}」不存在")
     return target
+
+
+async def _expanded_tool_count(db: AsyncSession, names: list[str]) -> int:
+    """Worker 声明的能力名单 → 展开后的工具总数（发布前硬门校验）。"""
+    from app.modules.discovery.assembler import count_capability_tools
+    from app.modules.discovery.retriever import cap_dict
+
+    if not names:
+        return 0
+    rows = list(
+        (await db.scalars(select(Capability).where(Capability.name.in_(names)))).all()
+    )
+    return await count_capability_tools([cap_dict(c) for c in rows])
 
 
 def _to_out(meta) -> WorkerOut:
@@ -154,15 +168,29 @@ async def delete_worker(name: str) -> None:
 @router.post(
     "/{name}/versions", response_model=VersionBuildOut, status_code=status.HTTP_201_CREATED
 )
-async def build_version(name: str) -> VersionBuildOut:
-    """手动构建新版本：复制当前生效版本 → vN+1，并把 active 指向新版本。"""
+async def build_version(name: str, db: AsyncSession = Depends(get_db)) -> VersionBuildOut:
+    """手动构建新版本：复制当前生效版本 → vN+1，并把 active 指向新版本。
+
+    发布前校验展开后的工具数（方案 §4 P0-2）：Worker 没有 Agent 上下文，拿不到
+    它的 `tool_budget`，故以 `MAX_TOOLS_HARD` 为硬门——超过 24 个工具的能力组合
+    任何 Agent 都装不下，与其上线后在 run 里失败，不如在发布这一步就拒绝。
+    """
     meta = _get_meta(name)
     copied_from = meta.effective_version or ""
+    wdef = registry.get_def(name, copied_from) if copied_from else None
+    names = list(wdef.capabilities) if wdef else []
+    tool_count = await _expanded_tool_count(db, names)
+    if tool_count > MAX_TOOLS_HARD:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"能力展开后共 {tool_count} 个工具，超过硬上限 {MAX_TOOLS_HARD}；"
+            "请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker",
+        )
     try:
         version = registry.build_version(name)
     except WorkerError as e:
         raise _err(e) from e
-    return VersionBuildOut(version=version, copied_from=copied_from)
+    return VersionBuildOut(version=version, copied_from=copied_from, tool_count=tool_count)
 
 
 @router.delete("/{name}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)

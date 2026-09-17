@@ -53,6 +53,20 @@ class ToolFailureLoopError(HookError):
         self.tools = tools
 
 
+class ToolCapacityExceededError(HookError):
+    """必得能力集超出硬上限（方案 §4 P0-2）：宁可显式失败，不可静默截断。
+
+    run 落 `failed` + `error.code=tool_capacity_exceeded`，提示缩小 `domain_ids`
+    或提高 `tool_budget`；不发终答、不进入 ReAct 循环。
+    """
+
+    def __init__(self, required: int, hard_limit: int, names: list[str]) -> None:
+        super().__init__(f"required tools {required} > hard limit {hard_limit}")
+        self.required = required
+        self.hard_limit = hard_limit
+        self.names = names
+
+
 class ToolCallRequest:
     """pre 钩子可见的工具调用请求。"""
 

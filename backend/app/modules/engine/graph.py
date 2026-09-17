@@ -448,10 +448,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     async def context_assembly(state: LoopState, config: RunnableConfig) -> dict:
         """五区装配之工具描述区（M3，设计 §1.2.3）：
 
-        pinned 常驻 + 语义 Top-K（受 tool_budget 封顶）+ 元工具，经 discovery
-        装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
+        pinned 常驻 + 必得集（主任务域）全量 + 语义 Top-K（受 tool_budget 封顶）+ 元工具，
+        经 discovery 装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
         """
-        from app.modules.discovery.assembler import assemble_tools
+        from app.modules.discovery.assembler import assemble_tools, take_overflow_payload
         from app.modules.memory.service import get_protected_memories
 
         conf = config["configurable"]
@@ -469,6 +469,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         cache = state.get("capability_cache") or {}
         if not cache.get("tools"):
             cache = await assemble_tools(query, conf["agent_id"], tool_budget, conf.get("task_id"))
+        # 容量不足留痕（P0-2）：装配被截断必须可观测（事件 + 日志），否则模型会
+        # 静默地"少了一半工具"地空转。run 级只报一次（cache 随 run 状态复用）。
+        overflow = take_overflow_payload(cache)
+        if overflow:
+            await runtime.emit_event(conf["run_id"], "capability_overflow", overflow)
         # 记忆注入（M5，模块详细设计 §2.6）：platform 全文 + 最近 2 天 daily
         # 每个 run 自动携带“我是谁 + 最近发生了什么”
         memories = await get_protected_memories()

@@ -2,11 +2,13 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
+from app.modules.agents.models import Agent
 from app.modules.auth.deps import get_current_user
 from app.modules.capabilities import service
 from app.modules.capabilities.models import (
@@ -22,7 +24,10 @@ from app.modules.capabilities.schemas import (
     CapabilitySmokeReport,
     CapabilityToolOut,
     CapabilityUpdateIn,
+    CapabilityVisibilityOut,
 )
+from app.modules.conversations.models import Message
+from app.modules.discovery.assembler import MAX_TOOLS_HARD, assemble_tools
 
 router = APIRouter(
     prefix="/capabilities",
@@ -76,6 +81,59 @@ async def create_capability(
 ) -> CapabilityCreatedOut:
     cap, report = await service.create_capability(db, body)
     return CapabilityCreatedOut(capability=_to_out(cap), smoke=report)
+
+
+@router.get("/visibility", response_model=CapabilityVisibilityOut)
+async def get_tool_visibility(
+    agent_id: UUID,
+    conversation_id: UUID | None = None,
+    task_id: UUID | None = None,
+    q: str | None = Query(default=None, max_length=2000),
+    db: AsyncSession = Depends(get_db),
+) -> CapabilityVisibilityOut:
+    """自检：这个 Agent 此刻装配出来的工具面是什么（方案 §4 P0-2）。
+
+    排查「我明明绑了 14 个能力，模型却说没有这个工具」——可见性必须能被人**直接问出来**，
+    而不是靠读日志猜。`enforce_hard=False` 让超上限也能如实返回，便于配置期收敛。
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="agent not found")
+    query = (q or "").strip()
+    if not query and conversation_id is not None:
+        # 会话没有 task_id 关联，只能取最近一条用户消息作为「它此刻在问什么」
+        last = (
+            await db.execute(
+                select(Message)
+                .where(Message.conversation_id == conversation_id, Message.role == "user")
+                .order_by(Message.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        query = str(((last.content or {}) if last else {}).get("text") or "").strip()
+    cache = await assemble_tools(
+        query,
+        str(agent_id),
+        int(agent.tool_budget or 8),
+        str(task_id) if task_id else None,
+        enforce_hard=False,
+    )
+    plan = cache.get("tool_plan") or {}
+    return CapabilityVisibilityOut(
+        agent_id=agent_id,
+        task_id=task_id,
+        query=query,
+        tool_budget=int(plan.get("tool_budget") or 0),
+        hard_limit=int(plan.get("hard_limit") or MAX_TOOLS_HARD),
+        candidates=plan.get("candidates") or [],
+        required=plan.get("required") or [],
+        kept=plan.get("kept") or [],
+        dropped=plan.get("dropped") or [],
+        meta=plan.get("meta") or [],
+        overflow=bool(plan.get("overflow")),
+        hard_exceeded=bool(plan.get("hard_exceeded")),
+        reason=plan.get("reason"),
+    )
 
 
 @router.get("/{cap_id}", response_model=CapabilityOut)

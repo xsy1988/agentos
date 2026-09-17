@@ -109,11 +109,16 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
     # 2. 引用清单校验（平台已有 ∪ 本次提交）
     ref_names = set(body.worker.capabilities)
     if ref_names:
-        rows = await db.scalars(
-            select(Capability).where(Capability.name.in_(ref_names))  # type: ignore[arg-type]
+        rows = list(
+            (
+                await db.scalars(
+                    select(Capability).where(Capability.name.in_(ref_names))  # type: ignore[arg-type]
+                )
+            ).all()
         )
         registered = {c.name for c in rows}
     else:
+        rows = []
         registered = set()
     submitted = {c.name for c in body.capabilities}
     missing = sorted(ref_names - registered - submitted)
@@ -123,6 +128,18 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
             f"Worker「{body.worker.name}」引用的能力未注册且未包含在本次提交中："
             f"{', '.join(missing)}。请把它们加入 capabilities 一并提交，"
             "或改引平台已有能力（GET /open/capabilities 查询）。",
+        )
+
+    # 2.5 容量硬门：声明的能力展开后的工具总数不得越过硬上限（方案 §4 P0-2）
+    from app.modules.discovery.assembler import MAX_TOOLS_HARD, count_capability_tools
+    from app.modules.discovery.retriever import cap_dict
+
+    tool_count = await count_capability_tools([cap_dict(c) for c in rows])
+    if tool_count > MAX_TOOLS_HARD:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Worker「{body.worker.name}」的 capabilities 展开后共 {tool_count} 个工具，"
+            f"超过硬上限 {MAX_TOOLS_HARD}；请收敛 capabilities 名单，或按需拆分 Worker。",
         )
 
     # 3. Worker 文件包落盘

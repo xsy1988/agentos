@@ -26,9 +26,14 @@ from langchain_core.messages import (
 
 from app.core.config import settings
 from app.modules.engine import artifacts
+from app.modules.engine.hooks import ToolCapacityExceededError
 
 logger = logging.getLogger(__name__)
 
+# 工具数量硬上限（方案 §4 P0-2）：必得集超过它即**显式失败**，不静默截断。
+# 与 tool_budget 的分工：tool_budget 是"共享区名额"、可被必得集挤占；
+# MAX_TOOLS_HARD 是"单个 run 能塞进上下文窗口的物理上限"，只约束必得集。
+MAX_TOOLS_HARD = 24
 # L1 折叠后保留原文的最近工具观察条数
 COMPACT_L1_KEEP_RECENT = 4
 # L1 折叠正文保留字符数（产物引用行不受此限，P0-5）
@@ -241,26 +246,106 @@ async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, 
     return out
 
 
-async def assemble_tools(
-    query: str, agent_id: str, tool_budget: int, task_id: str | None = None
-) -> dict[str, Any]:
-    """工具描述区装配：pinned 常驻 + 语义 Top-K（tool_budget 封顶）+ 元工具。
+def take_overflow_payload(cache: dict[str, Any]) -> dict[str, Any] | None:
+    """容量不足事件的 at-most-once 取值器（纯函数，便于单测）。
 
-    返回 capability_cache（{"tools": [...], "skills": [...]}），条目含 name/schema/kind/
-    capability_id/risk_level/source——tools 节点按 kind 分派执行通道。
+    首次调用返回 payload 并打标；此后返回 None——同一 run 内装配只发生一次，
+    但 `_pre_assemble` 与 `context_assembly` 共用同一 cache，没有这道闸会重复报。
+    """
+    plan = (cache or {}).get("tool_plan") or {}
+    if not plan.get("overflow") or plan.get("reported"):
+        return None
+    plan["reported"] = True
+    return {
+        "reason": plan.get("reason"),
+        "tool_budget": plan.get("tool_budget"),
+        "hard_limit": plan.get("hard_limit"),
+        "required_count": len(plan.get("required") or []),
+        "kept": plan.get("kept") or [],
+        "dropped": plan.get("dropped") or [],
+    }
+
+
+async def count_capability_tools(caps: list[dict[str, Any]]) -> int:
+    """展开后的可装配工具数（Worker 发布前校验用，方案 §4 P0-2）。
+
+    mcp/plugin 展开成连接池里该 Server 的启用工具（与 runtime 装配同一套口径），
+    skill 走渐进披露不计入。按暴露名去重，避免同名工具被重复计数。
+    """
+    seen: set[str] = set()
+    for cap in caps:
+        if cap.get("type") == "skill":
+            continue
+        for item in await expand_capability(cap, "worker"):
+            seen.add(item["name"])
+    return len(seen)
+
+
+def partition_tools(
+    required: list[dict[str, Any]],
+    shared: list[dict[str, Any]],
+    *,
+    tool_budget: int,
+    hard_limit: int = MAX_TOOLS_HARD,
+) -> dict[str, Any]:
+    """工具分区装配（纯函数，方案 §4 P0-2）：
+
+    `必得集(全量保留) + 共享区[:max(0, tool_budget - len(必得集))]`
+
+    - 必得集**永不切片**：容量不足时保留全部必得集并置 `overflow`（可观测），
+      绝不静默截断成"看起来正常"的工具列表；
+    - 必得集超出 `hard_limit` 置 `hard_exceeded`（由调用方决定失败策略）；
+    - 共享区按传入顺序（即分层距离序）取剩余名额，超出者进 `dropped`。
+    """
+    core = [t["name"] for t in required]
+    room = max(0, tool_budget - len(core))
+    kept_items = shared[:room]
+    dropped = [t["name"] for t in shared[room:]]
+    kept = [t["name"] for t in kept_items]
+    overflow = len(core) > tool_budget or bool(dropped)
+    return {
+        "tools": list(required) + list(kept_items),
+        "candidates": core + [t["name"] for t in shared],
+        "required": core,
+        "kept": kept,
+        "dropped": dropped,
+        "tool_budget": tool_budget,
+        "hard_limit": hard_limit,
+        "overflow": overflow,
+        "hard_exceeded": len(core) > hard_limit,
+        "reason": "tool_budget_insufficient" if overflow else None,
+    }
+
+
+async def assemble_tools(
+    query: str,
+    agent_id: str,
+    tool_budget: int,
+    task_id: str | None = None,
+    *,
+    enforce_hard: bool = True,
+) -> dict[str, Any]:
+    """工具描述区装配：必得集（pinned + 主任务域）全量保留 + 共享区语义 Top-K + 元工具。
+
+    返回 capability_cache（{"tools": [...], "skills": [...], "tool_plan": {...}}），条目含
+    name/schema/kind/capability_id/risk_level/source——tools 节点按 kind 分派执行通道。
     source 记录装配来源（pinned / task_domain / task_common / global），
     使「这个能力属于哪个主任务」在运行期可溯源（能力归属软约束，ADR-28）。
     skills 为语义命中的 SKILL.md 全文列表，供 context_assembly 注入参考。
+    tool_plan 是装配全貌（候选/必得/保留/丢弃），供 `capability_overflow` 事件与
+    `GET /capabilities/visibility` 自检接口复用。
+    enforce_hard=False 供自检接口使用：超硬上限不抛错，只把事实报出来给人看。
     """
     from app.modules.discovery.retriever import retrieve_capabilities
 
     res = await retrieve_capabilities(query, agent_id, task_id=task_id)
-    tools: list[dict[str, Any]] = []
+    required: list[dict[str, Any]] = []
+    shared: list[dict[str, Any]] = []
     skills: list[str] = []  # 命中 skill 的 SKILL.md 全文
     seen_caps: set[str] = set()
     seen_names: set[str] = set()
 
-    async def _add(caps: list[dict[str, Any]], source: str) -> None:
+    async def _add(caps: list[dict[str, Any]], source: str, sink: list[dict[str, Any]]) -> None:
         for cap in caps:
             if cap["id"] in seen_caps:
                 continue
@@ -274,11 +359,25 @@ async def assemble_tools(
             for item in await expand_capability(cap, cap.get("scope") or source):
                 if item["name"] not in seen_names:
                     seen_names.add(item["name"])
-                    tools.append(item)
+                    sink.append(item)
 
-    await _add(res["pinned"], "pinned")
-    await _add(res["semantic"], "semantic")
-    return {"tools": tools[:tool_budget] + _meta_tools(), "skills": skills}
+    # 必得集先展开：共享区里重复出现的同名/同能力不再占名额
+    await _add(res.get("required") or res["pinned"], "pinned", required)
+    await _add(res["semantic"], "semantic", shared)
+    plan = partition_tools(required, shared, tool_budget=tool_budget)
+    plan["meta"] = [t["name"] for t in _meta_tools()]
+    if plan["hard_exceeded"] and enforce_hard:
+        raise ToolCapacityExceededError(len(plan["required"]), plan["hard_limit"], plan["required"])
+    if plan["overflow"]:
+        logger.warning(
+            "工具容量不足：必得集 %d / 预算 %d / 丢弃 %d 个候选（agent=%s task=%s）",
+            len(plan["required"]),
+            tool_budget,
+            len(plan["dropped"]),
+            agent_id,
+            task_id,
+        )
+    return {"tools": plan["tools"] + _meta_tools(), "skills": skills, "tool_plan": plan}
 
 
 async def run_search_more_tools(

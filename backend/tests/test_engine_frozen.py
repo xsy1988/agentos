@@ -17,6 +17,7 @@ EXPECTED_EVENT_TYPES = (
     "budget_warning",
     "card",  # 结果卡/过程卡（P0-5，runtime._emit_result_card 发射）
     "confirmation_request",
+    "capability_overflow",  # 必得能力集容量不足（P0-2，assembler 发射）
     "context_compacted",  # L1/L2 上下文压缩（assembler 发射）
     "error",
     "message_delta",

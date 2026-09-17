@@ -23,6 +23,7 @@ import {
   BulbOutlined,
   ToolOutlined,
   RobotOutlined,
+  WarningOutlined,
   MessageOutlined,
   ScheduleOutlined,
 } from "@ant-design/icons";
@@ -42,6 +43,7 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   tool_call: { icon: <ToolOutlined />, color: "purple" },
   tool_result: { icon: <ToolOutlined />, color: "green" },
   context_compacted: { icon: <RobotOutlined />, color: "orange" },
+  capability_overflow: { icon: <WarningOutlined />, color: "volcano" },
   error: { icon: <RobotOutlined />, color: "red" },
 };
 

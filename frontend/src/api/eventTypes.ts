@@ -18,6 +18,7 @@ export const EVENT_TYPES = [
   "error",
   "context_compacted",
   "card",
+  "capability_overflow",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

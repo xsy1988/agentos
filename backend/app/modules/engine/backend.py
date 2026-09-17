@@ -24,6 +24,7 @@ EVENT_TYPES = (
     "error",
     "context_compacted",
     "card",
+    "capability_overflow",
 )
 
 

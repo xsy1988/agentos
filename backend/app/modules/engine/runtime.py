@@ -38,7 +38,12 @@ from app.core.config import settings
 from app.core.db import session_factory
 from app.modules.engine import artifacts, timing
 from app.modules.engine.graph import build_graph
-from app.modules.engine.hooks import BudgetExceededError, RunContext, ToolFailureLoopError
+from app.modules.engine.hooks import (
+    BudgetExceededError,
+    RunContext,
+    ToolCapacityExceededError,
+    ToolFailureLoopError,
+)
 from app.modules.engine.state import BudgetState
 from app.modules.runs.models import Run
 
@@ -521,6 +526,8 @@ class EngineRuntime:
             await self._finalize_timeout(run_id, phase="run", thread_id=thread_id)
         except ToolFailureLoopError as e:
             await self._finalize_tool_failure(run_id, e, phase="tools", thread_id=thread_id)
+        except ToolCapacityExceededError as e:
+            await self._finalize_tool_capacity(run_id, e, phase="tools", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001 —— 结构化错误统一落库
             logger.exception("run %s failed", run_id)
             error = _run_error(e, phase="run")
@@ -570,6 +577,8 @@ class EngineRuntime:
             await self._finalize_timeout(run_id, phase="resume", thread_id=thread_id)
         except ToolFailureLoopError as e:
             await self._finalize_tool_failure(run_id, e, phase="resume", thread_id=thread_id)
+        except ToolCapacityExceededError as e:
+            await self._finalize_tool_capacity(run_id, e, phase="resume", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001
             logger.exception("run %s resume failed", run_id)
             error = _run_error(e, phase="resume")
@@ -1054,6 +1063,57 @@ class EngineRuntime:
                 "partial": False,
                 "failure_code": e.code,
                 "tools": e.tools,
+                "deadline_at": deadline_at.isoformat() if deadline_at else None,
+            },
+            achieved=False,
+            error=error,
+        )
+
+    async def _finalize_tool_capacity(
+        self, run_id: str, e: ToolCapacityExceededError, *, phase: str, thread_id: str | None = None
+    ) -> None:
+        """必得工具数超硬上限，run **显式失败**（P0-2）：不切片、不降级、不假装正常。
+
+        静默截断会让模型拿着残缺工具面反复试错（比失败更贵），因此这里选择
+        立刻失败并把「差多少 / 差在哪」结构化回传，让配置者去收敛绑定关系。
+        """
+        now = datetime.now(UTC)
+        partial_text = await self._partial_text(thread_id) if thread_id else ""
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is None:
+                return
+            self._close_segment(run, now)
+            run.paused_at = None
+            deadline_at = run.deadline_at or self._clock(run_id).deadline_at
+            text = partial_text or (
+                f"本次执行需要 {e.required} 个必备工具（硬上限 {e.hard_limit}），"
+                "已终止执行。请收敛 Agent 的能力绑定或主任务域范围。"
+            )
+            error: dict[str, Any] = {
+                "code": "tool_capacity_exceeded",
+                "detail": str(e),
+                "phase": phase,
+                "retryable": False,
+                "source": "assembler",
+                "required_count": e.required,
+                "hard_limit": e.hard_limit,
+                "tools": e.names,
+            }
+            await db.commit()
+            timing_payload = self._timing_payload(run)
+        logger.warning("run %s 必得工具数超硬上限（%d > %d）", run_id, e.required, e.hard_limit)
+        await self.emit_event(run_id, "error", {**error, **timing_payload})
+        await self._finalize(
+            run_id,
+            "failed",
+            text,
+            outcome="failed",
+            reason="tool_capacity_exceeded",
+            extra={
+                "partial": False,
+                "required_count": e.required,
+                "hard_limit": e.hard_limit,
                 "deadline_at": deadline_at.isoformat() if deadline_at else None,
             },
             achieved=False,

@@ -107,6 +107,9 @@ class WorkerFileCreateIn(BaseModel):
 class VersionBuildOut(BaseModel):
     version: str
     copied_from: str
+    # 展开后的工具数（P0-2）：配置者拿它跟 Agent 的 tool_budget 比对，
+    # 避免出现"能发布但装不下"的能力组合
+    tool_count: int = 0
 
 
 # ---------- 工具引用清单校验 ----------

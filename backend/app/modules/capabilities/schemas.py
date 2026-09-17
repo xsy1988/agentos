@@ -84,6 +84,29 @@ class CapabilitySmokeReport(BaseModel):
     summary: str
 
 
+class CapabilityVisibilityOut(BaseModel):
+    """能力可见性自检（方案 §4 P0-2）：回答「它这次到底看得见哪些工具」。
+
+    candidates 是语义候选池、required 是必得集（pinned + 主任务域，**永不切片**）、
+    kept/dropped 是共享区取舍结果；overflow 为真说明候选被丢过，
+    hard_exceeded 为真说明必得集已超硬上限（该 run 实际会显式失败）。
+    """
+
+    agent_id: UUID
+    task_id: UUID | None = None
+    query: str
+    tool_budget: int
+    hard_limit: int
+    candidates: list[str]
+    required: list[str]
+    kept: list[str]
+    dropped: list[str]
+    meta: list[str]
+    overflow: bool
+    hard_exceeded: bool
+    reason: str | None
+
+
 class BindingIn(BaseModel):
     capability_id: UUID
     mode: str = Field(default="semantic", pattern=r"^(pinned|semantic)$")

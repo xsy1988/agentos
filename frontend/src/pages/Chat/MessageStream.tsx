@@ -570,6 +570,27 @@ export function EventItem({
     );
   }
 
+  if (event_type === "capability_overflow") {
+    // 必得能力集装不下（P0-2）：平台不静默切片，而是把"哪些工具被丢"摆到台面上
+    const dropped = (payload.dropped ?? []) as string[];
+    const required = Number(payload.required_count ?? 0);
+    const budget = Number(payload.tool_budget ?? 0);
+    return (
+      <Tooltip
+        title={
+          dropped.length > 0
+            ? `被挤出的工具：${dropped.join("、")}`
+            : "必得工具已超出预算，共享区名额为 0"
+        }
+      >
+        <Tag color="volcano" style={{ marginBottom: 4, fontSize: 11 }}>
+          工具容量不足：必得 {required} 个 / 预算 {budget}
+          {dropped.length > 0 ? `，${dropped.length} 个候选未装配` : ""}
+        </Tag>
+      </Tooltip>
+    );
+  }
+
   if (event_type === "error") {
     const err = describeError(payload);
     return (
@@ -784,7 +805,10 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
   const planEvent = [...events].reverse().find((e) => e.event_type === "plan_updated");
   const notableEvents = events.filter(
     (e) =>
-      e.event_type === "error" || e.event_type === "confirmation_request" || e.event_type === "card",
+      e.event_type === "error" ||
+      e.event_type === "confirmation_request" ||
+      e.event_type === "card" ||
+      e.event_type === "capability_overflow",
   );
 
   // 提交后空窗期反馈（Kimi 式）：不能只看 events.length —— 后端首发事件往往是
