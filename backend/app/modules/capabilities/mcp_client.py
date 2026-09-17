@@ -204,10 +204,15 @@ class McpConnection:
             resp = await session.list_tools()
         self.consecutive_failures = 0
         tools = list(resp.tools)
+        # 一并缓存 MCP 官方注解（P2-4）：多工具能力只有一个能力级 risk_level，
+        # 只读工具要么被整包当成 write 反复触发高危确认，要么被整包当 read 放行写操作。
+        # 注解是 Server 自己对每个工具的声明，比能力级一刀切细，也比按名字猜可靠。
         self.tools_cache = {
             t.name: {
                 "description": t.description or "",
                 "input_schema": t.inputSchema or {"type": "object", "properties": {}},
+                "read_only_hint": getattr(t.annotations, "readOnlyHint", None) is True,
+                "destructive_hint": getattr(t.annotations, "destructiveHint", None) is True,
             }
             for t in tools
         }
@@ -428,6 +433,8 @@ class McpPool:
                             "tool_name": t.tool_name,
                             "description": cached["description"],
                             "input_schema": cached["input_schema"],
+                            "read_only_hint": cached.get("read_only_hint", False),
+                            "destructive_hint": cached.get("destructive_hint", False),
                         }
                     )
         return out

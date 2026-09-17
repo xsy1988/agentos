@@ -26,6 +26,7 @@ from langchain_core.messages import (
 
 from app.core.config import settings
 from app.modules.awaits import policy as await_policy
+from app.modules.capabilities.schemas import VALID_RISK_LEVELS
 from app.modules.engine import artifacts
 from app.modules.engine.hooks import ToolCapacityExceededError
 
@@ -193,17 +194,56 @@ def _meta_tools() -> list[dict[str, Any]]:
     ]
 
 
+def resolve_tool_risk(
+    *,
+    cap_risk: str,
+    tool_name: str,
+    declared: dict[str, Any] | None = None,
+    read_only_hint: bool = False,
+    destructive_hint: bool = False,
+) -> str:
+    """多工具能力（mcp/plugin）的风险级细化（方案 §5 P2-4）。
+
+    背景：`risk_level` 落在 `capabilities` 行上，而 `capability_tools` 只有开关，
+    一个含写工具的 Server 被打成 `write` 后，包内只读工具（列举/查询类）也会触发
+    高危确认，用户被迫对每次只读调用点"同意"。
+
+    优先级（先声明、后退化、绝不弱化能力级 `dangerous`）：
+
+    1. `payload.tool_risk_levels[tool_name]`：显式声明，管理员意志，最高优先；
+    2. 能力级 `dangerous`：不可被任何注解"洗白"——下过一个危险结论就不自动收回；
+    3. MCP 官方注解：`readOnlyHint` → read；`destructiveHint` → dangerous；
+    4. 兜底：沿用能力级 risk_level（与细化前行为完全一致，保守）。
+
+    注解缺失时**不猜**（MCP 规范里 `destructiveHint` 缺省语义是 true，若照此
+    推导会把所有 Server 都变成危险，故只认显式 true）。
+    """
+    override = (declared or {}).get(tool_name)
+    if isinstance(override, str) and override in VALID_RISK_LEVELS:
+        return override
+    if cap_risk == "dangerous":
+        return "dangerous"
+    if read_only_hint:
+        return "read"
+    if destructive_hint:
+        return "dangerous"
+    return cap_risk if cap_risk in VALID_RISK_LEVELS else "read"
+
+
 async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, Any]]:
     """单个 capability 展开为可装配工具条目。
 
     - tool：payload.schema 即 OpenAI 签名（builtin 占位工具同结构）
     - mcp/plugin：展开连接池中该 Server 的启用工具，暴露名 mcp__{server}__{tool}
-      （唯一化，避免与 builtin 或其他 Server 重名）
+      （唯一化，避免与 builtin 或其他 Server 重名）；风险级按工具细化（见
+      `resolve_tool_risk`），不再整包沿用能力级
     - skill：M4 渐进披露（load_skill 元工具），此处不展开
     """
     out: list[dict[str, Any]] = []
     payload = cap.get("payload") or {}
     risk = cap.get("risk_level") or "read"
+    declared = payload.get("tool_risk_levels")
+    declared = declared if isinstance(declared, dict) else {}
     if cap["type"] == "tool":
         # P0-4：平台持有等待后，被取代的轮询类工具不再暴露给模型（模型零轮询）。
         # 放在本函数（两条装配入口的唯一汇聚点）保证 assemble_tools 与
@@ -245,7 +285,13 @@ async def expand_capability(cap: dict[str, Any], source: str) -> list[dict[str, 
                     },
                     "kind": "mcp",
                     "capability_id": cap["id"],
-                    "risk_level": risk,
+                    "risk_level": resolve_tool_risk(
+                        cap_risk=risk,
+                        tool_name=t["tool_name"],
+                        declared=declared,
+                        read_only_hint=bool(t.get("read_only_hint")),
+                        destructive_hint=bool(t.get("destructive_hint")),
+                    ),
                     "source": source,
                 }
             )
