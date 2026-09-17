@@ -100,6 +100,8 @@ class TaskCreateIn(BaseModel):
     agent_id: UUID | None = None
     text: str = Field(default="", max_length=32000)
     model_provider_id: UUID | None = None
+    # 幂等键（P1-9）：「新开会话并发送」连点两次不会建出两个主任务
+    client_message_id: str | None = Field(default=None, max_length=64)
 
 
 class TaskCreateOut(BaseModel):

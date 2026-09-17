@@ -11,8 +11,9 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import literal_column, select
 from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.agents.models import Agent
@@ -93,6 +94,37 @@ async def assert_image_upload_confirmed(
         )
 
 
+# 幂等键上限（P1-9）：与前端 UUID 长度不冲突，留足自造键空间
+CLIENT_MESSAGE_ID_MAX = 64
+
+# 必须与唯一索引 uq_runs_client_message_id 的表达式逐字一致，且走**字面量**：
+# 键名一旦变成绑定参数（`input ->> $1`），PG 就认不出这是索引表达式，查重会退化成
+# 全表扫描——索引只负责兜竞态，日常判重得吃到索引。
+CLIENT_MESSAGE_ID_EXPR = "input ->> 'client_message_id'"
+
+
+def normalize_client_message_id(raw: str | None) -> str | None:
+    """空白视为"未提供"，避免前端传空串被当成一个真实键。"""
+    key = (raw or "").strip()
+    return key[:CLIENT_MESSAGE_ID_MAX] if key else None
+
+
+async def find_run_by_client_message_id(
+    db: AsyncSession, client_message_id: str, conversation_id: UUID | None = None
+) -> Run | None:
+    """按幂等键找既有 run（P1-9）。
+
+    给了 conversation_id 就限定在会话内（与唯一索引同口径）；不给则全局找——
+    `POST /tasks` 建会话之前就要判重，此时还没有会话 id。取最早一条：并发插入
+    时后插入者被唯一索引挡下，先插入者才是"首次提交"。
+    """
+    stmt = select(Run).where(literal_column(CLIENT_MESSAGE_ID_EXPR) == client_message_id)
+    if conversation_id is not None:
+        stmt = stmt.where(Run.conversation_id == conversation_id)
+    stmt = stmt.order_by(Run.created_at.asc()).limit(1)
+    return (await db.execute(stmt)).scalars().first()
+
+
 async def create_user_run(
     db: AsyncSession,
     conv: Conversation,
@@ -103,12 +135,22 @@ async def create_user_run(
     model_override: str | None = None,
     confirm_upload: bool = False,
     task: Task | None = None,
+    client_message_id: str | None = None,
 ) -> Run:
     """落用户消息 + 创建 run + 投 inbox 事件（**不 commit**，由调用方事务收口）。
 
     task 非空时把 task_id / worker_name 快照进 run.input：引擎据此把 run 绑定到
     主任务（P1 的 engine-task-binding），后续 context_assembly 才能注入任务卡。
+
+    client_message_id 非空时启用 run 级幂等（P1-9）：同会话同键的重复提交**不落
+    消息、不建 run**，直接返回首次那个 run——消息、计数、inbox 事件一并不重复。
     """
+    key = normalize_client_message_id(client_message_id)
+    if key is not None:
+        existing = await find_run_by_client_message_id(db, key, conv.id)
+        if existing is not None:
+            return existing
+
     msg = Message(
         conversation_id=conv.id,
         role="user",
@@ -144,6 +186,10 @@ async def create_user_run(
         # 涉密确认留痕（审计）：带图消息外发前已经用户确认
         "attachment_upload_confirmed": confirm_upload,
     }
+    if key is not None:
+        # 键进 run.input 快照：唯一索引建在这个表达式上，重放/排障也能直接看到
+        run_input["client_message_id"] = key
+
     if task is not None:
         run_input["task_id"] = str(task.id)
         run_input["worker_name"] = task.worker_name
@@ -163,7 +209,19 @@ async def create_user_run(
         },
     )
     db.add(run)
-    await db.flush()  # 拿 run.id
+    try:
+        await db.flush()  # 拿 run.id
+    except IntegrityError:
+        # 竞态兜底：同键两次提交并发穿过上面的查重，唯一索引只放行一个。
+        # 整单回滚（连本请求的 message 一起丢弃），改用胜出者的 run——重复请求
+        # 不留半截数据；此处返回的对象必须是重新查到的那一个（回滚后原实例已失效）。
+        if key is None:
+            raise
+        await db.rollback()
+        winner = await find_run_by_client_message_id(db, key, conv.id)
+        if winner is None:
+            raise
+        return winner
 
     # 投 inbox + NOTIFY（唤醒引擎 worker）
     await db.execute(

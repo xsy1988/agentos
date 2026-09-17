@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -42,6 +43,16 @@ class Run(UUIDPkMixin, TimestampMixin, Base):
         Index("ix_runs_status", "status"),
         # 巡检/补偿按截止时间扫"已超时但仍在跑"的 run
         Index("ix_runs_deadline_at", "deadline_at"),
+        # P1-9 run 级幂等键：键落在 input 内（run 快照自解释），同会话内同键唯一。
+        # 表达式索引 + 部分条件：不带该键的 run（定时器/回调续跑）不受约束，
+        # 索引里 NULL 也不参与唯一判定，条件只是让索引更小。
+        Index(
+            "uq_runs_client_message_id",
+            "conversation_id",
+            text("(input ->> 'client_message_id')"),
+            unique=True,
+            postgresql_where=text("input ? 'client_message_id'"),
+        ),
     )
 
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -103,9 +114,7 @@ class RunArtifact(UUIDPkMixin, TimestampMixin, Base):
         Index("ix_artifacts_task", "task_id"),
     )
 
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID, ForeignKey("runs.id", ondelete="CASCADE")
-    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID, ForeignKey("runs.id", ondelete="CASCADE"))
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID, ForeignKey("tasks.id", ondelete="SET NULL")
     )

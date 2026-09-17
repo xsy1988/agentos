@@ -19,7 +19,9 @@ import { runsApi } from "@/api/runs";
 import { modelsApi } from "@/api/models";
 import { filesApi } from "@/api/files";
 import { ApiError } from "@/api/client";
+import type { SendMessageOptions } from "@/api/conversations";
 import type { ModelProviderOut } from "@/api/types";
+import { newClientMessageId } from "@/utils/id";
 
 const MODEL_PREF_KEY = "chat.modelProviderId";
 
@@ -57,12 +59,7 @@ export default function InputBar({
   disabled,
   runId,
 }: {
-  onSend: (
-    text: string,
-    modelProviderId?: string,
-    attachmentIds?: string[],
-    confirmUpload?: boolean,
-  ) => Promise<void>;
+  onSend: (text: string, opts?: SendMessageOptions) => Promise<void>;
   disabled: boolean;
   runId?: string;
 }) {
@@ -72,6 +69,10 @@ export default function InputBar({
   // 拖拽高亮：文件拖入时输入容器边框点亮
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 幂等键（P1-9）：一次「提交意图」内稳定。内容/附件变了即视为新意图重新取键；
+  // 同一份内容重试（428 确认后重发、网络失败后重试）复用同一个键，
+  // 后端据此返回首次的 run，而不是再建一个（双倍 token + 双份副作用）。
+  const pendingKeyRef = useRef<{ sig: string; key: string } | null>(null);
   // 选择持久化：切换会话/刷新后保留（localStorage）
   const [modelId, setModelId] = useState<string | undefined>(() =>
     localStorage.getItem(MODEL_PREF_KEY) || undefined,
@@ -155,11 +156,18 @@ export default function InputBar({
     if (!canSend) return;
     setSending(true);
     const ids = attachments.filter((a) => a.status === "done").map((a) => a.fileId!);
-    const payload = [text.trim(), modelId, ids] as const;
+    const sig = JSON.stringify([text.trim(), modelId ?? "", ids]);
+    if (pendingKeyRef.current?.sig !== sig) {
+      pendingKeyRef.current = { sig, key: newClientMessageId() };
+    }
+    const opts: SendMessageOptions = {
+      modelProviderId: modelId,
+      attachmentIds: ids,
+      clientMessageId: pendingKeyRef.current.key,
+    };
     try {
-      let confirmUpload = false;
       try {
-        await onSend(...payload, confirmUpload);
+        await onSend(text.trim(), opts);
       } catch (e) {
         // 图片外发确认门：带图且生效模型支持视觉 → 428，弹窗确认后携 confirm_upload 重发
         if (!(e instanceof ApiError) || e.status !== 428) throw e;
@@ -175,13 +183,13 @@ export default function InputBar({
           });
         });
         if (!ok) return; // 取消：保留输入内容
-        confirmUpload = true;
-        await onSend(...payload, confirmUpload);
+        await onSend(text.trim(), { ...opts, confirmUpload: true });
       }
+      pendingKeyRef.current = null; // 发送成功：本次意图结束，下次发送换新键
       setText("");
       clearAttachments();
     } catch {
-      // 发送失败：保留输入内容，可修改后重试
+      // 发送失败：保留输入内容与幂等键，可修改后重试
     } finally {
       setSending(false);
     }

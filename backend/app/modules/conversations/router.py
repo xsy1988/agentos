@@ -209,6 +209,7 @@ async def send_message(
         model_override=model_override,
         confirm_upload=body.confirm_upload,
         task=task,
+        client_message_id=body.client_message_id,
     )
     await db.commit()
     return SendMessageRunCreated(conversation_id=conv.id, run_id=run.id)

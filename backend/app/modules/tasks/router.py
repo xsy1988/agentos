@@ -300,6 +300,22 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     agent = await conv_service.resolve_agent(db, body.agent_id)
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
 
+    # 幂等（P1-9）：判重必须发生在建会话/任务之前——重复提交若走到 create_user_run
+    # 才发现，会话与主任务骨架已经落库，前台的「连点两次」会多出空任务。
+    key = conv_service.normalize_client_message_id(body.client_message_id)
+    if key is not None:
+        existing = await conv_service.find_run_by_client_message_id(db, key)
+        if existing is not None:
+            task_id = (existing.input or {}).get("task_id")
+            task = await db.get(Task, UUID(str(task_id))) if task_id else None
+            if task is None or existing.conversation_id is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, "重复提交：该消息已处理")
+            return TaskCreateOut(
+                task=(await _decorate_tasks(db, [task]))[0],
+                conversation_id=existing.conversation_id,
+                run_id=existing.id,
+            )
+
     # 未显式命名 → 保持默认标题，首条消息到达时自动命名并同步任务标题
     conv = Conversation(agent_id=agent.id, title=body.title or "新会话")
     db.add(conv)
@@ -321,6 +337,7 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
             attachments=[],
             model_override=model_override,
             task=task,
+            client_message_id=key,
         )
     await db.commit()
     await db.refresh(task)

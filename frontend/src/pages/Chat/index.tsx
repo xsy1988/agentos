@@ -4,18 +4,19 @@
  * 布局：任务看板（左，替代原会话流水，ADR-23） | 任务条 + 消息流（SSE）+ 输入栏
  * 关键能力：SSE 流式渲染、思考/工具折叠态、任务进度、支线子任务确认、新主任务软提示、断线重连
  */
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Layout, Alert, message as antdMessage } from "antd";
 import { MessageOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
-import { conversationsApi } from "@/api/conversations";
+import { conversationsApi, type SendMessageOptions } from "@/api/conversations";
 import { runsApi } from "@/api/runs";
 import { tasksApi } from "@/api/tasks";
 import type { SendMessageTaskSwitch, TaskOut } from "@/api/types";
 import { useSSE } from "@/hooks/useSSE";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
+import { newClientMessageId } from "@/utils/id";
 import TaskBoard from "./TaskBoard";
 import TaskHeader from "./TaskHeader";
 import MessageStream from "./MessageStream";
@@ -40,6 +41,8 @@ export default function ChatPage() {
   } | null>(null);
   // 新主任务软提示（ADR-27）：不落消息不建 run，等用户拍板
   const [suggestion, setSuggestion] = useState<SendMessageTaskSwitch | null>(null);
+  // 提示卡「新开会话并发送」的幂等键：同一张卡重试复用，换卡即换键（P1-9）
+  const switchKeyRef = useRef<{ sig: string; key: string } | null>(null);
   const [switching, setSwitching] = useState(false);
   // 乐观用户消息（发送即上屏）：Kimi 式即时反馈，真实消息落库后 MessageStream 自动接管
   const [optimistic, setOptimistic] = useState<{ text: string; key: string } | null>(null);
@@ -93,28 +96,14 @@ export default function ChatPage() {
   // SSE 连接（当有 activeRun 时）
   useSSE(activeRun?.runId ?? null, { onEvent: handleSSEEvent });
 
-  // 发送消息（modelProviderId：对话内临时换模型；attachmentIds：附件；
-  // confirmUpload：图片外发涉密确认，由 InputBar 的确认弹窗触发，均可选）
-  const handleSend = async (
-    text: string,
-    modelProviderId?: string,
-    attachmentIds?: string[],
-    confirmUpload?: boolean,
-    forceCurrentTask?: boolean,
-  ) => {
+  // 发送消息（opts：对话内临时换模型 / 附件 / 涉密确认 / 幂等键，均由 InputBar 组装）
+  const handleSend = async (text: string, opts: SendMessageOptions = {}) => {
     if (!activeConvId) return;
     // 乐观上屏：不等后端落库，消息立即出现在消息流（提交卡死感反馈的核心）
     setOptimistic({ text, key: `optimistic-${Date.now()}` });
     let result;
     try {
-      result = await conversationsApi.sendMessage(
-        activeConvId,
-        text,
-        modelProviderId,
-        attachmentIds,
-        confirmUpload,
-        forceCurrentTask,
-      );
+      result = await conversationsApi.sendMessage(activeConvId, text, opts);
     } catch (e) {
       // 发送失败：撤回乐观气泡并向上抛（InputBar 捕获后保留输入内容/处理 428 确认门）
       setOptimistic(null);
@@ -186,11 +175,19 @@ export default function ChatPage() {
     if (!suggestion) return;
     const s = suggestion;
     setSwitching(true);
+    // 幂等键（P1-9）：同一张卡的重复点击/超时重试复用同一个键，不会建出两个主任务；
+    // 换了提示卡（内容或 Worker 不同）即新意图，重新取键。
+    const sig = JSON.stringify([s.suggested_worker.worker_name, s.pending_text]);
+    if (switchKeyRef.current?.sig !== sig) {
+      switchKeyRef.current = { sig, key: newClientMessageId() };
+    }
     try {
       const res = await tasksApi.create({
         worker_name: s.suggested_worker.worker_name,
         text: s.pending_text,
+        client_message_id: switchKeyRef.current.key,
       });
+      switchKeyRef.current = null;
       setSuggestion(null);
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
@@ -215,7 +212,7 @@ export default function ChatPage() {
     if (!suggestion) return;
     const pending = suggestion.pending_text;
     setSuggestion(null);
-    await handleSend(pending, undefined, undefined, undefined, true);
+    await handleSend(pending, { forceCurrentTask: true });
   };
 
   // 任务被删除：清空选中与其会话
