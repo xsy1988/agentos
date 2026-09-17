@@ -27,7 +27,11 @@ class Run(UUIDPkMixin, TimestampMixin, Base):
     """任务：队列状态机的载体。budget 为创建时从 Agent 配置固化的快照。"""
 
     __tablename__ = "runs"
-    __table_args__ = (Index("ix_runs_status", "status"),)
+    __table_args__ = (
+        Index("ix_runs_status", "status"),
+        # 巡检/补偿按截止时间扫"已超时但仍在跑"的 run
+        Index("ix_runs_deadline_at", "deadline_at"),
+    )
 
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID, ForeignKey("conversations.id", ondelete="CASCADE")
@@ -45,6 +49,11 @@ class Run(UUIDPkMixin, TimestampMixin, Base):
     thread_ts: Mapped[str | None] = mapped_column(String(128))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # P0-1 时长账本：deadline_at 一次写入永不重置（分段执行累加不漂移）；
+    # active_ms 只累加执行段时长，等待/暂停不计入；paused_at 为暂停顺延依据
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_ms: Mapped[int | None] = mapped_column(Integer)
+    paused_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RunEvent(Base):

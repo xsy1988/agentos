@@ -9,7 +9,6 @@ import {
   BulbOutlined,
   ToolOutlined,
   ScheduleOutlined,
-  RobotOutlined,
   PaperClipOutlined,
   ProfileOutlined,
   LoadingOutlined,
@@ -21,6 +20,7 @@ import { filesApi } from "@/api/files";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
+import { TRACE_EVENT_TYPES } from "@/api/eventTypes";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
@@ -131,7 +131,7 @@ function splitRounds(events: RunEventOut[]): RunRound[] {
       cur.text += delta;
     } else if (e.event_type === "message_reset") {
       continue; // 显式标记：分段由「过程事件后出现新文本」规则覆盖，无需处理
-    } else if (TRACE_TYPES.has(e.event_type)) {
+    } else if (TRACE_EVENT_TYPES.has(e.event_type)) {
       cur.traceEvents.push(e);
     }
     // 其余事件（plan/confirm/status/error）由调用方单独处理
@@ -489,16 +489,6 @@ export function EventItem({
     );
   }
 
-  if (event_type === "context_assembly") {
-    return (
-      <Tooltip title="上下文装配完成">
-        <Tag style={{ marginBottom: 4, fontSize: 11 }}>
-          <RobotOutlined /> 上下文已装配
-        </Tag>
-      </Tooltip>
-    );
-  }
-
   if (event_type === "context_compacted") {
     return (
       <Tag color="orange" style={{ marginBottom: 4, fontSize: 11 }}>
@@ -569,16 +559,6 @@ export function EventItem({
 
   return null;
 }
-
-// 执行过程事件类型：收纳进 ExecutionTrace 折叠面板（Kimi 式，默认收起）
-const TRACE_TYPES = new Set([
-  "thought",
-  "tool_call",
-  "tool_result",
-  "context_assembly",
-  "context_compacted",
-  "budget_warning",
-]);
 
 // 终态 run 集合：这些 run 的执行过程属于「历史」，可随时从事件表回放
 const TERMINAL_RUN_STATUSES = new Set(["done", "failed", "cancelled", "aborted", "timeout"]);

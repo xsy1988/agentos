@@ -19,7 +19,8 @@ import base64
 import contextlib
 import json
 import logging
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -34,6 +35,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.db import session_factory
+from app.modules.engine import timing
 from app.modules.engine.graph import build_graph
 from app.modules.engine.hooks import BudgetExceededError, RunContext
 from app.modules.engine.state import BudgetState
@@ -54,6 +56,21 @@ def _pg_dsn() -> str:
     return settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
+@dataclass
+class _RunClock:
+    """单 run 的内存侧时长账本（P0-1）。
+
+    只有"当前执行段起点"必须留在内存：分段执行（interrupt/resume）靠它把
+    每段时长累加进 `runs.active_ms`。截止时间与已累计时长以 DB 列为准，
+    避免进程重启后内存态与库不一致。
+    """
+
+    started_at: datetime | None = None
+    deadline_at: datetime | None = None
+    active_ms: int = 0
+    segment_started_at: datetime | None = None
+
+
 class EngineRuntime:
     def __init__(self) -> None:
         self.saver: AsyncPostgresSaver | None = None
@@ -66,6 +83,7 @@ class EngineRuntime:
         self._wakeup = asyncio.Event()
         self._run_tasks: dict[str, asyncio.Task] = {}
         self._run_ctx: dict[str, RunContext] = {}  # run_id → 执行上下文（钩子/节点共享账本）
+        self._clocks: dict[str, _RunClock] = {}  # run_id → 时长账本（P0-1）
         # backend 协议的一期进程内实现
         from app.modules.engine.backend_impl import InProcessBackend
 
@@ -241,6 +259,20 @@ class EngineRuntime:
                 running = self._run_tasks.get(run_id)
                 if running:
                     running.cancel()
+        else:
+            # P0-6：未知类型绝不静默丢弃——告警 + 落 failed 供排查（认领时已置 consumed）
+            logger.warning(
+                "unknown inbox event type %r (id=%s, run=%s): not handled",
+                et,
+                event.get("id"),
+                event.get("target_run_id"),
+            )
+            async with session_factory() as db:
+                await db.execute(
+                    text("UPDATE inbox_events SET status = 'failed' WHERE id = :id"),
+                    {"id": event["id"]},
+                )
+                await db.commit()
 
     def _spawn_run_task(self, run_id: str, coro: Any) -> None:
         task = asyncio.create_task(coro)
@@ -252,6 +284,87 @@ class EngineRuntime:
     async def _load_run(self, run_id: str) -> Run | None:
         async with session_factory() as db:
             return await db.get(Run, UUID(run_id))
+
+    # ---------- 时长账本与全局超时（P0-1） ----------
+
+    def _clock(self, run_id: str) -> _RunClock:
+        return self._clocks.setdefault(run_id, _RunClock())
+
+    def _open_segment(self, run: Run, prev_status: str, now: datetime) -> None:
+        """进入执行段：首次写 started_at/deadline_at，恢复时顺延截止点。
+
+        由 `_set_run_status(..., "running")` 在**同一次提交**内调用——执行时长的
+        起点即状态变为 running 的那一刻，排队时间不计入。deadline 一旦写入不再重算。
+        """
+        clock = self._clock(str(run.id))
+        if run.started_at is None:
+            timeout = timing.resolve_timeout_seconds(
+                run.budget, default=settings.run_default_timeout_seconds
+            )
+            run.started_at = now
+            run.deadline_at = timing.compute_deadline(now, timeout)
+            run.active_ms = 0
+        else:
+            if run.deadline_at is None:  # 存量 run 无账本：按 coalesce 语义补记一次
+                timeout = timing.resolve_timeout_seconds(
+                    run.budget, default=settings.run_default_timeout_seconds
+                )
+                run.deadline_at = timing.compute_deadline(run.started_at, timeout)
+            if prev_status == "paused_awaiting_confirm" and run.paused_at is not None:
+                extension = timing.pause_extension(
+                    run.paused_at, now, settings.max_run_pause_seconds
+                )
+                run.deadline_at = run.deadline_at + timedelta(seconds=extension)
+        run.paused_at = None
+        clock.started_at = run.started_at
+        clock.deadline_at = run.deadline_at
+        clock.active_ms = int(run.active_ms or 0)
+        clock.segment_started_at = now
+
+    def _close_segment(self, run: Run, now: datetime) -> None:
+        """离开执行段（暂停/终态）：把本段时长累加进 active_ms。幂等。"""
+        clock = self._clock(str(run.id))
+        run.active_ms = timing.accumulate_active_ms(run.active_ms, clock.segment_started_at, now)
+        clock.active_ms = int(run.active_ms or 0)
+        clock.segment_started_at = None
+
+    def _timing_payload(self, run: Run) -> dict[str, Any]:
+        """事件/响应里的时长字段（elapsed_ms 含暂停，active_ms 只含执行）。"""
+        clock = self._clock(str(run.id))
+        started_at = run.started_at or clock.started_at
+        deadline_at = run.deadline_at or clock.deadline_at
+        return {
+            "elapsed_ms": timing.elapsed_ms(started_at, datetime.now(UTC)),
+            "active_ms": int(run.active_ms or clock.active_ms),
+            "deadline_at": deadline_at.isoformat() if deadline_at else None,
+        }
+
+    def _deadline_for(self, run: Run | None, run_id: str) -> datetime | None:
+        """截止时间三级兜底：DB 列 → 内存账本 → 由 started_at 现算（存量 run）。"""
+        clock = self._clock(run_id)
+        deadline = (run.deadline_at if run else None) or clock.deadline_at
+        if deadline is not None:
+            return deadline
+        started_at = (run.started_at if run else None) or clock.started_at
+        if started_at is None:
+            return None
+        timeout = timing.resolve_timeout_seconds(
+            run.budget if run else None, default=settings.run_default_timeout_seconds
+        )
+        return timing.compute_deadline(started_at, timeout)
+
+    async def _partial_text(self, thread_id: str) -> str:
+        """从检查点捞最后一段 AI 文本 —— 超时也要留下已完成的部分（P0-1）。"""
+        assert self.graph is not None
+        try:
+            snapshot = await self.graph.aget_state({"configurable": {"thread_id": thread_id}})
+        except Exception:  # noqa: BLE001 —— 取部分结果失败不影响超时收尾
+            logger.warning("run 超时后读取检查点失败：thread=%s", thread_id, exc_info=True)
+            return ""
+        for m in reversed((snapshot.values or {}).get("messages") or []):
+            if getattr(m, "type", "") == "ai" and m.content:
+                return str(m.content)
+        return ""
 
     # ---------- 附件消费（对话附件方案：文档提文本注入，图片多模态投喂） ----------
 
@@ -337,14 +450,15 @@ class EngineRuntime:
             run = await self._load_run(run_id)
             if run is None or run.status != "pending":
                 return
+            thread_id = str(run.conversation_id) if run.conversation_id else run_id
             ctx = self._build_ctx(run)
             await self.hooks.on_run_start(ctx)
-            await self._set_run_status(run_id, "running")
-            await self.emit_event(run_id, "run_status", {"status": "running"})
+            timing_payload = await self._set_run_status(run_id, "running")
+            await self.emit_event(run_id, "run_status", {"status": "running", **timing_payload})
 
             await self._invoke_and_finalize(
                 run_id,
-                str(run.conversation_id) if run.conversation_id else run_id,
+                thread_id,
                 str(run.agent_id),
                 input_payload={"messages": [await self._build_user_message(run)]},
             )
@@ -353,20 +467,17 @@ class EngineRuntime:
         except BudgetExceededError as e:
             await self._finalize_budget(run_id, e)
         except TimeoutError:
-            await self._set_run_status(
-                run_id, "failed", error={"code": "timeout", "detail": "全局超时"}
-            )
-            await self.emit_event(run_id, "error", {"code": "timeout", "detail": "全局超时"})
-            await self.emit_event(run_id, "run_status", {"status": "failed"})
+            # _invoke_and_finalize 内部已按段超时收尾；此处兜底覆盖其之外的超时
+            await self._finalize_timeout(run_id, phase="run", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001 —— 结构化错误统一落库
             logger.exception("run %s failed", run_id)
-            await self._set_run_status(
+            timing_payload = await self._set_run_status(
                 run_id, "failed", error={"code": type(e).__name__, "detail": str(e)[:500]}
             )
             await self.emit_event(
                 run_id, "error", {"code": type(e).__name__, "detail": str(e)[:500]}
             )
-            await self.emit_event(run_id, "run_status", {"status": "failed"})
+            await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
 
     async def _resume_run(self, run_id: str, answer: Any) -> None:
         """confirmation 入口：从 interrupt 检查点恢复（Command(resume=answer)）。
@@ -378,42 +489,36 @@ class EngineRuntime:
             run = await self._load_run(run_id)
             if run is None or run.status != "paused_awaiting_confirm":
                 return
+            thread_id = str(run.conversation_id) if run.conversation_id else run_id
             # 重启后内存 ctx 丢失：重建（含预算续跑账本）；
             # 同进程恢复时沿用现有 ctx，避免覆盖掉内存中已累计的账本
             if run_id not in self._run_ctx:
                 self._build_ctx(run)
-            await self._set_run_status(run_id, "running")
+            timing_payload = await self._set_run_status(run_id, "running")
             resumed_with = answer.get("answer", "") if isinstance(answer, dict) else answer
             await self.emit_event(
                 run_id,
                 "run_status",
-                {"status": "running", "resumed_with": str(resumed_with)[:200]},
+                {"status": "running", "resumed_with": str(resumed_with)[:200], **timing_payload},
             )
             await self._invoke_and_finalize(
-                run_id,
-                str(run.conversation_id) if run.conversation_id else run_id,
-                str(run.agent_id),
-                input_payload=Command(resume=answer),
+                run_id, thread_id, str(run.agent_id), input_payload=Command(resume=answer)
             )
         except asyncio.CancelledError:
             await self._finalize_cancelled(run_id)
         except BudgetExceededError as e:
             await self._finalize_budget(run_id, e)
         except TimeoutError:
-            await self._set_run_status(
-                run_id, "failed", error={"code": "timeout", "detail": "全局超时"}
-            )
-            await self.emit_event(run_id, "error", {"code": "timeout", "detail": "全局超时"})
-            await self.emit_event(run_id, "run_status", {"status": "failed"})
+            await self._finalize_timeout(run_id, phase="resume", thread_id=thread_id)
         except Exception as e:  # noqa: BLE001
             logger.exception("run %s resume failed", run_id)
-            await self._set_run_status(
+            timing_payload = await self._set_run_status(
                 run_id, "failed", error={"code": type(e).__name__, "detail": str(e)[:500]}
             )
             await self.emit_event(
                 run_id, "error", {"code": type(e).__name__, "detail": str(e)[:500]}
             )
-            await self.emit_event(run_id, "run_status", {"status": "failed"})
+            await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
 
     def _build_ctx(self, run: Run) -> RunContext:
         ctx = RunContext(
@@ -425,7 +530,10 @@ class EngineRuntime:
         ctx.limits = {
             "max_iterations": int(budget.get("max_iterations") or 25),
             "max_tokens_per_run": int(budget.get("max_tokens_per_run") or 0),
-            "timeout_seconds": int(budget.get("timeout_seconds") or 600),
+            # 与时长账本同一解析链，audit 里看到的即实际生效的（P0-1）
+            "timeout_seconds": timing.resolve_timeout_seconds(
+                budget, default=settings.run_default_timeout_seconds
+            ),
         }
         # 重启续跑：从上次实耗恢复账本（DoD：kill 进程后 run 可恢复）
         used = run.budget_used or {}
@@ -440,10 +548,12 @@ class EngineRuntime:
     async def _invoke_and_finalize(
         self, run_id: str, thread_id: str, agent_id: str, input_payload: Any
     ) -> None:
-        """图执行 + 收尾共用：检测再次 interrupt（暂停）/ 计划拒绝 / 终态落库。"""
+        """图执行 + 收尾共用：检测再次 interrupt（暂停）/ 计划拒绝 / 终态落库。
+
+        超时用**到截止点还剩多少秒**，而非本段重新取满额预算——分段累计不漂移（P0-1）。
+        """
         assert self.graph is not None
         run = await self._load_run(run_id)
-        timeout = (run.budget or {}).get("timeout_seconds") or 600 if run else 600
         # 任务架构（M7a）：run 从创建时就快照了 task_id（send_message 写入 run.input）；
         # 迁移前的老 run 用会话惰性补建，保证任何 run 都能挂到主任务上。
         task_id = (run.input or {}).get("task_id") if run else None
@@ -461,9 +571,27 @@ class EngineRuntime:
                 "model_provider_id": (run.input or {}).get("model_provider_id") if run else None,
             }
         }
-        final_state = await asyncio.wait_for(
-            self.graph.ainvoke(input_payload, config), timeout=timeout
-        )
+        deadline_at = self._deadline_for(run, run_id)
+        if deadline_at is None:
+            # 无账本（理论上不可达：_set_run_status 已先写 running）→ 退化为单段预算
+            remaining = float(
+                timing.resolve_timeout_seconds(
+                    run.budget if run else None, default=settings.run_default_timeout_seconds
+                )
+            )
+        else:
+            remaining = timing.remaining_seconds(deadline_at, datetime.now(UTC))
+        if remaining <= 0:
+            logger.warning("run %s 执行预算已耗尽（deadline=%s），不再调用图", run_id, deadline_at)
+            await self._finalize_timeout(run_id, phase="pre_invoke", thread_id=thread_id)
+            return
+        try:
+            final_state = await asyncio.wait_for(
+                self.graph.ainvoke(input_payload, config), timeout=remaining
+            )
+        except TimeoutError:
+            await self._finalize_timeout(run_id, phase="graph", thread_id=thread_id)
+            return
 
         # 确认点：图停在 interrupt → run 暂停，等 confirmation 事件恢复
         snapshot = await self.graph.aget_state(config)
@@ -501,36 +629,55 @@ class EngineRuntime:
                 if isinstance(value, dict):
                     payload = value
                 break
-        # 暂停即落账本：重启恢复后预算续跑不重置（DoD：kill 后可恢复）
+        # 暂停即落账本：重启恢复后预算续跑不重置（DoD：kill 后可恢复）；
+        # paused_at 是恢复时顺延截止点的依据，暂停时长不计入 active_ms（P0-1）
         ctx = self.get_run_ctx(run_id)
         budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
+        now = datetime.now(UTC)
+        paused_timing: dict[str, Any] = {}
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
+                self._close_segment(run, now)
                 run.status = "paused_awaiting_confirm"
+                run.paused_at = now
                 run.budget_used = budget_used
                 await db.commit()
+                paused_timing = self._timing_payload(run)
         await self.emit_event(run_id, "confirmation_request", payload)
         await self.emit_event(
             run_id,
             "run_status",
-            {"status": "paused_awaiting_confirm", "reason": payload.get("reason")},
+            {"status": "paused_awaiting_confirm", "reason": payload.get("reason"), **paused_timing},
         )
 
     async def _finalize(
-        self, run_id: str, status: str, result: dict[str, Any], *, achieved: bool = True
+        self,
+        run_id: str,
+        status: str,
+        result: dict[str, Any],
+        *,
+        achieved: bool = True,
+        error: dict[str, Any] | None = None,
     ) -> None:
         ctx = self.get_run_ctx(run_id)
         budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
         task_id: str | None = None
+        now = datetime.now(UTC)
+        timing_payload: dict[str, Any] = {}
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
+                self._close_segment(run, now)
                 run.status = status
                 run.result = result
                 run.budget_used = budget_used
-                run.finished_at = datetime.now(UTC)
+                run.paused_at = None
+                run.finished_at = now
+                if error:
+                    run.error = error
                 await db.commit()
+                timing_payload = self._timing_payload(run)
                 task_id = (run.input or {}).get("task_id")
                 if not task_id and run.conversation_id:
                     task_id = await self.backend.ensure_task_id(str(run.conversation_id))
@@ -562,25 +709,74 @@ class EngineRuntime:
             # 非正常终态（如用户拒绝计划 → cancelled）：收敛挂起的待确认支线
             await self._reconcile_awaiting_steps(run_id)
         await self.hooks.on_run_end(ctx, status, result)
-        await self.emit_event(run_id, "run_status", {"status": status})
+        await self.emit_event(run_id, "run_status", {"status": status, **timing_payload})
         self._run_ctx.pop(run_id, None)
+        self._clocks.pop(run_id, None)
+
+    async def _finalize_timeout(
+        self, run_id: str, *, phase: str, thread_id: str | None = None
+    ) -> None:
+        """超时收尾（P0-1）：保留部分结果 + 结构化失败，**绝不写 result=NULL**。
+
+        `phase` 标明在哪个执行段超时（pre_invoke/graph/resume），便于区分
+        "预算已耗尽根本没跑图"与"图执行到一半被截断"。
+        """
+        now = datetime.now(UTC)
+        ctx = self.get_run_ctx(run_id)
+        partial_text = await self._partial_text(thread_id) if thread_id else ""
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is None:
+                return
+            self._close_segment(run, now)
+            run.paused_at = None
+            started_at = run.started_at or self._clock(run_id).started_at
+            active_ms = int(run.active_ms or 0)
+            deadline_at = run.deadline_at or self._clock(run_id).deadline_at
+            metrics = timing.budget_metrics(
+                ctx.budget,
+                elapsed_ms=timing.elapsed_ms(started_at, now),
+                active_ms=active_ms,
+            )
+            text = partial_text or (
+                f"任务未在超时前产出终答（已执行 {active_ms // 1000}s，"
+                f"截止时间 {deadline_at.isoformat() if deadline_at else '未知'}）"
+            )
+            error: dict[str, Any] = {
+                "code": "timeout",
+                "detail": f"全局超时：执行段 {phase} 到达截止时间",
+                "phase": phase,
+                "retryable": True,
+                "source": "engine",
+                "partial_result": True,
+                "elapsed_ms": metrics["elapsed_ms"],
+                "active_ms": metrics["active_ms"],
+                "deadline_at": deadline_at.isoformat() if deadline_at else None,
+            }
+            result = timing.partial_result(
+                text=text, reason="timeout", metrics=metrics, deadline_at=deadline_at
+            )
+            await db.commit()
+            timing_payload = self._timing_payload(run)
+        logger.warning(
+            "run %s 超时收尾（phase=%s，active=%dms）", run_id, phase, metrics["active_ms"]
+        )
+        await self.emit_event(run_id, "error", {**error, **timing_payload})
+        await self._finalize(run_id, "failed", result, achieved=False, error=error)
 
     async def _finalize_cancelled(self, run_id: str) -> None:
-        await self._set_run_status(run_id, "cancelled", error={"code": "aborted"})
-        await self.emit_event(run_id, "run_status", {"status": "cancelled"})
+        timing_payload = await self._set_run_status(run_id, "cancelled", error={"code": "aborted"})
+        await self.emit_event(run_id, "run_status", {"status": "cancelled", **timing_payload})
         self._run_ctx.pop(run_id, None)
+        self._clocks.pop(run_id, None)
 
     async def _finalize_budget(self, run_id: str, e: BudgetExceededError) -> None:
-        await self._set_run_status(
-            run_id,
-            "failed",
-            error={"code": "budget_exceeded", "gate": e.gate, "detail": e.detail},
-        )
-        await self.emit_event(
-            run_id, "error", {"code": "budget_exceeded", "gate": e.gate, "detail": e.detail}
-        )
-        await self.emit_event(run_id, "run_status", {"status": "failed"})
+        error = {"code": "budget_exceeded", "gate": e.gate, "detail": e.detail}
+        timing_payload = await self._set_run_status(run_id, "failed", error=error)
+        await self.emit_event(run_id, "error", {**error, **timing_payload})
+        await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
         self._run_ctx.pop(run_id, None)
+        self._clocks.pop(run_id, None)
 
     async def _reconcile_awaiting_steps(self, run_id: str) -> None:
         """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。
@@ -613,19 +809,34 @@ class EngineRuntime:
         except Exception:  # noqa: BLE001 —— 收敛失败不影响终态落库
             logger.exception("run %s 待确认支线收敛失败", run_id)
 
-    async def _set_run_status(self, run_id: str, status: str, error: dict | None = None) -> None:
+    async def _set_run_status(
+        self, run_id: str, status: str, error: dict | None = None
+    ) -> dict[str, Any]:
+        """改状态并维护时长账本；返回该 run 的时长字段供事件载荷使用。
+
+        `running` 与首次写 `started_at`/`deadline_at` 在同一次提交内完成（P0-1）。
+        """
+        now = datetime.now(UTC)
+        timing_payload: dict[str, Any] = {}
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
+                prev_status = run.status
+                if status == "running":
+                    self._open_segment(run, prev_status, now)
                 run.status = status
                 if error:
                     run.error = error
                 if status in TERMINAL_RUN_STATUSES:
-                    run.finished_at = datetime.now(UTC)
+                    self._close_segment(run, now)
+                    run.paused_at = None
+                    run.finished_at = now
                 await db.commit()
+                timing_payload = self._timing_payload(run)
         # 非正常终态（failed/cancelled/aborted/timeout）：收敛挂起的待确认支线
         if status in ("failed", "cancelled", "aborted", "timeout"):
             await self._reconcile_awaiting_steps(run_id)
+        return timing_payload
 
 
 # 单例（main.py lifespan 中 start/stop）

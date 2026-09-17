@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     search_rest_base_url: str = "http://localhost:8204"
     # 探测超时：必须短——它在 lifespan 里同步执行，服务没起时不能拖慢启动
     search_probe_timeout: float = 3.0
+    # run 全局超时缺省值（秒）：run 创建时的 budget 快照 > Agent 配置 > 此值（方案 §4 P0-1）。
+    # 超时以绝对截止时间 deadline_at 表达，分段执行（interrupt/resume）不重置。
+    run_default_timeout_seconds: int = 600
+    # 暂停（等用户确认/等外部回调）对截止时间的顺延上限（秒）：
+    # 超出部分不再顺延，避免"次日才确认"使超时保护形同虚设
+    max_run_pause_seconds: int = 3600
 
 
 settings = Settings()

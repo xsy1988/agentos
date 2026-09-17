@@ -29,6 +29,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
 import { useSSEStore } from "@/store/sse";
+import { EVENT_TYPES } from "@/api/eventTypes";
 import type { RunEventOut } from "@/api/types";
 
 // 事件类型 → 图标/颜色映射
@@ -39,12 +40,13 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   plan_updated: { icon: <ScheduleOutlined />, color: "cyan" },
   tool_call: { icon: <ToolOutlined />, color: "purple" },
   tool_result: { icon: <ToolOutlined />, color: "green" },
-  context_assembly: { icon: <RobotOutlined />, color: "default" },
   context_compacted: { icon: <RobotOutlined />, color: "orange" },
-  interrupt: { icon: <RobotOutlined />, color: "warning" },
   error: { icon: <RobotOutlined />, color: "red" },
-  budget_used: { icon: <RobotOutlined />, color: "default" },
 };
+
+// 只登记真实存在的事件类型（EVENT_TYPES 为单点真源）——EVENT_META 里的多余条目
+// 会让维护者以为平台具备该能力（曾经有 context_assembly / interrupt / budget_used 三条死条目）
+const KNOWN_EVENT_TYPES = new Set<string>(EVENT_TYPES);
 
 const SPEEDS = [
   { value: 2000, label: "0.5x" },
@@ -136,12 +138,6 @@ function EventContent({ event }: { event: RunEventOut }) {
     );
   }
 
-  if (event_type === "interrupt") {
-    return (
-      <Tag color="warning">中断: {String(payload.kind ?? "unknown")}</Tag>
-    );
-  }
-
   if (event_type === "error") {
     return <Tag color="error">错误: {String(payload.message ?? payload.error ?? "")}</Tag>;
   }
@@ -149,6 +145,11 @@ function EventContent({ event }: { event: RunEventOut }) {
   // 默认：JSON 摘要
   return (
     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      {!KNOWN_EVENT_TYPES.has(event_type) && (
+        <Tag color="warning" style={{ marginRight: 4 }}>
+          未登记事件
+        </Tag>
+      )}
       {JSON.stringify(payload).slice(0, 120)}
     </Typography.Text>
   );

@@ -8,7 +8,9 @@
 
 from typing import Any, Protocol
 
-# 九类事件的合法值（模块详细设计 §1.1.7）+ message_reset（轮次分隔，见 graph agent 节点）
+# 事件类型的唯一真源（模块详细设计 §1.1.7 + message_reset/context_compacted）。
+# 纪律（P0-6）：任何新增事件类型必须先登记在此，并以字符串字面量发射；
+# tests/test_event_registry.py 会扫描全部发射点断言其 ⊆ 本集合。
 EVENT_TYPES = (
     "message_delta",
     "message_reset",
@@ -20,6 +22,7 @@ EVENT_TYPES = (
     "budget_warning",
     "run_status",
     "error",
+    "context_compacted",
 )
 
 

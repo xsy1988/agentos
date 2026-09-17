@@ -1,10 +1,10 @@
 """runs 请求/响应模型。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class ConfirmIn(BaseModel):
@@ -39,6 +39,18 @@ class RunOut(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    # P0-1 时长账本：deadline_at 为绝对截止时间；active_ms 不含暂停/等待
+    deadline_at: datetime | None = None
+    active_ms: int | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def elapsed_ms(self) -> int | None:
+        """总存活时长（含暂停），读取时计算，不落列；未启动的 run 为 None。"""
+        if self.started_at is None:
+            return None
+        end = self.finished_at or datetime.now(UTC)
+        return max(0, int((end - self.started_at).total_seconds() * 1000))
 
 
 class RunEventOut(BaseModel):

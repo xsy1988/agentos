@@ -16,8 +16,16 @@ from app.db.base import Base, TimestampMixin, UUIDPkMixin
 
 UUID = PGUUID(as_uuid=True)
 
-# 引擎事件类型（模块详细设计 §1.1.3）
-INBOX_EVENT_TYPES = ("user_input", "resume", "abort", "confirmation", "capability_changed")
+# 引擎 inbox 事件类型 —— 与本文件之外的唯一真源同步：runtime.py `_handle` 实现。
+# 只登记**已实现**的类型（P0-6：不得保留"声明了但没实现"的条目）：
+#   - user_input：API 建 run 后投递（conversations/scheduler）
+#   - abort：用户取消（runs/conversations router）
+#   - confirmation：request_decision 答复（runs router）
+# 两类**不经本队列**：
+#   - capability_changed：走 PG NOTIFY 频道（capabilities/service.py:650 → mcp_client.py:509），
+#     不落 inbox_events [实测从未落库]
+#   - resume：恢复由 confirmation 载荷驱动（runtime.py `_resume_run`），无需独立类型
+INBOX_EVENT_TYPES = ("user_input", "abort", "confirmation")
 
 
 class InboxEvent(Base):
