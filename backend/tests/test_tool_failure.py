@@ -466,8 +466,12 @@ def test_run_error_payload_has_fixed_keys() -> None:
         "retryable": True,
         "source": "engine",
     }
-    result = runtime_mod.timing.failure_result(
-        text="部分输出", reason="tool_failure_loop", metrics={"elapsed_ms": 1}
+    result = runtime_mod.timing.result_envelope(
+        outcome="failed",
+        text="部分输出",
+        reason="tool_failure_loop",
+        metrics={"elapsed_ms": 1},
+        extra={"partial": False},
     )
     assert result["schema"] == "run_result/v1"
     assert result["outcome"] == "failed" and result["partial"] is False
@@ -530,9 +534,26 @@ def test_finalize_tool_failure_persists_failure_envelope(
         return await _emit_into(events, run_id, event_type, payload)
 
     async def _finalize(
-        run_id: str, status: str, result: dict, *, achieved: bool = True, error=None
+        run_id: str,
+        status: str,
+        text: str,
+        *,
+        outcome: str | None = None,
+        reason: str | None = None,
+        extra: dict | None = None,
+        cards: list | None = None,
+        achieved: bool = True,
+        error=None,
     ) -> None:
-        finalized.append((run_id, status, result, achieved, error))
+        finalized.append(
+            (
+                run_id,
+                status,
+                {"text": text, "outcome": outcome, "reason": reason, "extra": extra},
+                achieved,
+                error,
+            )
+        )
 
     monkeypatch.setattr(rt, "emit_event", _emit)
     monkeypatch.setattr(rt, "_finalize", _finalize)
@@ -553,10 +574,11 @@ def test_finalize_tool_failure_persists_failure_envelope(
     assert payload["failure_code"] == "external_unavailable"
     assert payload["tools"] == ["query_weather", "procurement_status", "query_weather"]
 
-    _, status, result, achieved, error = finalized[0]
+    _, status, kwargs, achieved, error = finalized[0]
     assert status == "failed" and achieved is False
-    assert result["outcome"] == "failed" and result["partial"] is False
-    assert result["reason"] == "tool_failure_loop"
+    # 信封由 _finalize 组装（test_run_artifacts.py 覆盖），此处断言接线参数
+    assert kwargs["outcome"] == "failed" and kwargs["extra"]["partial"] is False
+    assert kwargs["reason"] == "tool_failure_loop"
     assert error is not None and error["code"] == "tool_failure_loop"
 
 

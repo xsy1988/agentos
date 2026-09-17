@@ -139,6 +139,59 @@ export interface RunEventOut {
   created_at: string;
 }
 
+/** 结果信封 `artifacts` 项（只含定位与展示字段，正文走 `/artifacts/{id}`）。 */
+export interface RunArtifactRef {
+  id: string;
+  kind: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+/** 结果信封 `metrics`：复用 budget_used 账本，不新造计数。 */
+export interface RunResultMetrics {
+  elapsed_ms: number;
+  active_ms: number;
+  iterations: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+/**
+ * 结果信封（P0-5）：后端 `timing.result_envelope` 的唯一形状（`run_result/v1`）。
+ * 任意终态 run 的 `result` 都是它；历史行由后端 `coalesce_result` 补成
+ * `run_result/v0`（可能缺 metrics/artifacts，故字段按可选读）。
+ */
+export interface RunResultEnvelope {
+  schema: string;
+  outcome: "done" | "partial" | "failed" | "blocked";
+  text: string;
+  cards: Array<{ card_type: string; payload: Record<string, unknown> }>;
+  artifacts: RunArtifactRef[];
+  metrics: Partial<RunResultMetrics>;
+  /** 非 done 的机器可读原因（timeout / verify_not_achieved / ...） */
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+/** 产物清单项（`GET /runs/{run_id}/artifacts`）：不含正文。 */
+export interface ArtifactOut {
+  id: string;
+  run_id: string;
+  kind: string;
+  name: string;
+  mime: string;
+  size: number;
+  storage: string;
+  created_at: string;
+}
+
+/** 产物详情（`GET /artifacts/{id}`）：text/json 内联正文在 `payload`。 */
+export interface ArtifactDetailOut extends ArtifactOut {
+  payload: Record<string, unknown> | null;
+}
+
 // ---- Capabilities ----
 export interface CapabilityOut {
   id: string;

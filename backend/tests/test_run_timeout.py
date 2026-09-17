@@ -54,21 +54,38 @@ def test_elapsed_ms_counts_whole_life() -> None:
     assert timing.elapsed_ms(None, T0) == 0
 
 
-def test_partial_result_envelope_shape() -> None:
-    """超时结果信封：可机读、带兜底 metrics，text 为空时仍可判读（P0-5 契约）。"""
+def test_result_envelope_shape() -> None:
+    """结果信封（P0-5 唯一写出点）：字段齐全、路径特有字段走 extra。"""
     metrics = timing.budget_metrics(
         {"iterations": 3, "tool_calls": 7}, elapsed_ms=1000, active_ms=800
     )
-    envelope = timing.partial_result(
-        text="部分结论", reason="timeout", metrics=metrics, deadline_at=T0 + timedelta(seconds=2)
+    envelope = timing.result_envelope(
+        outcome="partial",
+        text="部分结论",
+        reason="timeout",
+        metrics=metrics,
+        extra={"partial": True, "deadline_at": (T0 + timedelta(seconds=2)).isoformat()},
     )
     assert envelope["schema"] == "run_result/v1"
     assert envelope["outcome"] == "partial"
     assert envelope["partial"] is True
     assert envelope["reason"] == "timeout"
+    assert envelope["cards"] == []
+    assert envelope["artifacts"] == []
     assert envelope["metrics"]["iterations"] == 3
     assert envelope["metrics"]["active_ms"] == 800
     assert timing.budget_metrics(None, elapsed_ms=0, active_ms=0)["tool_calls"] == 0
+
+
+def test_coalesce_result_keeps_legacy_text_shape() -> None:
+    """历史 `{"text": ...}` 读取侧补成 v0 信封，且不臆造 outcome。"""
+    legacy = timing.coalesce_result({"text": "旧结果"})
+    assert legacy is not None
+    assert legacy["schema"] == "run_result/v0"
+    assert legacy["outcome"] == "done"
+    assert legacy["text"] == "旧结果"
+    assert legacy["artifacts"] == []
+    assert timing.coalesce_result(None) is None
 
 
 # ---------- 2. 账本层：deadline 永不重置（Q-02 回归） ----------
@@ -256,16 +273,25 @@ def test_finalize_timeout_persists_partial_result(monkeypatch: pytest.MonkeyPatc
 
     rt.graph = _FakeGraph(messages=[_Msg()])  # type: ignore[assignment]
     events: list[tuple[str, dict]] = []
-    finalized: list[tuple[str, str, dict, dict | None]] = []
+    finalized: list[tuple[str, str, dict]] = []
 
     async def _emit(run_id: str, event_type: str, payload: dict) -> int:
         events.append((event_type, payload))
         return len(events)
 
     async def _finalize(
-        run_id: str, status: str, result: dict, *, achieved: bool = True, error=None
+        run_id: str,
+        status: str,
+        text: str,
+        *,
+        outcome: str | None = None,
+        reason: str | None = None,
+        extra: dict | None = None,
+        cards: list | None = None,
+        achieved: bool = True,
+        error=None,
     ) -> None:
-        finalized.append((status, run_id, result, error))
+        finalized.append((status, text, {"outcome": outcome, "reason": reason, "extra": extra}))
 
     monkeypatch.setattr(rt, "emit_event", _emit)
     monkeypatch.setattr(rt, "_finalize", _finalize)
@@ -281,9 +307,10 @@ def test_finalize_timeout_persists_partial_result(monkeypatch: pytest.MonkeyPatc
     # 账本在同一次提交里关闭执行段（暂停标记一并清掉）
     assert run.active_ms is not None and run.paused_at is None
 
-    status, _, result, error = finalized[0]
+    status, text, kwargs = finalized[0]
     assert status == "failed"  # 状态机不变：failed + error.code
-    assert result["outcome"] == "partial"
-    assert result["reason"] == "timeout"
-    assert result["text"] == "已完成的半截结论"
-    assert error is not None and error["partial_result"] is True
+    # 信封本身由 _finalize 组装（见 test_run_artifacts.py），此处只断言接线参数
+    assert kwargs["outcome"] == "partial"
+    assert kwargs["reason"] == "timeout"
+    assert kwargs["extra"]["partial"] is True
+    assert text == "已完成的半截结论"

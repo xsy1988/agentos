@@ -17,6 +17,7 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.db import session_factory
-from app.modules.engine import timing
+from app.modules.engine import artifacts, timing
 from app.modules.engine.graph import build_graph
 from app.modules.engine.hooks import BudgetExceededError, RunContext, ToolFailureLoopError
 from app.modules.engine.state import BudgetState
@@ -64,6 +65,38 @@ def _run_error(e: Exception, *, phase: str) -> dict[str, Any]:
         "phase": phase,
         "retryable": True,
         "source": "engine",
+    }
+
+
+def _resolve_outcome(
+    status: str, outcome: str | None, reason: str | None, achieved: bool
+) -> tuple[str, str | None]:
+    """终态 → 信封 `outcome`/`reason`（方案 §4 P0-5）。
+
+    未显式给定 outcome 时才推断：`done` + 验收未达成 → `partial`（run 状态机不动，
+    仍是 done，只有结果的语义变成"部分完成"）；其余非 done 终态 → `failed`。
+    """
+    if outcome:
+        return outcome, reason
+    if status == "done":
+        if achieved:
+            return "done", reason
+        return "partial", reason or "verify_not_achieved"
+    return "failed", reason
+
+
+def _artifact_ref_brief(artifact: dict[str, Any]) -> dict[str, Any]:
+    """信封 `artifacts` 项：只留定位与展示字段（正文在 `run_artifacts` 里）。"""
+    return {k: artifact.get(k) for k in ("id", "kind", "name", "mime", "size")}
+
+
+def _result_ref(envelope: dict[str, Any]) -> dict[str, Any]:
+    """`run_status` 终态载荷的结果指针：给定位不给正文，省一次全量拉取。"""
+    return {
+        "outcome": envelope.get("outcome"),
+        "reason": envelope.get("reason"),
+        "text_chars": len(str(envelope.get("text") or "")),
+        "artifact_ids": [a.get("id") for a in envelope.get("artifacts") or []],
     }
 
 
@@ -350,6 +383,12 @@ class EngineRuntime:
             "deadline_at": deadline_at.isoformat() if deadline_at else None,
         }
 
+    async def _timing_payload_for(self, run_id: str) -> dict[str, Any]:
+        """只读时长字段（事件载荷用）：写库统一归 `_finalize` / `_set_run_status`。"""
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+        return self._timing_payload(run) if run else {}
+
     def _deadline_for(self, run: Run | None, run_id: str) -> datetime | None:
         """截止时间三级兜底：DB 列 → 内存账本 → 由 started_at 现算（存量 run）。"""
         clock = self._clock(run_id)
@@ -485,9 +524,18 @@ class EngineRuntime:
         except Exception as e:  # noqa: BLE001 —— 结构化错误统一落库
             logger.exception("run %s failed", run_id)
             error = _run_error(e, phase="run")
-            timing_payload = await self._set_run_status(run_id, "failed", error=error)
+            timing_payload = await self._timing_payload_for(run_id)
             await self.emit_event(run_id, "error", {**error, **timing_payload})
-            await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
+            await self._finalize(
+                run_id,
+                "failed",
+                f"执行中断：{error['detail'] or error['code']}",
+                outcome="failed",
+                reason="internal_error",
+                extra={"partial": False, "code": error["code"]},
+                achieved=False,
+                error=error,
+            )
 
     async def _resume_run(self, run_id: str, answer: Any) -> None:
         """confirmation 入口：从 interrupt 检查点恢复（Command(resume=answer)）。
@@ -525,9 +573,18 @@ class EngineRuntime:
         except Exception as e:  # noqa: BLE001
             logger.exception("run %s resume failed", run_id)
             error = _run_error(e, phase="resume")
-            timing_payload = await self._set_run_status(run_id, "failed", error=error)
+            timing_payload = await self._timing_payload_for(run_id)
             await self.emit_event(run_id, "error", {**error, **timing_payload})
-            await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
+            await self._finalize(
+                run_id,
+                "failed",
+                f"恢复执行失败：{error['detail'] or error['code']}",
+                outcome="failed",
+                reason="internal_error",
+                extra={"partial": False, "code": error["code"]},
+                achieved=False,
+                error=error,
+            )
 
     def _build_ctx(self, run: Run) -> RunContext:
         ctx = RunContext(
@@ -614,8 +671,13 @@ class EngineRuntime:
 
         confirmation = final_state.get("confirmation")
         if confirmation and confirmation.get("answer") == "rejected":
-            result = {"text": "用户拒绝了执行计划，任务未执行。"}
-            await self._finalize(run_id, "cancelled", result)
+            await self._finalize(
+                run_id,
+                "cancelled",
+                "用户拒绝了执行计划，任务未执行。",
+                outcome="failed",
+                reason="rejected",
+            )
             return
 
         msgs = final_state.get("messages") or []
@@ -633,7 +695,7 @@ class EngineRuntime:
         achieved = protected.get("intent", "task") != "chitchat" and bool(
             verdict.get("passed", verdict.get("achieved", True))
         )
-        await self._finalize(run_id, "done", {"text": final_text}, achieved=achieved)
+        await self._finalize(run_id, "done", final_text, achieved=achieved)
 
     async def _pause_for_confirmation(self, run_id: str, snapshot: Any) -> None:
         payload: dict[str, Any] = {"reason": "unknown", "payload": {}}
@@ -665,26 +727,139 @@ class EngineRuntime:
             {"status": "paused_awaiting_confirm", "reason": payload.get("reason"), **paused_timing},
         )
 
+    async def _externalize(
+        self, run_id: str, text: str, *, name: str | None = None
+    ) -> tuple[str, dict[str, Any]] | None:
+        """超阈值文本 → 落 `run_artifacts`，返回 `(引用行 + 预览, 产物摘要)`。
+
+        未超阈值 → `None`（调用方原样使用）。幂等键 `run_id:sha256(text)[:32]`：
+        同一 run 内同内容重复外置只落一行，重放/重试不产生重复产物。
+        """
+        if not text:
+            return None
+        planned = artifacts.externalize(
+            text,
+            name=name,
+            limit=settings.artifact_inline_max_chars,
+            preview_chars=settings.artifact_preview_chars,
+        )
+        if planned is None:
+            return None
+        body, spec = planned
+        row = await self.backend.save_artifact(
+            run_id,
+            kind=spec["kind"],
+            name=spec["name"] or name or "运行结果",
+            mime=spec["mime"],
+            size=spec["size"],
+            storage=spec["storage"],
+            payload=spec["payload"],
+            idempotency_key=f"{run_id}:{hashlib.sha256(text.encode()).hexdigest()[:32]}",
+        )
+        return artifacts.with_ref(artifacts.ref_line(row), body), row
+
+    async def save_long_output(self, run_id: str, content: Any, *, name: str) -> Any:
+        """长工具观察外置（P0-5）：超阈值 → 落产物并返回「引用行 + 预览」，否则原样返回。
+
+        与 `_finalize` 共用 `_externalize`，阈值、幂等键、引用行格式全平台一致。
+        外置失败时**降级为内联**：产物是优化手段，不能反过来阻断工具调用。
+        """
+        text = (
+            content
+            if isinstance(content, str)
+            else json.dumps(content, ensure_ascii=False, default=str)
+        )
+        if not artifacts.should_externalize(text, limit=settings.artifact_inline_max_chars):
+            return content
+        try:
+            externalized = await self._externalize(run_id, text, name=name)
+        except Exception:  # noqa: BLE001 —— 外置失败不能阻断工具结果
+            logger.exception("run %s 工具观察外置失败（tool=%s），保持内联", run_id, name)
+            return content
+        return externalized[0] if externalized else content
+
+    async def _build_result(
+        self,
+        run_id: str,
+        text: str,
+        *,
+        outcome: str,
+        metrics: dict[str, int],
+        reason: str | None = None,
+        cards: list[dict[str, Any]] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """结果信封（P0-5）：长文本**先外置为产物**，信封里只留引用行 + 预览。"""
+        artifact_list: list[dict[str, Any]] = []
+        try:
+            externalized = await self._externalize(run_id, text)
+            if externalized is not None:
+                text, brief = externalized
+                artifact_list.append(_artifact_ref_brief(brief))
+        except Exception:  # noqa: BLE001 —— 外置失败不能连结果本身一起丢
+            logger.exception("run %s 结果外置失败，降级为内联结果", run_id)
+        return timing.result_envelope(
+            outcome=outcome,
+            text=text,
+            metrics=metrics,
+            cards=cards,
+            artifacts=artifact_list,
+            reason=reason,
+            extra=extra,
+        )
+
     async def _finalize(
         self,
         run_id: str,
         status: str,
-        result: dict[str, Any],
+        text: str,
         *,
+        outcome: str | None = None,
+        reason: str | None = None,
+        extra: dict[str, Any] | None = None,
+        cards: list[dict[str, Any]] | None = None,
         achieved: bool = True,
         error: dict[str, Any] | None = None,
     ) -> None:
+        """终态收尾**唯一出口**（P0-5）：先建信封，再落 run，最后发事件。
+
+        - 任意终态（done/partial/failed/cancelled）的 `result` 都是 `run_result/v1`
+          信封，**不再出现 NULL**；
+        - 超阈值文本先外置为产物（`run_artifacts`），信封里只留引用行 + 预览，
+          因此"压缩即失真"在结果链路上被结构性消除；
+        - 结果卡以 `card` 事件写进事件流 → 与事件序对齐，历史可无损重放；
+        - `run_status` 终态载荷带 `outcome` / `result_ref`，前端不必回拉全量结果。
+        """
         ctx = self.get_run_ctx(run_id)
         budget_used = {k: v for k, v in ctx.budget.items() if k != "loop_strikes"}
         task_id: str | None = None
         now = datetime.now(UTC)
         timing_payload: dict[str, Any] = {}
+        resolved_outcome, resolved_reason = _resolve_outcome(status, outcome, reason, achieved)
+        envelope: dict[str, Any] = {}
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
             if run:
                 self._close_segment(run, now)
+                metrics = timing.budget_metrics(
+                    ctx.budget,
+                    elapsed_ms=timing.elapsed_ms(
+                        run.started_at or self._clock(run_id).started_at, now
+                    ),
+                    active_ms=int(run.active_ms or 0),
+                )
+                # 外置在建信封前完成：信封里的产物引用一定指向已提交的行
+                envelope = await self._build_result(
+                    run_id,
+                    text,
+                    outcome=resolved_outcome,
+                    reason=resolved_reason,
+                    metrics=metrics,
+                    cards=cards,
+                    extra=extra,
+                )
                 run.status = status
-                run.result = result
+                run.result = envelope
                 run.budget_used = budget_used
                 run.paused_at = None
                 run.finished_at = now
@@ -705,10 +880,13 @@ class EngineRuntime:
                             run_id=run.id,
                             kind="run_done" if status == "done" else "run_failed",
                             title=f"定时任务{'完成' if status == 'done' else '失败'}",
-                            content=(result.get("text") or "")[:2000],
+                            content=(envelope.get("text") or "")[:2000],
                         )
                     )
                     await db.commit()
+
+        if envelope:
+            await self._emit_result_card(run_id, envelope)
         # 任务架构回写（ADR-26）：把本次 run 完成的主线子任务推进到 done，
         # 主线收口后进度重算会自动跳过未触发的支线并把主任务置 done。
         if task_id and status == "done":
@@ -722,10 +900,35 @@ class EngineRuntime:
         elif task_id:
             # 非正常终态（如用户拒绝计划 → cancelled）：收敛挂起的待确认支线
             await self._reconcile_awaiting_steps(run_id)
-        await self.hooks.on_run_end(ctx, status, result)
-        await self.emit_event(run_id, "run_status", {"status": status, **timing_payload})
+        await self.hooks.on_run_end(ctx, status, envelope)
+        await self.emit_event(
+            run_id,
+            "run_status",
+            {
+                "status": status,
+                "outcome": envelope.get("outcome"),
+                **timing_payload,
+                "result_ref": _result_ref(envelope),
+            },
+        )
         self._run_ctx.pop(run_id, None)
         self._clocks.pop(run_id, None)
+
+    async def _emit_result_card(self, run_id: str, envelope: dict[str, Any]) -> None:
+        """结果卡进事件流（P0-5）：卡片与事件序对齐，历史重放即"重放事件"。
+
+        `seq_hint` 不落地——事件流自身的 `seq` 就是顺序真源，再存一份必然漂移。
+        """
+        artifact_ids = _result_ref(envelope)["artifact_ids"]
+        await self.emit_event(
+            run_id,
+            "card",
+            {
+                "card_type": "result",
+                "payload": envelope,
+                "artifact_id": artifact_ids[0] if artifact_ids else None,
+            },
+        )
 
     async def _finalize_timeout(
         self, run_id: str, *, phase: str, thread_id: str | None = None
@@ -767,30 +970,47 @@ class EngineRuntime:
                 "active_ms": metrics["active_ms"],
                 "deadline_at": deadline_at.isoformat() if deadline_at else None,
             }
-            result = timing.partial_result(
-                text=text, reason="timeout", metrics=metrics, deadline_at=deadline_at
-            )
             await db.commit()
             timing_payload = self._timing_payload(run)
         logger.warning(
             "run %s 超时收尾（phase=%s，active=%dms）", run_id, phase, metrics["active_ms"]
         )
         await self.emit_event(run_id, "error", {**error, **timing_payload})
-        await self._finalize(run_id, "failed", result, achieved=False, error=error)
+        await self._finalize(
+            run_id,
+            "failed",
+            text,
+            outcome="partial",
+            reason="timeout",
+            extra={"partial": True, "deadline_at": error["deadline_at"]},
+            achieved=False,
+            error=error,
+        )
 
     async def _finalize_cancelled(self, run_id: str) -> None:
-        timing_payload = await self._set_run_status(run_id, "cancelled", error={"code": "aborted"})
-        await self.emit_event(run_id, "run_status", {"status": "cancelled", **timing_payload})
-        self._run_ctx.pop(run_id, None)
-        self._clocks.pop(run_id, None)
+        """被取消（abort / 进程关闭）：也要有结果信封，否则前端只能显示空白。"""
+        await self._finalize(
+            run_id,
+            "cancelled",
+            "本次执行已被取消，已完成的部分见上方过程记录。",
+            outcome="failed",
+            reason="aborted",
+            extra={"partial": True},
+            error={"code": "aborted"},
+        )
 
     async def _finalize_budget(self, run_id: str, e: BudgetExceededError) -> None:
         error = {"code": "budget_exceeded", "gate": e.gate, "detail": e.detail}
-        timing_payload = await self._set_run_status(run_id, "failed", error=error)
-        await self.emit_event(run_id, "error", {**error, **timing_payload})
-        await self.emit_event(run_id, "run_status", {"status": "failed", **timing_payload})
-        self._run_ctx.pop(run_id, None)
-        self._clocks.pop(run_id, None)
+        await self._finalize(
+            run_id,
+            "failed",
+            f"本次执行因预算耗尽而终止（{e.gate}）：{e.detail}",
+            outcome="failed",
+            reason="budget_exceeded",
+            extra={"partial": True, "gate": e.gate},
+            achieved=False,
+            error=error,
+        )
 
     async def _finalize_tool_failure(
         self, run_id: str, e: ToolFailureLoopError, *, phase: str, thread_id: str | None = None
@@ -800,7 +1020,6 @@ class EngineRuntime:
         与超时同构：**失败也有结果**，前端失败卡按 `code` 渲染文案与重试入口。
         """
         now = datetime.now(UTC)
-        ctx = self.get_run_ctx(run_id)
         partial_text = await self._partial_text(thread_id) if thread_id else ""
         async with session_factory() as db:
             run = await db.get(Run, UUID(run_id))
@@ -808,14 +1027,7 @@ class EngineRuntime:
                 return
             self._close_segment(run, now)
             run.paused_at = None
-            started_at = run.started_at or self._clock(run_id).started_at
-            active_ms = int(run.active_ms or 0)
             deadline_at = run.deadline_at or self._clock(run_id).deadline_at
-            metrics = timing.budget_metrics(
-                ctx.budget,
-                elapsed_ms=timing.elapsed_ms(started_at, now),
-                active_ms=active_ms,
-            )
             text = partial_text or (
                 f"工具连续失败 {len(e.tools)} 次（最后失败码 {e.code}），已终止本次执行。"
             )
@@ -828,21 +1040,25 @@ class EngineRuntime:
                 "failure_code": e.code,
                 "tools": e.tools,
             }
-            result = timing.failure_result(
-                text=text,
-                reason="tool_failure_loop",
-                metrics=metrics,
-                extra={
-                    "failure_code": e.code,
-                    "tools": e.tools,
-                    "deadline_at": deadline_at.isoformat() if deadline_at else None,
-                },
-            )
             await db.commit()
             timing_payload = self._timing_payload(run)
         logger.warning("run %s 工具连续失败熔断收尾（code=%s）", run_id, e.code)
         await self.emit_event(run_id, "error", {**error, **timing_payload})
-        await self._finalize(run_id, "failed", result, achieved=False, error=error)
+        await self._finalize(
+            run_id,
+            "failed",
+            text,
+            outcome="failed",
+            reason="tool_failure_loop",
+            extra={
+                "partial": False,
+                "failure_code": e.code,
+                "tools": e.tools,
+                "deadline_at": deadline_at.isoformat() if deadline_at else None,
+            },
+            achieved=False,
+            error=error,
+        )
 
     async def _reconcile_awaiting_steps(self, run_id: str) -> None:
         """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。
@@ -881,6 +1097,7 @@ class EngineRuntime:
         """改状态并维护时长账本；返回该 run 的时长字段供事件载荷使用。
 
         `running` 与首次写 `started_at`/`deadline_at` 在同一次提交内完成（P0-1）。
+        **终态不从这里走**：终态必须落结果信封、发结果卡，统一由 `_finalize`（P0-5）负责。
         """
         now = datetime.now(UTC)
         timing_payload: dict[str, Any] = {}

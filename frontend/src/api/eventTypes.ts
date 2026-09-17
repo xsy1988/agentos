@@ -17,6 +17,7 @@ export const EVENT_TYPES = [
   "run_status",
   "error",
   "context_compacted",
+  "card",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

@@ -25,11 +25,14 @@ from langchain_core.messages import (
 )
 
 from app.core.config import settings
+from app.modules.engine import artifacts
 
 logger = logging.getLogger(__name__)
 
 # L1 折叠后保留原文的最近工具观察条数
 COMPACT_L1_KEEP_RECENT = 4
+# L1 折叠正文保留字符数（产物引用行不受此限，P0-5）
+COMPACT_L1_KEEP_CHARS = 120
 # L2 摘要重启保留的尾部消息条数
 COMPACT_L2_KEEP_TAIL = 6
 
@@ -377,7 +380,8 @@ async def compact_messages(
     )
     ops: list[AnyMessage | RemoveMessage] = []
     for m in old_tools:
-        brief = str(m.content)[:120]
+        # 引用行原样保留（P0-5）：折叠只压正文，产物仍可凭 id 找回完整内容
+        brief = artifacts.fold_brief(str(m.content), keep_chars=COMPACT_L1_KEEP_CHARS)
         ops.append(
             ToolMessage(
                 content=f"[L1压缩·工具观察折叠] {brief}",

@@ -1,4 +1,4 @@
-"""run 时长账本与全局截止时间（方案 §4 P0-1）。
+"""run 时长账本、全局截止时间与结果信封（方案 §4 P0-1 / P0-5）。
 
 设计要点：
 - 超时以**绝对截止时间** `deadline_at` 表达，一次写入、永不重置；每次执行段只取
@@ -7,6 +7,8 @@
   避免"用户第二天才确认"使保护失效。
 - 本模块为纯函数：不碰 DB、不碰 I/O，`now` 一律由调用方注入（运行时统一取 UTC），
   便于单测直接覆盖核心不变量。
+- P0-5 起本模块还是**结果信封的唯一写出点**（`result_envelope`）：done/partial/failed
+  三路共用同一字段集合，读取侧 `coalesce_result` 兼容历史纯文本 `{"text": ...}`。
 """
 
 from collections.abc import Mapping
@@ -91,41 +93,59 @@ def budget_metrics(
     }
 
 
-def partial_result(
+def result_envelope(
     *,
+    outcome: str,
     text: str,
-    reason: str,
     metrics: dict[str, int],
-    deadline_at: datetime | None = None,
-) -> dict:
-    """超时/中断时的结果信封：**失败也有结果**，不再 `result = NULL`。"""
-    return {
-        "schema": RUN_RESULT_SCHEMA,
-        "outcome": "partial",
-        "partial": True,
-        "reason": reason,
-        "text": text,
-        "metrics": metrics,
-        "deadline_at": deadline_at.isoformat() if deadline_at else None,
-    }
-
-
-def failure_result(
-    *,
-    text: str,
-    reason: str,
-    metrics: dict[str, int],
+    cards: list[dict[str, Any]] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    reason: str | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict:
-    """硬失败（如工具连续失败熔断）的结果信封：非 partial、带失败原因与上下文。"""
+    """`run_result/v1` 信封的唯一写出点（P0-5）：**任何终态 run 的 result 都过这里**。
+
+    `partial`/`failure`/`done` 三条路径共用，字段集合固定：schema / outcome / text /
+    cards / artifacts / metrics（`reason` 可选，`extra` 只放路径特有字段）。
+    """
     out: dict[str, Any] = {
         "schema": RUN_RESULT_SCHEMA,
-        "outcome": "failed",
-        "partial": False,
-        "reason": reason,
+        "outcome": outcome,
         "text": text,
+        "cards": list(cards or []),
+        "artifacts": list(artifacts or []),
         "metrics": metrics,
     }
+    if reason:
+        out["reason"] = reason
     if extra:
         out.update(dict(extra))
     return out
+
+
+def coalesce_result(raw: Mapping[str, Any] | None) -> dict | None:
+    """读取侧兼容：历史 `{"text": ...}`（无 `schema`）→ 补成信封，**不改写历史行**。
+
+    - 无 schema：按 `run_result/v0` 解释，`outcome` 由 `partial` 标记或状态推断的
+      `done` 兜底；
+    - 有 schema（P0-1 已写的 v1 partial/failed）：补齐 P0-5 新增的 `cards`/`artifacts`，
+      已有键一律保留（含 `partial`、`deadline_at` 等路径特有字段）。
+    """
+    if not raw:
+        return None
+    data = dict(raw)
+    if "schema" not in data:
+        data = {
+            "schema": "run_result/v0",
+            "outcome": "partial" if data.get("partial") else "done",
+            "cards": [],
+            "artifacts": [],
+            "metrics": {},
+            **data,
+        }
+    else:
+        data.setdefault("cards", [])
+        data.setdefault("artifacts", [])
+        data.setdefault("metrics", {})
+        data.setdefault("outcome", "done")
+    return data

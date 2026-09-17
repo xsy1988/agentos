@@ -1,4 +1,7 @@
-"""InProcessBackend —— EngineBackend 协议的一期进程内实现（M2-2a 冻结协议）。"""
+"""InProcessBackend —— EngineBackend 协议的一期进程内实现（M2-2a 冻结协议）。
+
+增量扩展：M7a 任务架构、M9a 结果产物（P0-5，`save_artifact`/`list_artifacts`）。
+"""
 
 import json
 import uuid
@@ -311,3 +314,69 @@ class InProcessBackend:
             )
             await db.commit()
             return len(closed)
+
+    # ---- M9a 增量扩展（方案 §4 P0-5：结果产物一等化）----
+
+    async def save_artifact(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        name: str | None,
+        mime: str | None,
+        size: int,
+        storage: str,
+        payload: Any,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from app.modules.runs.models import RunArtifact
+
+        async with session_factory() as db:
+            if idempotency_key:
+                existing = await db.scalar(
+                    select(RunArtifact).where(RunArtifact.idempotency_key == idempotency_key)
+                )
+                if existing is not None:
+                    return _artifact_brief(existing)
+            artifact = RunArtifact(
+                run_id=uuid.UUID(run_id),
+                kind=kind,
+                name=name,
+                mime=mime,
+                size=size,
+                storage=storage,
+                payload=payload,
+                idempotency_key=idempotency_key,
+            )
+            db.add(artifact)
+            await db.commit()
+            await db.refresh(artifact)
+            return _artifact_brief(artifact)
+
+    async def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        from sqlalchemy import select
+
+        from app.modules.runs.models import RunArtifact
+
+        async with session_factory() as db:
+            rows = await db.scalars(
+                select(RunArtifact)
+                .where(RunArtifact.run_id == uuid.UUID(run_id))
+                .order_by(RunArtifact.created_at)
+            )
+            return [_artifact_brief(a) for a in rows]
+
+
+def _artifact_brief(artifact: Any) -> dict[str, Any]:
+    """产物摘要（不含 payload 正文）：拼引用行与清单共用。"""
+    return {
+        "id": str(artifact.id),
+        "run_id": str(artifact.run_id),
+        "kind": artifact.kind,
+        "name": artifact.name,
+        "mime": artifact.mime,
+        "size": int(artifact.size or 0),
+        "storage": artifact.storage,
+    }

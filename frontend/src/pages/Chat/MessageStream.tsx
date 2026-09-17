@@ -23,6 +23,8 @@ import { runsApi } from "@/api/runs";
 import { TRACE_EVENT_TYPES } from "@/api/eventTypes";
 import { describeError } from "@/api/errors";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
+import { fmtSize } from "@/utils/format";
+import CardRenderer from "./CardRenderer";
 import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
 
@@ -44,12 +46,6 @@ function msgAttachments(msg: MessageOut): MsgAttachment[] {
   const c = msg.content as Record<string, unknown>;
   const atts = c.attachments;
   return Array.isArray(atts) ? (atts as MsgAttachment[]) : [];
-}
-
-function fmtSize(size: number): string {
-  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
-  if (size >= 1024) return `${Math.round(size / 1024)}KB`;
-  return `${size}B`;
 }
 
 /** 图片附件：blob 鉴权拉取 → objectURL 渲染（卸载时释放）。 */
@@ -536,6 +532,14 @@ export function EventItem({
     );
   }
 
+  if (event_type === "card") {
+    // 结果卡（P0-5）：事实进事件流，历史重放即重建卡面；
+    // 卡面只渲染元信息（正文已作为 assistant 消息渲染，不重复出文本）
+    const cardType = String(payload.card_type ?? "generic");
+    const inner = (payload.payload ?? {}) as Record<string, unknown>;
+    return <CardRenderer payload={{ reason: cardType, payload: inner }} runId={event.run_id} />;
+  }
+
   if (event_type === "run_status") {
     const status = payload.status as string;
     if (status === "paused_awaiting_confirm") {
@@ -718,15 +722,19 @@ function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: s
     staleTime: 5 * 60_000,
   });
   const rounds = splitRounds(events);
+  // 结果卡（P0-5）：终态 run 的历史重放靠它，只取最后一份（重放/重试不重复渲染）
+  const resultCard = [...events].reverse().find((e) => e.event_type === "card");
   // hasReply：该 run 的终答已作为消息渲染（防终答双渲染）；中间轮文本
   // 已落库（如 verify 重试产生多条消息）同样要去重
   const hasReply = repliedTexts.length > 0;
   const lastIdx = rounds.length - 1;
-  const anything = rounds.some(
-    (r, i) =>
-      r.traceEvents.length > 0 ||
-      (i === lastIdx ? !hasReply && !!r.text : !!r.text && !repliedHit(r.text, repliedTexts)),
-  );
+  const anything =
+    !!resultCard ||
+    rounds.some(
+      (r, i) =>
+        r.traceEvents.length > 0 ||
+        (i === lastIdx ? !hasReply && !!r.text : !!r.text && !repliedHit(r.text, repliedTexts)),
+    );
   if (!anything) return null;
   return (
     <>
@@ -744,6 +752,7 @@ function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: s
           )}
         </Fragment>
       ))}
+      {resultCard && <EventItem event={resultCard} />}
     </>
   );
 }
@@ -774,7 +783,8 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
   const replyText = lastRound && lastRound.traceEvents.length === 0 ? lastRound.text : "";
   const planEvent = [...events].reverse().find((e) => e.event_type === "plan_updated");
   const notableEvents = events.filter(
-    (e) => e.event_type === "error" || e.event_type === "confirmation_request",
+    (e) =>
+      e.event_type === "error" || e.event_type === "confirmation_request" || e.event_type === "card",
   );
 
   // 提交后空窗期反馈（Kimi 式）：不能只看 events.length —— 后端首发事件往往是

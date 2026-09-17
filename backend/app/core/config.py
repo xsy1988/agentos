@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # 同一 run 内连续 N 次 external_unavailable / parse_error → 结束 run，
     # error.code=tool_failure_loop，不进入终答。run.get("tool_failure_limit") 可覆盖
     tool_failure_limit: int = 3
+    # 单条工具观察 / 终答超过此字符数即自动落 run_artifacts，上下文与 result.text
+    # 只保留摘要 + 产物引用（方案 §4 P0-5：长结果不再被 120 字符折叠折成一句话）
+    artifact_inline_max_chars: int = 4000
+    # 外置后留在上下文/终答里的预览字符数（引用行不计入）
+    artifact_preview_chars: int = 800
 
 
 settings = Settings()

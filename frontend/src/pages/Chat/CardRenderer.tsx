@@ -21,10 +21,13 @@ import {
   CloseOutlined,
   ExclamationCircleOutlined,
   ExportOutlined,
+  InfoCircleOutlined,
   InteractionOutlined,
   QuestionCircleOutlined,
 } from "@ant-design/icons";
-import type { SidebarDescriptor } from "@/api/types";
+import { artifactsApi } from "@/api/artifacts";
+import type { RunArtifactRef, SidebarDescriptor } from "@/api/types";
+import { fmtSize } from "@/utils/format";
 
 /** 卡片动作（§3.6）：kind 决定点击行为。 */
 export interface CardAction {
@@ -452,9 +455,140 @@ const GenericCard: CardComponent = ({ ctx }) => (
   <DeclarativeCard ctx={ctx} fallbackTitle={`需要确认（${ctx.cardType}）`} />
 );
 
+/** 结果信封 outcome → 展示文案（done/partial/failed/blocked）。 */
+const OUTCOME_LABEL: Record<string, string> = {
+  done: "已完成",
+  partial: "部分完成",
+  failed: "失败",
+  blocked: "受阻",
+};
+
+/** 非 done 的机器可读原因 → 人话（后端 reason 字段，值域见方案 §4 P0-5）。 */
+const REASON_LABEL: Record<string, string> = {
+  timeout: "执行超时（已保留部分结果）",
+  verify_not_achieved: "验收未达成",
+  budget_exhausted: "预算耗尽",
+  cancelled: "已取消",
+  aborted: "已中止",
+};
+
+function outcomeSeverity(outcome: string): Severity {
+  if (outcome === "failed") return "danger";
+  if (outcome === "partial" || outcome === "blocked") return "warn";
+  return "info";
+}
+
+function fmtTokens(metrics: Record<string, unknown>): string {
+  const tokens = Number(metrics.input_tokens ?? 0) + Number(metrics.output_tokens ?? 0);
+  return tokens > 0 ? ` · token ${tokens.toLocaleString()}` : "";
+}
+
+/** 产物行：text/json 就地展开正文，file 下载落盘。 */
+function ArtifactRow({ artifact }: { artifact: RunArtifactRef }) {
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const isFile = artifact.kind === "file";
+
+  async function open() {
+    setBusy(true);
+    try {
+      if (isFile) {
+        const blob = await artifactsApi.fetchContent(artifact.id);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = artifact.name || artifact.id;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const detail = await artifactsApi.get(artifact.id);
+      const payload = detail.payload;
+      setText(
+        payload && "text" in payload
+          ? String(payload.text)
+          : JSON.stringify(payload ?? detail, null, 2),
+      );
+    } catch (e) {
+      setText(`加载失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <Space size={6} wrap>
+        <Typography.Text style={{ fontSize: 12 }}>{artifact.name || artifact.id}</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {artifact.kind} · {fmtSize(artifact.size)}
+        </Typography.Text>
+        <Button size="small" type="link" loading={busy} onClick={open}>
+          {isFile ? "下载" : text ? "收起" : "查看"}
+        </Button>
+      </Space>
+      {text !== null && (
+        <pre
+          className="font-mono-tight"
+          style={{
+            fontSize: 12,
+            margin: "4px 0 0",
+            whiteSpace: "pre-wrap",
+            maxHeight: 240,
+            overflow: "auto",
+          }}
+        >
+          {text.length > 4000 ? `${text.slice(0, 4000)}…` : text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ⑥ result：结果卡（内置，P0-5）。
+ *
+ * 只渲染**结果元信息**（outcome / reason / metrics / artifacts）：
+ * 正文已作为 assistant 消息落库并渲染，卡面再渲染一次就是双渲染。
+ * 卡本身进事件流（`card` 事件），因此历史重放不丢信息。
+ */
+const ResultCard: CardComponent = ({ ctx }) => {
+  const inner = ctx.inner;
+  const outcome = String(inner.outcome ?? "done");
+  const severity = outcomeSeverity(outcome);
+  const reason = String(inner.reason ?? "");
+  const metrics = (inner.metrics ?? {}) as Record<string, unknown>;
+  const artifactList = (inner.artifacts ?? []) as RunArtifactRef[];
+  const iterations = Number(metrics.iterations ?? 0);
+  const toolCalls = Number(metrics.tool_calls ?? 0);
+  const activeMs = Number(metrics.active_ms ?? 0);
+  return (
+    <Shell
+      severity={severity}
+      title={`运行结果 · ${OUTCOME_LABEL[outcome] ?? outcome}`}
+      icon={<InfoCircleOutlined style={{ color: SEVERITY_META[severity].color }} />}
+    >
+      {reason && (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {REASON_LABEL[reason] ?? reason}
+        </Typography.Text>
+      )}
+      <div style={{ fontSize: 11, color: "var(--ant-color-text-tertiary)", margin: "4px 0 8px" }}>
+        {activeMs > 0 ? `活跃 ${(activeMs / 1000).toFixed(1)}s` : ""}
+        {iterations > 0 ? ` · 迭代 ${iterations}` : ""}
+        {toolCalls > 0 ? ` · 工具 ${toolCalls}` : ""}
+        {fmtTokens(metrics)}
+      </div>
+      {artifactList.map((a) => (
+        <ArtifactRow key={a.id} artifact={a} />
+      ))}
+    </Shell>
+  );
+};
+
 /**
  * 卡片注册表：card_type → 渲染器。
- * 内置 4 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision）；
+ * 内置 5 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision/result）；
  * task_switch_suggested 走独立 TaskSwitchCard（send_message 返回，非 SSE 确认事件）。
  * 业务自定义卡无需改此表：声明式模板自动落 GenericCard，plugin 卡面经 open_sidebar 走侧边栏。
  */
@@ -463,6 +597,7 @@ export const CARD_REGISTRY: Record<string, CardComponent> = {
   high_risk_tool: HighRiskToolCard,
   subtask_clarification: SubtaskClarificationCard,
   interactive_decision: InteractiveDecisionCard,
+  result: ResultCard,
 };
 
 export default function CardRenderer({
@@ -474,13 +609,21 @@ export default function CardRenderer({
 }: {
   payload: Record<string, unknown>;
   runId: string;
-  onConfirm: (answer?: string) => void;
-  onReject: () => void;
-  onOpenSidebar: (sidebar: SidebarDescriptor) => void;
+  /** 结果卡等只读卡片不传动作回调：缺省为空操作 */
+  onConfirm?: (answer?: string) => void;
+  onReject?: () => void;
+  onOpenSidebar?: (sidebar: SidebarDescriptor) => void;
 }) {
   const cardType = String(payload.reason ?? "generic");
   const inner = (payload.payload ?? {}) as Record<string, unknown>;
   const Renderer = CARD_REGISTRY[cardType] ?? GenericCard;
-  const ctx: CardContext = { cardType, inner, runId, onConfirm, onReject, onOpenSidebar };
+  const ctx: CardContext = {
+    cardType,
+    inner,
+    runId,
+    onConfirm: onConfirm ?? (() => {}),
+    onReject: onReject ?? (() => {}),
+    onOpenSidebar: onOpenSidebar ?? (() => {}),
+  };
   return <Renderer ctx={ctx} />;
 }

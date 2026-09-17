@@ -16,15 +16,15 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
-from app.modules.runs.models import Run
-from app.modules.runs.schemas import ConfirmIn, RunEventOut, RunOut
+from app.modules.runs.models import Run, RunArtifact
+from app.modules.runs.schemas import ArtifactDetailOut, ArtifactOut, ConfirmIn, RunEventOut, RunOut
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,16 @@ router = APIRouter(
     tags=["runs"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 产物取件独立成面（P0-5）：`/runs/{id}/artifacts` 列清单，`/artifacts/{id}` 取正文
+artifacts_router = APIRouter(
+    prefix="/artifacts",
+    tags=["artifacts"],
+    dependencies=[Depends(get_current_user)],
+)
+
+# 与 app.main 的 API_PREFIX 一致：kind=file 重定向到既有取件接口
+API_PREFIX = "/api/v1"
 
 TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -80,6 +90,20 @@ async def list_run_events(
     result = await db.execute(stmt)
     rows = result.mappings().all()
     return [RunEventOut(**dict(r)) for r in rows]  # type: ignore[arg-type]
+
+
+@router.get("/{run_id}/artifacts", response_model=list[ArtifactOut])
+async def list_run_artifacts(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[RunArtifact]:
+    """run 的产物清单（P0-5）：正文不在此响应里，按需取 `GET /artifacts/{id}`。"""
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    stmt = (
+        select(RunArtifact)
+        .where(RunArtifact.run_id == run_id)
+        .order_by(RunArtifact.created_at)
+    )
+    return list((await db.scalars(stmt)).all())
 
 
 @router.post("/{run_id}/abort", status_code=status.HTTP_202_ACCEPTED)
@@ -195,3 +219,19 @@ async def stream_run_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@artifacts_router.get("/{artifact_id}", response_model=ArtifactDetailOut)
+async def get_artifact(
+    artifact_id: UUID, db: AsyncSession = Depends(get_db)
+) -> RunArtifact | RedirectResponse:
+    """取单条产物（P0-5）：`kind=file` 重定向到既有 files 取件接口，其余回正文 JSON。
+
+    重定向而非代理下载：文件正文的鉴权/落盘/清理全归 files 模块，产物表只做引用。
+    """
+    artifact = await db.get(RunArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "产物不存在")
+    if artifact.kind == "file" and artifact.file_id is not None:
+        return RedirectResponse(f"{API_PREFIX}/files/{artifact.file_id}/content")
+    return artifact

@@ -1007,6 +1007,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             )
             if ok:
                 content = "" if content is None else content
+                # 长观察先落产物再进上下文（P0-5）：上下文只留引用行 + 预览
+                content = await runtime.save_long_output(run_id, content, name=str(c["name"]))
                 recent_failed = []
             else:
                 # 失败以结构化载荷进上下文，绝不降级成"看起来像结果"的自然语言

@@ -28,6 +28,7 @@ from app.modules.memory.router import router as memory_router
 from app.modules.models_module.router import router as models_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.open_api.router import router as open_api_router
+from app.modules.runs.router import artifacts_router
 from app.modules.runs.router import router as runs_router
 from app.modules.scheduler.router import router as scheduler_router
 from app.modules.scheduler.runtime import scheduler_runtime
@@ -74,6 +75,7 @@ app.include_router(agents_router, prefix=API_PREFIX)
 app.include_router(models_router, prefix=API_PREFIX)
 app.include_router(conversations_router, prefix=API_PREFIX)
 app.include_router(runs_router, prefix=API_PREFIX)
+app.include_router(artifacts_router, prefix=API_PREFIX)
 app.include_router(capabilities_router, prefix=API_PREFIX)
 app.include_router(capability_bindings_router, prefix=API_PREFIX)
 app.include_router(files_router, prefix=API_PREFIX)

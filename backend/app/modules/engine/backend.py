@@ -23,6 +23,7 @@ EVENT_TYPES = (
     "run_status",
     "error",
     "context_compacted",
+    "card",
 )
 
 
@@ -112,4 +113,28 @@ class EngineBackend(Protocol):
 
     async def finalize_task_plan(self, task_id: str, run_id: str, *, achieved: bool) -> int:
         """run 终态回写：achieved 时推进绑定主步骤至 done，返回推进条数。"""
+        ...
+
+    # ---- M9a 增量扩展（方案 §4 P0-5：结果产物一等化）----
+
+    async def save_artifact(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        name: str | None,
+        mime: str | None,
+        size: int,
+        storage: str,
+        payload: Any,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """落一条 run 产物，返回 `{id, kind, name, mime, size, storage}`（供拼引用行）。
+
+        `idempotency_key` 非空且已存在时返回已有行（重放/重试不重复落库）。
+        """
+        ...
+
+    async def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        """run 的产物清单（按 created_at 升序），结果卡与产物面板共用。"""
         ...

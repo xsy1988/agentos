@@ -77,3 +77,27 @@ class RunEventOut(BaseModel):
     event_type: str
     payload: dict
     created_at: datetime
+
+
+class ArtifactOut(BaseModel):
+    """run 产物摘要（P0-5）：不含正文，列表与结果卡共用。
+
+    `kind=file` 时正文在既有 files 表（`GET /artifacts/{id}` 会重定向到取件接口）。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    run_id: UUID
+    kind: str
+    name: str | None
+    mime: str | None
+    size: int
+    storage: str
+    created_at: datetime
+
+
+class ArtifactDetailOut(ArtifactOut):
+    """单条产物详情：带正文（`payload`），供 `GET /artifacts/{id}` 直取。"""
+
+    payload: Any | None = None

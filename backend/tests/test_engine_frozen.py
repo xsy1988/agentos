@@ -15,6 +15,7 @@ from app.modules.engine.state import LoopState
 # 这里断言"真源 = 期望清单"——两边各改一半会红灯（P0-6）。
 EXPECTED_EVENT_TYPES = (
     "budget_warning",
+    "card",  # 结果卡/过程卡（P0-5，runtime._emit_result_card 发射）
     "confirmation_request",
     "context_compacted",  # L1/L2 上下文压缩（assembler 发射）
     "error",

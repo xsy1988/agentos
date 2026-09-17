@@ -3,7 +3,15 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -72,3 +80,42 @@ class RunEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# 产物种类：text/json 走 inline payload；file 指向 files 表；link 存 URL
+ARTIFACT_KINDS = ("text", "json", "file", "link")
+# 存储方式：inline=payload 内联；pg=payload 大字段；file=files 表（file_id）
+ARTIFACT_STORAGE = ("inline", "pg", "file")
+
+
+class RunArtifact(UUIDPkMixin, TimestampMixin, Base):
+    """run 结果产物（方案 §4 P0-5）：清单/报告/大 JSON 一律落表并以 id 引用。
+
+    纪律：进上下文的只留「引用行 + 预览」，正文在此表（`result.text` 只放面向人的摘要）。
+    """
+
+    __tablename__ = "run_artifacts"
+    __table_args__ = (
+        Index("ix_artifacts_run", "run_id"),
+        Index("ix_artifacts_task", "task_id"),
+    )
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID, ForeignKey("runs.id", ondelete="CASCADE")
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID, ForeignKey("tasks.id", ondelete="SET NULL")
+    )
+    step_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID, ForeignKey("task_steps.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(String(16), default="text")
+    name: Mapped[str | None] = mapped_column(String(256))
+    mime: Mapped[str | None] = mapped_column(String(128))
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    storage: Mapped[str] = mapped_column(String(16), default="inline")
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    file_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID, ForeignKey("files.id", ondelete="SET NULL")
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
