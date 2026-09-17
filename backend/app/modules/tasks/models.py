@@ -36,6 +36,13 @@ STEP_KINDS = ("main", "branch")
 STEP_STATUSES = ("pending", "doing", "done", "skipped", "blocked", "awaiting_user")
 # 子任务来源：template=模板实例化；planner=规划器新增；agent_raised=模型主动发起；user=人工添加
 STEP_SOURCES = ("template", "planner", "agent_raised", "user")
+# 支线受阻原因（P1-6）：枚举化，禁止在自由文本里写收敛理由
+# run_ended=run 已结束不会再有人答复；deadline_exceeded=超时；
+# user_cancelled=用户取消/中止；manual=人工收敛
+STEP_BLOCK_REASONS = ("run_ended", "deadline_exceeded", "user_cancelled", "manual")
+# 前台收敛动作（P1-6）：close=关闭支线（不再需要）；requeue=重新排队（回 pending 待重跑）；
+# escalate=转人工（保持受阻，标记已人工确认接手）
+STEP_CONVERGE_ACTIONS = ("close", "requeue", "escalate")
 
 
 class Task(UUIDPkMixin, TimestampMixin, Base):

@@ -17,6 +17,7 @@ EXPECTED_EVENT_TYPES = (
     "await_expired",  # 外部等待超时（P0-4，runtime._emit_await_outcome / graph.await_gate）
     "await_resolved",  # 外部等待被回调/撤销（P0-4）
     "await_started",  # 平台开始持有外部等待（P0-4，runtime._pause_for_await）
+    "blocked",  # 支线受阻（P1-6，runtime._reconcile_awaiting_steps / tasks.router converge）
     "budget_warning",
     "card",  # 结果卡/过程卡（P0-5，runtime._emit_result_card 发射）
     "confirmation_request",
@@ -30,6 +31,7 @@ EXPECTED_EVENT_TYPES = (
     "thought",
     "tool_call",
     "tool_result",
+    "unblocked",  # 受阻支线被前台收敛（P1-6，tasks.router converge）
 )
 
 

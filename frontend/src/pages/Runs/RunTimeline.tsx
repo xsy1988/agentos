@@ -48,6 +48,8 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   await_started: { icon: <ClockCircleOutlined />, color: "blue" },
   await_resolved: { icon: <ClockCircleOutlined />, color: "green" },
   await_expired: { icon: <ClockCircleOutlined />, color: "orange" },
+  blocked: { icon: <WarningOutlined />, color: "volcano" },
+  unblocked: { icon: <WarningOutlined />, color: "green" },
   error: { icon: <RobotOutlined />, color: "red" },
 };
 

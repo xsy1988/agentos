@@ -468,7 +468,18 @@ export interface TaskStepOut {
   status: string;
   /** template | planner | agent_raised | user */
   source: string;
-  resolution: { question?: string; answer?: string; at?: string } | null;
+  resolution: {
+    question?: string;
+    answer?: string;
+    at?: string;
+    /** P1-6：受阻/收敛原因枚举（run_ended | deadline_exceeded | user_cancelled | manual） */
+    reason?: string;
+    /** P1-6：收敛动作（close | requeue | escalate）与自由文本补充 */
+    action?: "close" | "requeue" | "escalate";
+    detail?: string;
+    escalated?: boolean;
+    converged_at?: string;
+  } | null;
   run_id: string | null;
   raised_at: string | null;
   resolved_at: string | null;

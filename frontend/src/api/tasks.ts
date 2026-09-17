@@ -46,4 +46,11 @@ export const tasksApi = {
     stepId: string,
     body: { status?: string; resolution?: Record<string, unknown> | null },
   ) => api.patch<TaskDetailOut>(`/tasks/${taskId}/steps/${stepId}`, body),
+  /** 受阻支线收敛（P1-6）：close=关闭支线 / requeue=重新排队 / escalate=转人工。
+   *  这是替代「人工 SQL 改 task_steps」的前台入口，动作会进 run 事件流。 */
+  convergeStep: (
+    taskId: string,
+    stepId: string,
+    body: { action: "close" | "requeue" | "escalate"; detail?: string },
+  ) => api.post<TaskDetailOut>(`/tasks/${taskId}/steps/${stepId}/converge`, body),
 };

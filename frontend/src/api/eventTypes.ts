@@ -22,6 +22,8 @@ export const EVENT_TYPES = [
   "await_started",
   "await_resolved",
   "await_expired",
+  "blocked",
+  "unblocked",
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

@@ -29,6 +29,9 @@ EVENT_TYPES = (
     "await_started",
     "await_resolved",
     "await_expired",
+    # M9c 增量扩展（方案 §5 P1-6：阻碍与决策的结构化可见）
+    "blocked",
+    "unblocked",
 )
 
 

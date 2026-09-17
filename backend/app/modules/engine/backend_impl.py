@@ -4,14 +4,12 @@
 M9b 外部等待（P0-4，`ensure_await` 等 4 个方法）。
 """
 
-import json
 import uuid
 from typing import Any
 
-from sqlalchemy import text
-
 from app.core.db import session_factory
 from app.modules.engine.models import Plan as PlanModel
+from app.modules.runs import events as run_events
 from app.modules.tasks.models import Task as TaskModel
 
 
@@ -116,16 +114,7 @@ class InProcessBackend:
 
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         async with session_factory() as db:
-            result = await db.execute(
-                text(
-                    "INSERT INTO run_events (run_id, seq, event_type, payload) "
-                    "SELECT :rid, COALESCE(MAX(seq), 0) + 1, :et, CAST(:p AS jsonb) "
-                    "FROM run_events WHERE run_id = :rid RETURNING seq"
-                ),
-                {"rid": run_id, "et": event_type, "p": json.dumps(payload, ensure_ascii=False)},
-            )
-            seq = int(result.scalar_one())
-            await db.execute(text("SELECT pg_notify('run_events', :rid)"), {"rid": run_id})
+            seq = await run_events.emit_event(run_id, event_type, payload, db=db)
             await db.commit()
             return seq
 

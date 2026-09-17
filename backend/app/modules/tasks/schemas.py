@@ -128,3 +128,13 @@ class StepUpdateIn(BaseModel):
 
     status: Literal["pending", "doing", "done", "skipped", "blocked", "awaiting_user"] | None = None
     resolution: dict | None = None
+
+
+class StepConvergeIn(BaseModel):
+    """受阻支线的前台收敛动作（P1-6）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["close", "requeue", "escalate"]
+    # 自由文本只做人话补充：收敛原因恒为枚举 manual，不在文本里写理由（P1-6）
+    detail: str | None = Field(default=None, max_length=500)

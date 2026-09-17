@@ -31,6 +31,13 @@ _DYNAMIC_EMIT_SITES = {
         "把 `lambda et, p: runtime.emit_event(run_id, et, p)` 交给 assembler.compact_messages，"
         "实际事件名在 assembler.py 内以字面量发射（已被本测试扫描到）"
     ),
+    "modules/engine/runtime.py:EngineRuntime.emit_event": (
+        "事件流唯一写入实现（app/modules/runs/events.py）的纯转发：事件名由第 2 形参"
+        "传入，全部调用方都以字面量发射并被本测试扫描到"
+    ),
+    "modules/engine/backend_impl.py:InProcessBackend.emit_event": (
+        "同上，runs/events.py 的纯转发（协议实现与本地直连版共用同一 seq 分配实现）"
+    ),
 }
 
 

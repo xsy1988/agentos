@@ -75,6 +75,21 @@ export const STEP_SOURCE_LABELS: Record<string, string> = {
   user: "手工添加",
 };
 
+/** 受阻原因（P1-6）：枚举化展示，自由文本只做补充（resolution.detail） */
+export const STEP_BLOCK_REASON_LABELS: Record<string, string> = {
+  run_ended: "run 已结束",
+  deadline_exceeded: "超时未答复",
+  user_cancelled: "用户取消",
+  manual: "人工确认",
+};
+
+/** 前台收敛动作（P1-6）：close=关闭支线；requeue=重新排队；escalate=转人工 */
+export const STEP_CONVERGE_LABELS: Record<string, string> = {
+  close: "关闭支线",
+  requeue: "重新排队",
+  escalate: "转人工",
+};
+
 export function stepKindLabel(kind: string): string {
   return kind === "branch" ? "支线" : "主线";
 }

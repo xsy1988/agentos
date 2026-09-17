@@ -45,11 +45,27 @@ from app.modules.engine.hooks import (
     ToolFailureLoopError,
 )
 from app.modules.engine.state import BudgetState
+from app.modules.runs import events as run_events
 from app.modules.runs.models import Run
 
 logger = logging.getLogger(__name__)
 
 TERMINAL_RUN_STATUSES = ("done", "failed", "cancelled")
+
+# 终态 → 支线受阻原因（P1-6 枚举，见 tasks/models.STEP_BLOCK_REASONS）：
+# 收敛原因必须可判定，不能再靠 resolution.note 的自由文本后缀区分。
+_BLOCK_REASON_BY_STATUS = {
+    "failed": "run_ended",
+    "cancelled": "user_cancelled",
+    "aborted": "user_cancelled",
+    "timeout": "deadline_exceeded",
+}
+
+
+def _block_reason_for(status: str) -> str:
+    """run 终态 → 支线受阻原因（未知终态兜底 run_ended，宁可粗也不丢收敛）。"""
+    return _BLOCK_REASON_BY_STATUS.get(status, "run_ended")
+
 
 # 附件注入限制（方案拍板）：小文本直读阈值、单附件提取截断、docling 超时
 ATTACHMENT_INLINE_LIMIT = 100 * 1024
@@ -199,16 +215,7 @@ class EngineRuntime:
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         """写 run_events（seq = run 内 max+1）+ NOTIFY。SSE 的实时通道。"""
         async with session_factory() as db:
-            result = await db.execute(
-                text(
-                    "INSERT INTO run_events (run_id, seq, event_type, payload) "
-                    "SELECT :rid, COALESCE(MAX(seq), 0) + 1, :et, CAST(:p AS jsonb) "
-                    "FROM run_events WHERE run_id = :rid RETURNING seq"
-                ),
-                {"rid": run_id, "et": event_type, "p": json.dumps(payload, ensure_ascii=False)},
-            )
-            seq = int(result.scalar_one())
-            await db.execute(text("SELECT pg_notify('run_events', :rid)"), {"rid": run_id})
+            seq = await run_events.emit_event(run_id, event_type, payload, db=db)
             await db.commit()
             return seq
 
@@ -1098,7 +1105,7 @@ class EngineRuntime:
                 logger.exception("run %s 任务回写失败", run_id)
         elif task_id:
             # 非正常终态（如用户拒绝计划 → cancelled）：收敛挂起的待确认支线
-            await self._reconcile_awaiting_steps(run_id)
+            await self._reconcile_awaiting_steps(run_id, _block_reason_for(status))
         # 等待行收殓（P0-4）：run 已终态，残留的 waiting 行必须翻 cancelled，
         # 否则巡检/回调会唤醒一个已结束的 run（僵尸等待）。
         await self._cancel_run_awaits(run_id)
@@ -1324,11 +1331,13 @@ class EngineRuntime:
             logger.exception("run %s 等待行收殓失败", run_id)
             return 0
 
-    async def _reconcile_awaiting_steps(self, run_id: str) -> None:
-        """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked。
+    async def _reconcile_awaiting_steps(self, run_id: str, reason: str) -> None:
+        """非正常终态收敛：挂在本 run 上仍 awaiting_user 的支线置 blocked 并发事件。
 
         run 已结束没人会再答复，不收敛则看板永久误报「待确认」。
         正常 done 的 run 不走此处（由答复回填/进度重算自然处理）。
+        `reason` 由终态映射且为枚举（P1-6）：收敛原因不再靠自由文本判断；
+        每个被收敛的支线补发一条 `blocked` 事件，阻碍因此可观测、可重放。
         """
         try:
             from app.modules.tasks import service as tasks_service
@@ -1347,11 +1356,23 @@ class EngineRuntime:
                 if task is None:
                     return
                 closed = await tasks_service.reconcile_orphaned_awaits(
-                    db, task, run_id=UUID(run_id)
+                    db, task, run_id=UUID(run_id), reason=reason
                 )
+                # 事件载荷在 commit 前取（commit 会让 ORM 实例过期）
+                converged = [
+                    {
+                        "step_id": str(s.id),
+                        "task_id": str(task.id),
+                        "name": s.name,
+                        "reason": reason,
+                    }
+                    for s in closed
+                ]
                 await db.commit()
-                if closed:
-                    logger.info("run %s 终态收敛 %d 个待确认支线 → blocked", run_id, closed)
+            if converged:
+                logger.info("run %s 终态收敛 %d 个待确认支线 → blocked", run_id, len(converged))
+                for payload in converged:
+                    await self.emit_event(run_id, "blocked", payload)
         except Exception:  # noqa: BLE001 —— 收敛失败不影响终态落库
             logger.exception("run %s 待确认支线收敛失败", run_id)
 
@@ -1382,7 +1403,7 @@ class EngineRuntime:
                 timing_payload = self._timing_payload(run)
         # 非正常终态（failed/cancelled/aborted/timeout）：收敛挂起的待确认支线
         if status in ("failed", "cancelled", "aborted", "timeout"):
-            await self._reconcile_awaiting_steps(run_id)
+            await self._reconcile_awaiting_steps(run_id, _block_reason_for(status))
         return timing_payload
 
 

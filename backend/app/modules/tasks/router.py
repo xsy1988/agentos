@@ -15,11 +15,13 @@ from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
 from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation
+from app.modules.runs import events as run_events
 from app.modules.runs.models import Run
 from app.modules.tasks import service
 from app.modules.tasks.models import Task, TaskStep
 from app.modules.tasks.schemas import (
     ConversationBrief,
+    StepConvergeIn,
     StepCreateIn,
     StepUpdateIn,
     TaskCreateIn,
@@ -440,6 +442,52 @@ async def update_task_step(
         task = await service.update_step_status(db, step, body.status, resolution=body.resolution)
     elif body.resolution is not None:
         step.resolution = body.resolution
+    await db.commit()
+    await db.refresh(task)
+    return await _task_detail(db, task)
+
+
+@router.post("/{task_id}/steps/{step_id}/converge", response_model=TaskDetailOut)
+async def converge_task_step(
+    task_id: UUID,
+    step_id: UUID,
+    body: StepConvergeIn,
+    db: AsyncSession = Depends(get_db),
+) -> TaskDetailOut:
+    """前台收敛受阻支线（P1-6）：关闭支线 / 重新排队 / 转人工。
+
+    替代「人工 SQL 改 task_steps」：状态与 `resolution.reason`（恒为 manual 枚举）
+    一次落库，并在该支线所属 run 的事件流里留痕（close/requeue → unblocked，
+    escalate → blocked），SSE 与事件重放因此都能看到收敛动作。
+    """
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    try:
+        step = await service.converge_blocked_step(
+            db, task, step_id, action=body.action, detail=body.detail
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if step is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "子任务不存在")
+    # 事件载荷必须在 commit 前取（commit 会让 ORM 实例过期）
+    event_payload = {
+        "step_id": str(step.id),
+        "task_id": str(task.id),
+        "name": step.name,
+        "action": body.action,
+        "reason": "manual",
+        "status": step.status,
+    }
+    # 收敛动作是「关于该 run 的事实」：附着在支线所属 run 的事件流上。
+    # 无 run 归属的支线（人工添加/模板遗留）没有可附着的事件流，只落状态（§5 P1-6）。
+    if step.run_id is not None:
+        if body.action == "escalate":
+            await run_events.emit_event(step.run_id, "blocked", event_payload, db=db)
+        else:
+            await run_events.emit_event(step.run_id, "unblocked", event_payload, db=db)
     await db.commit()
     await db.refresh(task)
     return await _task_detail(db, task)

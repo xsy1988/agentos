@@ -9,6 +9,7 @@ import {
   Empty,
   Input,
   List,
+  Popconfirm,
   Progress,
   Select,
   Space,
@@ -29,6 +30,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { tasksApi } from "@/api/tasks";
 import type { TaskStepOut } from "@/api/types";
 import {
+  STEP_BLOCK_REASON_LABELS,
+  STEP_CONVERGE_LABELS,
   STEP_SOURCE_LABELS,
   STEP_STATUS_COLORS,
   STEP_STATUS_LABELS,
@@ -49,14 +52,32 @@ const STEP_STATUS_OPTIONS = [
 function StepItem({
   step,
   onStatusChange,
+  onConverge,
 }: {
   step: TaskStepOut;
   onStatusChange: (step: TaskStepOut, status: string) => void;
+  onConverge: (step: TaskStepOut, action: "close" | "requeue" | "escalate") => void;
 }) {
   const resolution = step.resolution as Record<string, unknown> | null;
   return (
     <List.Item
       actions={[
+        // 受阻支线：前台收敛三动作（P1-6），人工不必再直接改库
+        ...(step.status === "blocked"
+          ? (["close", "requeue", "escalate"] as const).map((action) => (
+              <Popconfirm
+                key={action}
+                title={`${STEP_CONVERGE_LABELS[action]}？`}
+                okText="确定"
+                cancelText="取消"
+                onConfirm={() => onConverge(step, action)}
+              >
+                <Button type="link" size="small" style={{ fontSize: 12, padding: 0 }}>
+                  {STEP_CONVERGE_LABELS[action]}
+                </Button>
+              </Popconfirm>
+            ))
+          : []),
         <Select
           key="status"
           size="small"
@@ -111,6 +132,17 @@ function StepItem({
                 已答复：{String(resolution.answer)}
               </Typography.Text>
             )}
+            {step.status === "blocked" && (
+              <Typography.Text
+                type="warning"
+                style={{ fontSize: 12, display: "block" }}
+              >
+                受阻原因：
+                {STEP_BLOCK_REASON_LABELS[String(resolution?.reason ?? "")] ?? "未标注"}
+                {resolution?.detail ? ` · ${String(resolution.detail)}` : ""}
+                {resolution?.escalated ? "（已转人工）" : ""}
+              </Typography.Text>
+            )}
           </>
         }
       />
@@ -142,6 +174,22 @@ export default function TaskDetailPage() {
       tasksApi.updateStep(taskId!, stepId, { status }),
     onSuccess: invalidate,
     onError: () => antdMessage.error("状态更新失败"),
+  });
+
+  // 受阻支线收敛（P1-6）：close / requeue / escalate
+  const convergeMutation = useMutation({
+    mutationFn: ({
+      stepId,
+      action,
+    }: {
+      stepId: string;
+      action: "close" | "requeue" | "escalate";
+    }) => tasksApi.convergeStep(taskId!, stepId, { action }),
+    onSuccess: (_data, vars) => {
+      invalidate();
+      antdMessage.success(`${STEP_CONVERGE_LABELS[vars.action]}成功`);
+    },
+    onError: () => antdMessage.error("支线收敛失败（可能已被处理）"),
   });
 
   const addStepMutation = useMutation({
@@ -291,6 +339,9 @@ export default function TaskDetailPage() {
               onStatusChange={(step, status) =>
                 statusMutation.mutate({ stepId: step.id, status })
               }
+              onConverge={(step, action) =>
+                convergeMutation.mutate({ stepId: step.id, action })
+              }
             />
           )}
           locale={{
@@ -314,6 +365,9 @@ export default function TaskDetailPage() {
               step={s}
               onStatusChange={(step, status) =>
                 statusMutation.mutate({ stepId: step.id, status })
+              }
+              onConverge={(step, action) =>
+                convergeMutation.mutate({ stepId: step.id, action })
               }
             />
           )}

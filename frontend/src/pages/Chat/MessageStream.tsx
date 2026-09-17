@@ -25,6 +25,7 @@ import { describeError } from "@/api/errors";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
 import { fmtSize } from "@/utils/format";
 import CardRenderer from "./CardRenderer";
+import { STEP_BLOCK_REASON_LABELS, STEP_CONVERGE_LABELS } from "./taskDisplay";
 import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
 
@@ -603,6 +604,29 @@ export function EventItem({
     );
   }
 
+  if (event_type === "blocked") {
+    // 支线受阻（P1-6）：收敛原因枚举化后即可直接展示，不必再翻看板猜
+    const name = String(payload.name ?? "支线");
+    const reason = STEP_BLOCK_REASON_LABELS[String(payload.reason ?? "")] ?? "原因未标注";
+    return (
+      <Tooltip title={`${name} 受阻（${reason}）：可在任务卡上关闭支线 / 重新排队 / 转人工`}>
+        <Tag color="volcano" style={{ marginBottom: 4, fontSize: 11 }}>
+          支线受阻：{name}（{reason}）
+        </Tag>
+      </Tooltip>
+    );
+  }
+
+  if (event_type === "unblocked") {
+    const name = String(payload.name ?? "支线");
+    const action = STEP_CONVERGE_LABELS[String(payload.action ?? "")] ?? "已收敛";
+    return (
+      <Tag color="success" style={{ marginBottom: 4, fontSize: 11 }}>
+        支线已收敛：{name}（{action}）
+      </Tag>
+    );
+  }
+
   if (event_type === "run_status") {
     const status = payload.status as string;
     if (status === "paused_awaiting_confirm") {
@@ -879,6 +903,9 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
       e.event_type === "confirmation_request" ||
       e.event_type === "card" ||
       e.event_type === "capability_overflow" ||
+      // P1-6：支线受阻与前台收敛是任务状态变化，必须留在会话流里（可追溯谁收敛的）
+      e.event_type === "blocked" ||
+      e.event_type === "unblocked" ||
       // P0-4：外部等待的开始/结束是用户需要看见的状态变化（不是可折叠的过程噪声）
       e.event_type === "await_started" ||
       e.event_type === "await_resolved" ||
