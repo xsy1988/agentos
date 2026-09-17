@@ -234,7 +234,7 @@ export interface SidebarDescriptor {
   frontend?: FrontendManifest;
   /** 初始化数据：待处理数据/主题/语言等（握手时经 WORKER_CONTEXT 下发） */
   init_data?: Record<string, unknown>;
-  /** 宽度提示：0~0.5 占屏比例（≤半屏） */
+  /** 宽度提示：0~0.5 占屏比例（≤半屏），是换算基准而非硬约束——实际宽度再受用户配置的右栏上限夹取 */
   width_hint?: number;
   step_id?: string;
   idempotency_key?: string;
