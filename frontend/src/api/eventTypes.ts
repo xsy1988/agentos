@@ -12,6 +12,7 @@ export const EVENT_TYPES = [
   "tool_call",
   "tool_result",
   "plan_updated",
+  "progress",
   "confirmation_request",
   "budget_warning",
   "run_status",

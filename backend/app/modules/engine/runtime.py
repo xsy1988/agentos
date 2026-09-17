@@ -145,11 +145,14 @@ class EngineRuntime:
         self._worker_task: asyncio.Task | None = None
         self._listener_task: asyncio.Task | None = None
         self._await_sweeper_task: asyncio.Task | None = None
+        self._progress_watcher_task: asyncio.Task | None = None
         self._listen_conn: asyncpg.Connection | None = None
         self._wakeup = asyncio.Event()
         self._run_tasks: dict[str, asyncio.Task] = {}
         self._run_ctx: dict[str, RunContext] = {}  # run_id → 执行上下文（钩子/节点共享账本）
         self._clocks: dict[str, _RunClock] = {}  # run_id → 时长账本（P0-1）
+        # run_id → 上次已推送的进度快照（P1-5）：只在变化时发事件，避免巡检变噪声
+        self._progress_seen: dict[str, dict[str, Any]] = {}
         # backend 协议的一期进程内实现
         from app.modules.engine.backend_impl import InProcessBackend
 
@@ -176,6 +179,9 @@ class EngineRuntime:
         self._await_sweeper_task = asyncio.create_task(
             self._await_sweeper(), name="engine-await-sweeper"
         )
+        self._progress_watcher_task = asyncio.create_task(
+            self._progress_watcher(), name="engine-progress-watcher"
+        )
         logger.info("EngineRuntime started")
 
     async def _reconcile_orphans(self) -> None:
@@ -199,7 +205,12 @@ class EngineRuntime:
     async def stop(self) -> None:
         for task in self._run_tasks.values():
             task.cancel()
-        for t in (self._worker_task, self._listener_task, self._await_sweeper_task):
+        for t in (
+            self._worker_task,
+            self._listener_task,
+            self._await_sweeper_task,
+            self._progress_watcher_task,
+        ):
             if t:
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -371,6 +382,47 @@ class EngineRuntime:
                 raise
             except Exception:  # noqa: BLE001 —— 巡检永不退出
                 logger.exception("await sweeper iteration failed")
+
+    # ---------- 推送式进度（P1-5） ----------
+
+    async def _progress_watcher(self) -> None:
+        """进度推送（P1-5）：周期比对非终态 run 的进度快照，**有变化才**发 `progress`。
+
+        与 `_await_sweeper` 同一范式（周期巡检 + 单进程跑一份）。关键差别是它**不看模型
+        轮次**：等待外部回调、用户在前台收敛支线等"模型不在场"的进度变化同样会被推出去，
+        前端因此不需要靠模型轮询来刷新进度。
+
+        等待联动（方案 P1-5 变更点 3）：run 进入/离开 `waiting_external` 时快照的
+        `label` 会变（"等待外部回调" ↔ 子任务名），据此自然补发两份快照，
+        等待期间前端看到的进度来自平台而非模型。
+        """
+        while True:
+            try:
+                await asyncio.sleep(settings.progress_watch_interval_seconds)
+                await self._sweep_progress()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 —— 巡检永不退出
+                logger.exception("progress watcher iteration failed")
+
+    async def _sweep_progress(self) -> None:
+        from app.modules.tasks import service as tasks_service
+
+        async with session_factory() as db:
+            snapshots = await tasks_service.list_progress_snapshots(db)
+        live = {s["run_id"] for s in snapshots}
+        for snap in snapshots:
+            run_id = snap["run_id"]
+            payload = {"done": snap["done"], "total": snap["total"], "label": snap["label"]}
+            changed = self._progress_seen.get(run_id) != payload
+            self._progress_seen[run_id] = payload
+            # 无子任务骨架（通用会话/工具型 run）无进度可表达：不推首帧噪声，
+            # 但要记账，否则"0/0 → 0/0"每轮都被当成变化
+            if changed and payload["total"] > 0:
+                await self.emit_event(run_id, "progress", payload)
+        # 终态 run 不再进快照：清掉内存记账，watcher 不随运行数增长而膨胀
+        for stale in set(self._progress_seen) - live:
+            self._progress_seen.pop(stale, None)
 
     # ---------- 并发准入（P1-1） ----------
 

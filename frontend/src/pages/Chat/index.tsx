@@ -63,8 +63,10 @@ export default function ChatPage() {
       }
       // 任务架构（ADR-25）：进度与支线变化复用 plan_updated 事件族，
       // 前端只需让任务看板/任务条重新取数，不新增事件类型
+      // P1-5：`progress` 是平台 watcher 的推送式进度——任务看板/任务条据此刷新，
+      // 不需要模型轮询也能看到进度前进
       if (
-        ["plan_updated", "confirmation_request"].includes(event.event_type) ||
+        ["plan_updated", "confirmation_request", "progress"].includes(event.event_type) ||
         event.event_type === "run_status"
       ) {
         queryClient.invalidateQueries({ queryKey: ["tasks"] });

@@ -714,7 +714,9 @@ function PlanCard({ payload }: { payload: Record<string, unknown> }) {
     status?: string;
     kind?: string;
   }[];
-  const progress = payload.progress as { done?: number; total?: number } | undefined;
+  const progress = payload.progress as
+    | { done?: number; total?: number; label?: string }
+    | undefined;
   if (tasks.length === 0) return null;
   return (
     <div
@@ -734,6 +736,7 @@ function PlanCard({ payload }: { payload: Record<string, unknown> }) {
         {progress && progress.total ? (
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {progress.done ?? 0}/{progress.total}
+            {progress.label ? ` · ${progress.label}` : ""}
           </Typography.Text>
         ) : null}
       </Space>
@@ -897,6 +900,14 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
   // 终答轮：最后一个无过程事件的轮；有过程事件的末轮文本是过程说明（工具还在跑）
   const replyText = lastRound && lastRound.traceEvents.length === 0 ? lastRound.text : "";
   const planEvent = [...events].reverse().find((e) => e.event_type === "plan_updated");
+  // P1-5：平台 watcher 推送的进度快照（非模型轮次）。计划卡随模型轮次刷新，但进度
+  // 数字必须取**更新的那一份**：等待外部回调/前台收敛支线期间只有 progress 会到达
+  // （不取它看板就停在原地），而模型产出新计划时又不能被上一条旧快照覆盖回落后值。
+  const progressEvent = [...events].reverse().find((e) => e.event_type === "progress");
+  const planPayload =
+    planEvent && progressEvent && progressEvent.seq > planEvent.seq
+      ? { ...planEvent.payload, progress: progressEvent.payload }
+      : (planEvent?.payload ?? null);
   const notableEvents = events.filter(
     (e) =>
       e.event_type === "error" ||
@@ -970,8 +981,9 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
         </Fragment>
       ))}
       
-      {/* 执行计划：只渲染最新一份，随 plan_updated 实时更新 */}
-      {planEvent && <PlanCard payload={planEvent.payload} />}
+      {/* 执行计划：只渲染最新一份，随 plan_updated 实时更新；进度数字以 P1-5 的
+          `progress` 事件为准（平台侧推送，含等待外部回调期间的快照） */}
+      {planPayload && <PlanCard payload={planPayload} />}
 
       {/* 错误与待确认：醒目展示，不收纳；已被用户处理的确认翻转为已确认 */}
       {notableEvents.map((e) => (

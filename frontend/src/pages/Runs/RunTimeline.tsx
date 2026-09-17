@@ -41,6 +41,7 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   message_delta: { icon: <MessageOutlined />, color: "blue" },
   thought: { icon: <BulbOutlined />, color: "gold" },
   plan_updated: { icon: <ScheduleOutlined />, color: "cyan" },
+  progress: { icon: <ScheduleOutlined />, color: "geekblue" },
   tool_call: { icon: <ToolOutlined />, color: "purple" },
   tool_result: { icon: <ToolOutlined />, color: "green" },
   context_compacted: { icon: <RobotOutlined />, color: "orange" },
@@ -148,6 +149,18 @@ function EventContent({ event }: { event: RunEventOut }) {
           ),
         }]}
       />
+    );
+  }
+
+  if (event_type === "progress") {
+    // P1-5：平台 watcher 推送的进度快照（非模型轮次）——回放时据此还原"进度何时前进"
+    const done = Number(payload.done ?? 0);
+    const total = Number(payload.total ?? 0);
+    return (
+      <Typography.Text style={{ fontSize: 13 }}>
+        进度: <b>{done}/{total}</b>
+        {payload.label ? ` · ${String(payload.label)}` : ""}
+      </Typography.Text>
     );
   }
 

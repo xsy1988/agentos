@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     # 只闸"新 run"，恢复/确认（既有 run 的续跑）不受限——续跑被丢弃会留下
     # 永远悬停的等待行，比短暂超并发更糟
     max_concurrent_runs: int = 4
+    # 进度巡检间隔（秒，方案 §5 P1-5）：平台 watcher 按此周期比对非终态 run 的
+    # 进度快照，有变化才推 `progress` 事件。周期即进度推送的最大延迟，
+    # 定 5s 是为了让"无模型参与也能看到进度前进"在体感上接近实时；
+    # 巡检只在有非终态 run 时才真正查库（空闲时一次 select 就返回）。
+    progress_watch_interval_seconds: float = 5.0
 
 
 settings = Settings()

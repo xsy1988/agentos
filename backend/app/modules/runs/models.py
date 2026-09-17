@@ -34,6 +34,15 @@ RUN_STATUSES = (
     "cancelled",
 )
 
+# 未终态 run（P1-5 从 tasks.router 迁来，改为单一出处）：执行中 / 待确认 / 等外部，
+# 看板的"活跃 run"口径与进度推送的扫描行集都取这里——两处各写一份必然漂移。
+NON_TERMINAL_RUN_STATUSES = (
+    "pending",
+    "running",
+    "paused_awaiting_confirm",
+    "waiting_external",
+)
+
 
 class Run(UUIDPkMixin, TimestampMixin, Base):
     """任务：队列状态机的载体。budget 为创建时从 Agent 配置固化的快照。"""

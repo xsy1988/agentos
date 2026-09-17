@@ -16,7 +16,7 @@ from app.modules.auth.deps import get_current_user
 from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation
 from app.modules.runs import events as run_events
-from app.modules.runs.models import Run
+from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run
 from app.modules.tasks import service
 from app.modules.tasks.models import Task, TaskStep
 from app.modules.tasks.schemas import (
@@ -42,8 +42,7 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-# 未终态 run：看板据此显示「执行中 / 待确认 / 等待外部」
-NON_TERMINAL_RUN_STATUSES = ("pending", "running", "paused_awaiting_confirm", "waiting_external")
+# 未终态 run（看板据此显示「执行中 / 待确认 / 等待外部」）真源见 runs/models
 
 
 # ---------- 序列化辅助 ----------

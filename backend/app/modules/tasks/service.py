@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.awaits.models import AwaitBroker
+from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run
 from app.modules.tasks.models import (
     STEP_BLOCK_REASONS,
     STEP_CONVERGE_ACTIONS,
@@ -844,3 +845,60 @@ async def _render_waiting_section(db: AsyncSession, task_id: uuid.UUID) -> str:
         + "\n".join(items)
         + "\n外部流程完成后平台会自动注入结果并继续；未结束前请勿重新派发该请求。\n"
     )
+
+
+# ---------- 推送式进度（P1-5） ----------
+
+# run 阶段文案：进度停滞时"在等什么"比"在做哪一步"更值得讲清楚。
+# 只登记"等"的三种情形；running 阶段回落到当前活跃子任务名。
+_RUN_PHASE_LABELS = {
+    "pending": "排队中",
+    "waiting_external": "等待外部回调",
+    "paused_awaiting_confirm": "等待确认",
+}
+# 活跃子任务口径：仍有推进/等待/受阻动作的状态，取 seq 最小的那条（与任务卡同源）
+_ACTIVE_STEP_STATUSES = ("doing", "awaiting_user", "blocked")
+
+
+async def list_progress_snapshots(db: AsyncSession) -> list[dict[str, Any]]:
+    """非终态 run 的进度快照（P1-5）：平台侧推送式进度的一次取数。
+
+    行由 **run** 驱动而非"引擎运行任务表"：等待外部回调/等确认的 run 执行段已结束
+    （不在表里），但它的进度仍需被平台推送——这正是"进度不由模型轮询"的含义。
+    进度读主任务的反范式列（`recompute_progress` 是唯一写入口），故与任务卡/看板同数，
+    不出现"事件说 2/5、看板说 1/5"。
+
+    返回项：`{run_id, run_status, done, total, label}`；无子任务骨架（total=0）的 run
+    也返回，由调用方决定是否值得推。
+    """
+    rows = (
+        await db.execute(
+            select(Run.id, Run.status, Task.id, Task.progress_done, Task.progress_total)
+            .join(Task, Task.conversation_id == Run.conversation_id)
+            .where(Run.status.in_(NON_TERMINAL_RUN_STATUSES))
+            .order_by(Run.created_at)
+        )
+    ).all()
+    if not rows:
+        return []
+    task_ids = [row[2] for row in rows]
+    steps = (
+        await db.execute(
+            select(TaskStep.task_id, TaskStep.name)
+            .where(TaskStep.task_id.in_(task_ids), TaskStep.status.in_(_ACTIVE_STEP_STATUSES))
+            .order_by(TaskStep.task_id, TaskStep.seq)
+        )
+    ).all()
+    active: dict[Any, str] = {}
+    for task_id, name in steps:
+        active.setdefault(task_id, name)
+    return [
+        {
+            "run_id": str(run_id),
+            "run_status": run_status,
+            "done": int(done or 0),
+            "total": int(total or 0),
+            "label": _RUN_PHASE_LABELS.get(run_status) or active.get(task_id, ""),
+        }
+        for run_id, run_status, task_id, done, total in rows
+    ]

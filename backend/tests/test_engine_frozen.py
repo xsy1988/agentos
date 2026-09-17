@@ -27,6 +27,7 @@ EXPECTED_EVENT_TYPES = (
     "message_delta",
     "message_reset",  # 工具轮与终答轮的分隔标记（流式分段，w4）
     "plan_updated",
+    "progress",  # 推送式进度（P1-5，runtime._sweep_progress 发射，唯一非模型轮次事件）
     "run_status",
     "thought",
     "tool_call",
