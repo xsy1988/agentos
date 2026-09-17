@@ -53,6 +53,7 @@ from app.modules.engine.hooks import (
 )
 from app.modules.engine.state import LoopState
 from app.modules.engine.tokens import estimate_messages_tokens
+from app.modules.engine.tool_context import ToolContext, tool_idempotency_key
 from app.modules.engine.tool_outcome import (
     ToolError,
     classify_exception,
@@ -357,6 +358,17 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
     async def _emit_task_steps(task_id: str, run_id: str) -> None:
         await emit_task_steps(runtime, task_id, run_id)
+
+    async def _bound_step_id(run_id: str) -> str | None:
+        """本 run 直接绑定的子任务 id（P1-10 工具执行上下文的 `step_id`）。
+
+        一个 run 可以推进多个主线步骤，故 step_id 只表示 `task_steps.run_id == run`
+        的那一步；后端未提供该能力（如测试替身）时返回 None，不视为错误。
+        """
+        resolver = getattr(getattr(runtime, "backend", None), "step_id_for_run", None)
+        if resolver is None:
+            return None
+        return await resolver(run_id)
 
     # ---------- 节点 ----------
 
@@ -723,7 +735,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     async def tools(state: LoopState, config: RunnableConfig) -> dict:
         """执行节点：按 capability_cache 条目的 kind 分派执行通道（M3）。
 
-        - tool（builtin 占位）：本进程内 BUILTIN_TOOLS
+        - tool（builtin 占位）：本进程内 BUILTIN_TOOLS（经 `call_builtin` 注入执行上下文，P1-10）
         - mcp/plugin：mcp_pool.call_tool(capability_id, tool_name)
         - meta：search_more_tools 检索元工具（命中工具并入 capability_cache）
 
@@ -733,7 +745,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         """
         from uuid import UUID
 
-        from app.modules.engine.tools_builtin import BUILTIN_TOOLS
+        from app.modules.engine.tools_builtin import call_builtin
 
         conf = config["configurable"]
         run_id: str = conf["run_id"]
@@ -945,6 +957,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
+        # 执行上下文（P1-10）的 step_id：config 未显式给出时按 run↔step 绑定查一次，
+        # 本轮所有工具调用共用同一结果（避免每个工具调用重复查库）
+        bound_step_id: str | None = None
+        step_resolved = False
         # 同轮多次 search_more_tools：局部累积（P1-7），节点出口一次写回
         acc_cache: dict[str, Any] = dict(state.get("capability_cache") or {})
         cache_dirty = False
@@ -986,6 +1002,16 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             await hooks.on_tool_call(ctx, req)
 
             t0 = time.monotonic()
+            if not step_resolved:
+                raw_step = conf.get("step_id")
+                bound_step_id = str(raw_step) if raw_step else await _bound_step_id(run_id)
+                step_resolved = True
+            tctx = ToolContext(
+                run_id=run_id,
+                task_id=str(conf["task_id"]) if conf.get("task_id") else None,
+                step_id=bound_step_id,
+                idempotency_key=tool_idempotency_key(run_id, str(c["name"]), c["args"]),
+            )
             content: Any = None
             error: dict[str, Any] | None = None
             if meta is None:
@@ -1050,22 +1076,19 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
                 content, ok, error = await _guarded_call(
                     mcp_pool.call_tool(
-                        UUID(meta["capability_id"]), meta["tool_name"], dict(c["args"])
+                        UUID(meta["capability_id"]),
+                        meta["tool_name"],
+                        dict(c["args"]),
+                        meta=tctx.as_meta(),
                     ),
                     source="mcp",
                 )
             else:  # builtin 占位工具（本进程内执行）
-                fn = BUILTIN_TOOLS.get(str(meta.get("builtin") or ""))
-                if fn is None:
-                    ok = False
-                    error = failure_error(
-                        "internal_error", f"builtin 注册键缺失：{c['name']}"
-                    )
-                else:
-                    # 契约：返回裸值 = 成功；失败必须抛 ToolError（P0-3）
-                    content, ok, error = await _guarded_call(
-                        fn(dict(c["args"])), source="builtin"
-                    )
+                # 注册键缺失 / 工具异常都在 call_builtin + _guarded_call 里收敛为结构化失败
+                content, ok, error = await _guarded_call(
+                    call_builtin(str(meta.get("builtin") or ""), dict(c["args"]), tctx),
+                    source="builtin",
+                )
             elapsed = int((time.monotonic() - t0) * 1000)
 
             streak = next_failure_streak(
@@ -1125,7 +1148,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         模型看到的上下文都一致，重放幂等。
         """
         from app.modules.awaits import service as awaits_service
-        from app.modules.engine.tools_builtin import BUILTIN_TOOLS
+        from app.modules.engine.tools_builtin import call_builtin
 
         conf = config["configurable"]
         run_id = str(conf["run_id"])
@@ -1158,21 +1181,32 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 )
                 await hooks.on_tool_call(ctx, req)
                 t0 = time.monotonic()
-                fn = BUILTIN_TOOLS.get(str(item.get("builtin") or ""))
+                callback_url = awaits_service.callback_url(await_id)
+                # 回传凭据经两条通道下发（P1-10）：执行上下文（首选）与 args 的历史通道
+                raw_step = conf.get("step_id")
+                actx = ToolContext(
+                    run_id=run_id,
+                    task_id=str(conf["task_id"]) if conf.get("task_id") else None,
+                    step_id=str(raw_step) if raw_step else await _bound_step_id(run_id),
+                    idempotency_key=idempotency_key,
+                    callback_token=str(row.get("callback_token") or "") or None,
+                    await_id=await_id,
+                    callback_url=callback_url,
+                )
                 call_args = dict(args)
                 call_args["await_callback"] = {
                     "await_id": await_id,
-                    "url": awaits_service.callback_url(await_id),
+                    "url": callback_url,
                     "token": row.get("callback_token"),
                     "idempotency_key": idempotency_key,
                 }
                 dispatched: Any = None
                 error: dict[str, Any] | None = None
-                if fn is None:
-                    ok = False
-                    error = failure_error("internal_error", f"builtin 注册键缺失：{name}")
-                else:
-                    dispatched, ok, error = await _guarded_call(fn(call_args), source="builtin")
+                # 注册键缺失 / 派发异常都收敛为结构化失败（call_builtin 抛 ToolError）
+                dispatched, ok, error = await _guarded_call(
+                    call_builtin(str(item.get("builtin") or ""), call_args, actx),
+                    source="builtin",
+                )
                 if not ok:
                     # 派发失败：不等了，撤销等待行并按失败观察回填（不留悬挂行）
                     err = error or failure_error("internal_error", "未知失败")

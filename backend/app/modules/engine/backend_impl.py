@@ -213,6 +213,27 @@ class InProcessBackend:
             await db.commit()
             return str(task.id)
 
+    async def step_id_for_run(self, run_id: str) -> str | None:
+        """本 run 直接绑定的子任务 id（`task_steps.run_id == run`）；无绑定返回 None。"""
+        from sqlalchemy import select
+
+        from app.modules.tasks.models import TaskStep
+
+        try:
+            rid = uuid.UUID(run_id)
+        except ValueError:
+            return None
+        async with session_factory() as db:
+            step = (
+                await db.scalars(
+                    select(TaskStep)
+                    .where(TaskStep.run_id == rid)
+                    .order_by(TaskStep.created_at)
+                    .limit(1)
+                )
+            ).first()
+        return str(step.id) if step is not None else None
+
     async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
         from app.modules.tasks import service as tasks_service
 

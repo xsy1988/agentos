@@ -30,6 +30,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.modules.engine.tool_context import ToolContext, accepts_context
 from app.modules.engine.tool_outcome import ToolError, http_failure
 
 # 法规爬虫项目位置（CRAWLER_PROJECT_ROOT 可覆盖；非密钥，仅路径）
@@ -213,12 +214,13 @@ def _require_arg(args: dict[str, Any], key: str) -> str:
     return value
 
 
-async def _procurement_trigger(args: dict[str, Any]) -> str:
+async def _procurement_trigger(args: dict[str, Any], ctx: ToolContext | None = None) -> str:
     """write 级：异步触发报价单解析，立即返回 task_id（不等完成，同法规爬虫范式）。
 
-    P0-4：当平台进入等待模式（`await_external_enabled`）时，args 会带 `await_callback`
-    （{await_id, url, token, idempotency_key}），原样透传给采购 Agent 作为回传地址；
-    外部服务完成后 POST 结果到该地址，平台据此唤醒 run（模型零轮询）。
+    P0-4/P1-10：平台进入等待模式（`await_external_enabled`）时，回传地址经两条通道下发——
+    执行上下文（`ctx.await_id` / `callback_url` / `callback_token`，P1-10 首选）与
+    args 里的 `await_callback`（早于上下文协议的历史通道，保留兼容）。外部服务完成后
+    POST 结果到该地址，平台据此唤醒 run（模型零轮询）。
     """
     text = str(args.get("text") or "").strip()
     report_ref = str(args.get("report_ref") or "").strip()
@@ -227,15 +229,30 @@ async def _procurement_trigger(args: dict[str, Any]) -> str:
             "invalid_args", "需提供 text（报价单文本）或 report_ref（报价单文件引用）之一"
         )
     body: dict[str, Any] = {"text": text, "report_ref": report_ref}
-    callback = args.get("await_callback")
-    if isinstance(callback, dict) and callback.get("url"):
-        body["await_callback"] = {
-            "await_id": callback.get("await_id"),
-            "url": callback.get("url"),
-            "token": callback.get("token"),
-            "idempotency_key": callback.get("idempotency_key"),
-        }
+    callback = _await_callback(args, ctx)
+    if callback:
+        body["await_callback"] = callback
     return await _procurement_request("POST", "/worker/trigger", json_body=body, timeout=30.0)
+
+
+def _await_callback(args: dict[str, Any], ctx: ToolContext | None) -> dict[str, Any] | None:
+    """取回传地址：上下文优先，掉回 args 的历史通道；都没有则返回 None（不等）。"""
+    if ctx is not None and ctx.callback_url and ctx.await_id:
+        return {
+            "await_id": ctx.await_id,
+            "url": ctx.callback_url,
+            "token": ctx.callback_token,
+            "idempotency_key": ctx.idempotency_key,
+        }
+    legacy = args.get("await_callback")
+    if isinstance(legacy, dict) and legacy.get("url"):
+        return {
+            "await_id": legacy.get("await_id"),
+            "url": legacy.get("url"),
+            "token": legacy.get("token"),
+            "idempotency_key": legacy.get("idempotency_key"),
+        }
+    return None
 
 
 async def _procurement_status(args: dict[str, Any]) -> str:
@@ -474,7 +491,9 @@ async def _probe_url(args: dict[str, Any]) -> str:
         )
 
 
-BUILTIN_TOOLS: dict[str, Callable[[dict[str, Any]], Awaitable[str]]] = {
+# 工具签名两代并存（P1-10）：老签名 `f(args)`，新签名 `f(args, ctx)`；
+# 两者都经 `call_builtin` 分派，故此处用 `Callable[..., ...]`（形参表不统一）
+BUILTIN_TOOLS: dict[str, Callable[..., Awaitable[str]]] = {
     "echo": _echo,
     "dangerous_demo": _dangerous_demo,
     "search_knowledge": _search_knowledge,
@@ -497,3 +516,21 @@ def builtin_tool_schema(name: str, description: str, params: dict[str, Any]) -> 
         "type": "function",
         "function": {"name": name, "description": description, "parameters": params},
     }
+
+
+async def call_builtin(key: str, args: dict[str, Any], ctx: ToolContext | None = None) -> str:
+    """执行 builtin 工具（P1-10）：按注册函数的形参决定是否注入执行上下文。
+
+    - `async def f(args, ctx)`（新签名）→ 注入上下文；
+    - `async def f(args)`（既有工具）→ 原样调用，不塞多余参数。
+
+    注册键缺失抛 `ToolError("internal_error")`（与图节点既有失败契约一致）；
+    工具自身抛出的异常**一律上抛**——失败分类由 `graph._guarded_call` 统一收敛，
+    本层不做 try/except，否则真实的 TypeError 会被吃成"这是老签名"。
+    """
+    fn = BUILTIN_TOOLS.get(key)
+    if fn is None:
+        raise ToolError("internal_error", f"builtin 注册键缺失：{key}")
+    if ctx is not None and accepts_context(fn):
+        return await fn(args, ctx)
+    return await fn(args)

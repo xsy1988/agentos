@@ -328,7 +328,9 @@ def test_call_tool_self_heals_on_dead_session() -> None:
         def __init__(self) -> None:
             self.closed = False
 
-        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+        async def call_tool(
+            self, tool_name: str, args: dict[str, Any], *, meta: dict[str, Any] | None = None
+        ) -> str:
             raise ClosedResourceError
 
         async def close(self) -> None:
@@ -338,7 +340,9 @@ def test_call_tool_self_heals_on_dead_session() -> None:
         name = "websearch"
         consecutive_failures = 0
 
-        async def call_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+        async def call_tool(
+            self, tool_name: str, args: dict[str, Any], *, meta: dict[str, Any] | None = None
+        ) -> str:
             return "ok-result"
 
         async def close(self) -> None:

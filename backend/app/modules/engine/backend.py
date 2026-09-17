@@ -79,6 +79,14 @@ class EngineBackend(Protocol):
         """会话 → 主任务实例 id（1 会话 = 1 主任务；无会话的 timer run 返回 None）。"""
         ...
 
+    async def step_id_for_run(self, run_id: str) -> str | None:
+        """run → 该 run 直接绑定的子任务 id（P1-10 工具执行上下文的 `step_id`）。
+
+        一个 run 可推进多个主线步骤，故这里只回答"本 run 绑定的那一步"；
+        无绑定（或 run_id 非法）返回 None，不抛错。
+        """
+        ...
+
     async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
         """主任务上下文（任务卡文本 + 步骤清单），装配进 system_prompt 保护区。"""
         ...
@@ -168,9 +176,7 @@ class EngineBackend(Protocol):
         """读等待行当前状态（恢复路径以 DB 为准，不消费 interrupt 返回值）。"""
         ...
 
-    async def mark_await_dispatched(
-        self, await_id: str, *, response: Any = None
-    ) -> None:
+    async def mark_await_dispatched(self, await_id: str, *, response: Any = None) -> None:
         """记「已派发」：置 notified_at 并存派发响应（重放不再重复派发）。"""
         ...
 
