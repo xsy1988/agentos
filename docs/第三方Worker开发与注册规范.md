@@ -13,7 +13,7 @@
 
 Agent 平台是一个任务导向的 Agent 运行平台：**任务是第一等公民，会话是任务的执行外壳**。
 你要入驻的东西叫 **Worker**——一类可复用的工作目标，本质是一个任务型 Agent 的「任务定义」。
-平台引擎（LangGraph 七节点循环图）负责调度执行，你的职责是：
+平台引擎（LangGraph 八节点循环图，含外部等待闸门 `await_gate`）负责调度执行，你的职责是：
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -427,6 +427,28 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 - L3 `references` 条目示例：
   `{"kind": "plugin", "title": "决策面板", "capability": "acme_review_panel"}`、
   `{"kind": "skill", "title": "比价方法论", "capability": "acme_bid_method"}`。
+
+### 3.4 容量硬门（P0-2，发布前拦截）
+
+发布版本（`POST /api/v1/workers/{name}/versions`）时平台会把 `capabilities:` 展开成工具清单并计数，
+**展开后工具数 > `MAX_TOOLS_HARD`（24）直接 `422` 拒绝**：
+
+```text
+能力展开后共 31 个工具，超过硬上限 24；请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker
+```
+
+为什么是发布时拦：Worker 本身不知道调用方 Agent 的 `tool_budget`，**24 是"任何 Agent 都装不下"
+的物理上限**（单 run 能塞进上下文窗口的工具数）。与其上线后在 run 里失败，不如在这一步拒绝。
+两条入口共用同一道门，因此第三方**在注册时就会拿到错误**，不必等到上线：
+
+| 入口 | 校验对象 | 拒绝响应 |
+|---|---|---|
+| `POST /api/v1/workers/{name}/versions`（平台侧发布） | 生效版本的 `capabilities:` 展开结果 | `422 能力展开后共 N 个工具，超过硬上限 24；请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker` |
+| `POST /api/v1/open/workers/register`（一键注册） | 本次提交的能力包展开结果 | `422 Worker「X」的 capabilities 展开后共 N 个工具，超过硬上限 24；请收敛 capabilities 名单，或按需拆分 Worker` |
+
+> 与运行期装配的分工：`tool_budget` 是"共享区名额"（放不下就按语义距离丢共享区工具），
+> `MAX_TOOLS_HARD` 约束**必得集**（pinned + 本 Worker 域，永不切片）；真的超过时装配层
+> 会显式失败并给出 `capability_overflow` 事件，而不是悄悄少给你几个工具。
 
 ---
 

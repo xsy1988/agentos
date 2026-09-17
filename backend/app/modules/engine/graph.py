@@ -8,9 +8,12 @@ START → intent_router →(chitchat)→ agent → END（闲聊快速通道：�
 confirm_plan →(approved)→ agent
              →(rejected)→ END
 agent ⇄ tools（ReAct 回环，钩子全程计量/审计/熔断；高危工具确认点仍生效）
+tools →(本批有派发类建单调用)→ await_gate ⇄（一次只挂一笔等待，剩余的自环）→ agent
 agent →(无 tool_calls)→ verify（仅 complex；闲聊/简单任务直达 END）→(achieved | 回环限 3 次)→ END
 
-确认点两处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）。
+暂停点四处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）
++ 支线澄清（tools 内 `ask_user` 澄清型）+ 外部等待（await_gate，P0-4）；
+四处都经 runtime `_pause` 统一落库（结束执行段计时 + 记 paused_at + 落预算账本 + 置 run 状态）。
 节点是薄壳，逻辑经 runtime 依赖注入（backend/emit/hooks/run_ctx）。
 
 interrupt 重放纪律：恢复时节点从头重放——
