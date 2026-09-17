@@ -4,11 +4,11 @@
  * 任务输入、状态、耗时、预算消耗、执行计划、事件时间线（工具调用/思考/确认）。
  * 历史任务走 GET /runs/{id}/events 拉取，活跃任务叠加 SSE 实时事件（按 seq 去重合并）。
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Empty, Typography, Button, Tag, Space, Spin } from "antd";
-import { CloseOutlined } from "@ant-design/icons";
+import { Empty, Typography, Button, Tag, Space, Spin, Tooltip } from "antd";
+import { CloseOutlined, DownOutlined, UpOutlined } from "@ant-design/icons";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
@@ -238,60 +238,164 @@ function RunDetail({ runId }: { runId: string }) {
   );
 }
 
-export default function ContextPanel() {
-  const activeRunId = useSSEStore((s) => s.activeRunId);
-  const toggleContextPanel = useUIStore((s) => s.toggleContextPanel);
-  // 活跃的 plugin 前端侧边栏（§3.5）：有则渲染 PluginHost，否则展示 run 详情
-  const sidebar = useUIStore((s) => s.sidebar);
-  const closeSidebar = useUIStore((s) => s.closeSidebar);
-
-  if (sidebar) {
-    return (
-      <PluginHost
-        descriptor={sidebar}
-        fallbackRunId={activeRunId}
-        onClose={closeSidebar}
-      />
-    );
-  }
-
+/**
+ * 任务详情分栏（P1-8）：既可作为右栏唯一内容（无 plugin 时，带关闭按钮），
+ * 也可与 plugin 结果面上下并存（带折叠箭头）。折叠态只留一条标题栏。
+ */
+function DetailPane({
+  runId,
+  collapsed = false,
+  onToggleCollapse,
+  onClose,
+  style,
+}: {
+  runId: string | null;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
+  onClose?: () => void;
+  style?: CSSProperties;
+}) {
   return (
-    <div style={{ padding: "12px", height: "100%", overflow: "auto" }}>
+    <div
+      style={{
+        ...style,
+        flex: collapsed ? "none" : undefined,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        borderTop: onToggleCollapse ? "1px solid var(--ant-color-border-secondary)" : undefined,
+      }}
+    >
       <div
         style={{
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
-          marginBottom: 8,
+          padding: "6px 12px",
+          flex: "none",
         }}
       >
         <Space size={6}>
+          {onToggleCollapse && (
+            <Tooltip title={collapsed ? "展开任务详情" : "折叠为标题栏"}>
+              <Button
+                type="text"
+                size="small"
+                icon={collapsed ? <UpOutlined /> : <DownOutlined />}
+                onClick={onToggleCollapse}
+                aria-expanded={!collapsed}
+                aria-label={collapsed ? "展开任务详情" : "折叠任务详情"}
+              />
+            </Tooltip>
+          )}
           <Typography.Text strong style={{ fontSize: 13 }}>
             任务详情
           </Typography.Text>
-          {activeRunId && (
+          {runId && (
             <Typography.Text type="secondary" style={{ fontSize: 11 }} className="font-mono-tight">
-              RUN · {activeRunId.slice(0, 8)}
+              RUN · {runId.slice(0, 8)}
             </Typography.Text>
           )}
         </Space>
-        <Button
-          type="text"
-          size="small"
-          icon={<CloseOutlined />}
-          onClick={toggleContextPanel}
-          aria-label="关闭详情面板"
+        {onClose && (
+          <Button
+            type="text"
+            size="small"
+            icon={<CloseOutlined />}
+            onClick={onClose}
+            aria-label="关闭详情面板"
+          />
+        )}
+      </div>
+      {!collapsed && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "0 12px 12px" }}>
+          {runId ? (
+            <RunDetail runId={runId} />
+          ) : (
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="发送消息后自动展示任务详情，或点击消息下方「任务详情」查看"
+              style={{ marginTop: 24 }}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ContextPanel() {
+  const activeRunId = useSSEStore((s) => s.activeRunId);
+  const toggleContextPanel = useUIStore((s) => s.toggleContextPanel);
+  const sidebar = useUIStore((s) => s.sidebar);
+  const closeSidebar = useUIStore((s) => s.closeSidebar);
+  // P1-8：plugin 结果面与任务详情**并存**（上下分栏 + 分栏可拖拽/可折叠），不再互斥替换
+  const detailCollapsed = useUIStore((s) => s.detailPaneCollapsed);
+  const toggleDetailPane = useUIStore((s) => s.toggleDetailPane);
+  const detailRatio = useUIStore((s) => s.sidebarDetailRatio);
+  const setDetailRatio = useUIStore((s) => s.setSidebarDetailRatio);
+  const railRef = useRef<HTMLDivElement>(null);
+  const splitDrag = useRef(false);
+
+  // 上下分栏拖拽：以右栏高度为基准反算任务详情占比（与左缘拖宽同一套 window 监听写法）
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!splitDrag.current || !railRef.current) return;
+      const rect = railRef.current.getBoundingClientRect();
+      if (rect.height > 0) setDetailRatio((rect.bottom - e.clientY) / rect.height);
+    };
+    const onUp = () => {
+      splitDrag.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [setDetailRatio]);
+
+  if (!sidebar) {
+    return <DetailPane runId={activeRunId} onClose={toggleContextPanel} />;
+  }
+
+  return (
+    <div
+      ref={railRef}
+      style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}
+    >
+      {/* plugin 面（唯一宿主；同时至多一个 plugin，见 store/ui.ts 的 sidebar 约束） */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <PluginHost
+          descriptor={sidebar}
+          fallbackRunId={activeRunId}
+          onClose={closeSidebar}
         />
       </div>
-      {activeRunId ? (
-        <RunDetail runId={activeRunId} />
-      ) : (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="发送消息后自动展示任务详情，或点击消息下方「任务详情」查看"
-          style={{ marginTop: 24 }}
-        />
-      )}
+      {/* 分栏手柄：拖动改占比，双击折叠/展开任务详情 */}
+      <div
+        onMouseDown={() => {
+          splitDrag.current = true;
+          document.body.style.cursor = "row-resize";
+          document.body.style.userSelect = "none";
+        }}
+        onDoubleClick={toggleDetailPane}
+        title="拖动调整高度；双击折叠/展开任务详情"
+        style={{
+          height: 6,
+          flex: "none",
+          cursor: "row-resize",
+          background: "var(--ant-color-border-secondary)",
+        }}
+      />
+      <DetailPane
+        runId={activeRunId}
+        collapsed={detailCollapsed}
+        onToggleCollapse={toggleDetailPane}
+        style={detailCollapsed ? undefined : { height: `${Math.round(detailRatio * 100)}%` }}
+      />
     </div>
   );
 }

@@ -10,15 +10,27 @@ import {
   LogoutOutlined,
   UserOutlined,
   LayoutOutlined,
+  ColumnWidthOutlined,
 } from "@ant-design/icons";
-import { useUIStore } from "@/store/ui";
+import { panelMaxRatioToggleTarget, useUIStore } from "@/store/ui";
+import { WIDE_PANEL_MAX_RATIO } from "@/store/panelWidth";
 import { useAuthStore } from "@/store/auth";
 import StatusLights from "@/components/StatusLights";
 import NotificationBell from "@/components/NotificationBell";
 
 export default function TopBar() {
-  const { toggleSidebar, sidebarCollapsed, setCommandPaletteOpen, contextPanelOpen, toggleContextPanel } = useUIStore();
+  const {
+    toggleSidebar,
+    sidebarCollapsed,
+    setCommandPaletteOpen,
+    contextPanelOpen,
+    toggleContextPanel,
+    panelMaxRatio,
+    setPanelMaxRatio,
+  } = useUIStore();
+  const wide = panelMaxRatio >= WIDE_PANEL_MAX_RATIO;
   const { user, logout } = useAuthStore();
+
 
   const userMenu = {
     items: [
@@ -77,6 +89,26 @@ export default function TopBar() {
             style={contextPanelOpen ? { color: "var(--ant-color-primary)" } : undefined}
           />
         </Tooltip>
+        {/* P1-8：右栏宽度上限可配（半屏 ↔ 70%），只在面板展开时才有意义 */}
+        {contextPanelOpen && (
+          <Tooltip
+            title={
+              wide
+                ? `右栏宽度上限：70%（点击收窄到半屏）`
+                : "右栏宽度上限：半屏（点击放宽到 70%，便于插件面与任务详情同屏）"
+            }
+          >
+            <Button
+              type="text"
+              icon={<ColumnWidthOutlined />}
+              onClick={() => setPanelMaxRatio(panelMaxRatioToggleTarget(panelMaxRatio))}
+              size="small"
+              aria-label="切换右栏宽度上限"
+              aria-pressed={wide}
+              style={wide ? { color: "var(--ant-color-primary)" } : undefined}
+            />
+          </Tooltip>
+        )}
         <Dropdown menu={userMenu} placement="bottomRight">
           <Avatar size="small" icon={<UserOutlined />} style={{ cursor: "pointer" }} />
         </Dropdown>
