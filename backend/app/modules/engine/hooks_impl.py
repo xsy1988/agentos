@@ -101,8 +101,9 @@ class MeteringHook:
         )
 
     async def on_run_end(self, ctx: RunContext, status: str, result: Any) -> None:
-        if status != "done":
-            return  # 记账只计成功 run（与设计方案 §8 统计口径一致）
+        # 全量口径（P1-3）：run_count 无论成败都计。token 在 on_turn_end 就是全量累加，
+        # 只计成功 run 会产生"有 token 却 run_count=0"的失真行（不可解释的账）。
+        # 成功/失败明细在 runs 表可查（status 字段），此处不再分身计数。
         provider_id = await self._provider_id(ctx)
         if provider_id is None:
             return
