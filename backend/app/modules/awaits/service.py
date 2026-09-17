@@ -56,6 +56,17 @@ def callback_url(await_id: str) -> str:
     return f"{base}/api/v1/open/awaits/{await_id}/resolve"
 
 
+def pickup_url_template(await_id: str) -> str:
+    """取件地址模板（P2-1）：`{file_id}` 由外部服务用实际文件 id 替换。
+
+    取件范围由 `await_id` 锁定为**本次等待所属 run**（平台侧反查归属，无列举入口），
+    凭据是同一个 `callback_token`（走 `X-Callback-Token` 头，不进 URL 查询串——
+    避免 token 落进访问日志）。
+    """
+    base = settings.platform_base_url.rstrip("/")
+    return f"{base}/api/v1/open/files/{{file_id}}/content?await_id={await_id}"
+
+
 def _waited_ms(row: AwaitBroker) -> int:
     if row.resolved_at is None:
         return int(row.waited_ms or 0)

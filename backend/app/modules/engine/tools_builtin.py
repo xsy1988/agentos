@@ -236,22 +236,32 @@ async def _procurement_trigger(args: dict[str, Any], ctx: ToolContext | None = N
 
 
 def _await_callback(args: dict[str, Any], ctx: ToolContext | None) -> dict[str, Any] | None:
-    """取回传地址：上下文优先，掉回 args 的历史通道；都没有则返回 None（不等）。"""
+    """取回传地址：上下文优先，掉回 args 的历史通道；都没有则返回 None（不等）。
+
+    `files_url`（取件通道模板）是**加法**字段：拿不到就不下发这个键，老的第三方解析器
+    看不到任何变化。
+    """
     if ctx is not None and ctx.callback_url and ctx.await_id:
-        return {
+        payload = {
             "await_id": ctx.await_id,
             "url": ctx.callback_url,
             "token": ctx.callback_token,
             "idempotency_key": ctx.idempotency_key,
         }
+        if ctx.files_url:
+            payload["files_url"] = ctx.files_url
+        return payload
     legacy = args.get("await_callback")
     if isinstance(legacy, dict) and legacy.get("url"):
-        return {
+        payload = {
             "await_id": legacy.get("await_id"),
             "url": legacy.get("url"),
             "token": legacy.get("token"),
             "idempotency_key": legacy.get("idempotency_key"),
         }
+        if legacy.get("files_url"):
+            payload["files_url"] = legacy["files_url"]
+        return payload
     return None
 
 

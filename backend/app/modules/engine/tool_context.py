@@ -41,6 +41,8 @@ class ToolContext:
     callback_token: str | None = None
     await_id: str | None = None
     callback_url: str | None = None
+    # 取件地址模板（P2-1）：`{file_id}` 占位，配合 await_id + callback_token 取本 run 的文件
+    files_url: str | None = None
 
     def as_meta(self) -> dict[str, Any]:
         """MCP 通道的下发载荷：只带非空字段，空值不占位。"""

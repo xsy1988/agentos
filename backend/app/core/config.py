@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     # 定 5s 是为了让"无模型参与也能看到进度前进"在体感上接近实时；
     # 巡检只在有非终态 run 时才真正查库（空闲时一次 select 就返回）。
     progress_watch_interval_seconds: float = 5.0
+    # 外部服务取件体积上限（字节，方案 §5 P2-1）：超过即 413，不让一次取件把
+    # 平台出口带宽/内存打满。定 20MB 是因为对话附件上限本就是 10MB（图片 5MB），
+    # 产物（报告/明细表）比附件大一档但仍是"可下载"量级；真要发大文件走钉盘/对象存储。
+    open_file_max_bytes: int = 20 * 1024 * 1024
 
 
 settings = Settings()

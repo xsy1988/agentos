@@ -128,3 +128,14 @@ class OpenWorkerBriefOut(BaseModel):
     enabled: bool = True
     active_version: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+
+
+class OpenRunFileOut(BaseModel):
+    """取件清单条目（P2-1）：只列本次等待所属 run 的文件，无遍历入口。"""
+
+    file_id: str
+    name: str
+    mime: str
+    size: int
+    # artifact = 平台产出的产物；input = 派发时随消息收下的输入附件
+    source: Literal["artifact", "input"]

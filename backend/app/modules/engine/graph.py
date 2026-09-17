@@ -1187,6 +1187,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 await hooks.on_tool_call(ctx, req)
                 t0 = time.monotonic()
                 callback_url = awaits_service.callback_url(await_id)
+                files_url = awaits_service.pickup_url_template(await_id)
                 # 回传凭据经两条通道下发（P1-10）：执行上下文（首选）与 args 的历史通道
                 raw_step = conf.get("step_id")
                 actx = ToolContext(
@@ -1197,6 +1198,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     callback_token=str(row.get("callback_token") or "") or None,
                     await_id=await_id,
                     callback_url=callback_url,
+                    files_url=files_url,
                 )
                 call_args = dict(args)
                 call_args["await_callback"] = {
@@ -1204,6 +1206,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     "url": callback_url,
                     "token": row.get("callback_token"),
                     "idempotency_key": idempotency_key,
+                    "files_url": files_url,
                 }
                 dispatched: Any = None
                 error: dict[str, Any] | None = None
