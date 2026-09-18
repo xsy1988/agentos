@@ -1,6 +1,6 @@
 /**
  * 类型定义：对齐后端 Pydantic schemas。
- * 后端源码：backend/app/modules/​schemas.py（各模块 schemas 文件）
+ * 后端源码：backend/app/modules/<模块名>/schemas.py（各模块 schemas 文件）
  */
 
 // ---- Auth ----
@@ -88,6 +88,27 @@ export interface SendMessageTaskSwitch {
 export type SendMessageOut = SendMessageRunCreated | SendMessageTaskSwitch;
 
 // ---- Runs ----
+/** run 级失败载荷（后端 RunError，extra=allow 兼容历史行）。 */
+export interface RunError {
+  code: string;
+  detail: string;
+  retryable: boolean;
+  source: string;
+  phase: string | null;
+  /** 熔断时透出：真实失败码 + 连续失败的连续工具名 */
+  failure_code?: string;
+  tools?: string[];
+  [key: string]: unknown;
+}
+
+/** tool_result 事件失败段（后端 tool_outcome.as_error()）。 */
+export interface ToolErrorPayload {
+  code: string;
+  detail: string;
+  retryable: boolean;
+  source: string;
+}
+
 export interface RunOut {
   id: string;
   conversation_id: string | null;
@@ -96,12 +117,18 @@ export interface RunOut {
   status: string;
   input: Record<string, unknown>;
   result: Record<string, unknown> | null;
-  error: Record<string, unknown> | null;
+  error: RunError | null;
   budget: Record<string, unknown>;
   budget_used: Record<string, unknown>;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  /** P0-1 时长账本：绝对截止时间 */
+  deadline_at?: string | null;
+  /** 活跃时长（不含暂停/等待） */
+  active_ms?: number | null;
+  /** 总存活时长（读取时计算）：用于「刚超时 / 已卡住」判断 */
+  elapsed_ms?: number | null;
 }
 export interface RunEventOut {
   id: number;
@@ -110,6 +137,98 @@ export interface RunEventOut {
   event_type: string;
   payload: Record<string, unknown>;
   created_at: string;
+}
+
+/** 结果信封 `artifacts` 项（只含定位与展示字段，正文走 `/artifacts/{id}`）。 */
+export interface RunArtifactRef {
+  id: string;
+  kind: string;
+  name: string;
+  mime: string;
+  size: number;
+}
+
+/** 结果信封 `metrics`：复用 budget_used 账本，不新造计数。 */
+export interface RunResultMetrics {
+  elapsed_ms: number;
+  active_ms: number;
+  iterations: number;
+  tool_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+/**
+ * 结果信封（P0-5）：后端 `timing.result_envelope` 的唯一形状（`run_result/v1`）。
+ * 任意终态 run 的 `result` 都是它；历史行由后端 `coalesce_result` 补成
+ * `run_result/v0`（可能缺 metrics/artifacts，故字段按可选读）。
+ */
+export interface RunResultEnvelope {
+  schema: string;
+  outcome: "done" | "partial" | "failed" | "blocked";
+  text: string;
+  cards: Array<{ card_type: string; payload: Record<string, unknown> }>;
+  artifacts: RunArtifactRef[];
+  metrics: Partial<RunResultMetrics>;
+  /** 非 done 的机器可读原因（timeout / verify_not_achieved / ...） */
+  reason?: string | null;
+  [key: string]: unknown;
+}
+
+/** 产物清单项（`GET /runs/{run_id}/artifacts`）：不含正文。 */
+export interface ArtifactOut {
+  id: string;
+  run_id: string;
+  kind: string;
+  name: string;
+  mime: string;
+  size: number;
+  storage: string;
+  created_at: string;
+}
+
+/** 产物详情（`GET /artifacts/{id}`）：text/json 内联正文在 `payload`。 */
+export interface ArtifactDetailOut extends ArtifactOut {
+  payload: Record<string, unknown> | null;
+}
+
+/**
+ * 任务级产物条目（`GET /tasks/{task_id}/artifacts`，P0-5 收尾）：
+ * 跨本任务的 run 归集，带子任务归属供按步分组；正文仍走 `/artifacts/{id}`。
+ */
+export interface TaskArtifactOut extends ArtifactOut {
+  task_id: string | null;
+  step_id: string | null;
+  step_name: string | null;
+}
+
+// ---- Awaits（外部等待，P0-4）----
+/** 一条外部等待（`GET /awaits` 项，真源 awaits/service.py::brief，不含 callback_token）。 */
+export interface AwaitOut {
+  await_id: string;
+  run_id: string;
+  tool: string;
+  /** waiting / granted / expired / cancelled */
+  status: string;
+  deadline_at: string | null;
+  /** 已等待毫秒（终态为精确耗时；waiting 行可能为 0） */
+  waited_ms: number;
+  attempts: number;
+  notified_at: string | null;
+  resolved_at: string | null;
+  error: Record<string, unknown> | null;
+}
+
+export interface AwaitListOut {
+  items: AwaitOut[];
+}
+
+/** 撤销等待结果（`POST /awaits/{id}/cancel`）：cancelled=false 表示已被别的路径落定。 */
+export interface AwaitCancelOut {
+  await_id: string;
+  run_id: string;
+  status: string;
+  cancelled: boolean;
 }
 
 // ---- Capabilities ----
@@ -154,7 +273,7 @@ export interface SidebarDescriptor {
   frontend?: FrontendManifest;
   /** 初始化数据：待处理数据/主题/语言等（握手时经 WORKER_CONTEXT 下发） */
   init_data?: Record<string, unknown>;
-  /** 宽度提示：0~0.5 占屏比例（≤半屏） */
+  /** 宽度提示：0~0.5 占屏比例（≤半屏），是换算基准而非硬约束——实际宽度再受用户配置的右栏上限夹取 */
   width_hint?: number;
   step_id?: string;
   idempotency_key?: string;
@@ -310,6 +429,26 @@ export interface FileOut {
 /** L3 引用资源条目（references/*.md 等，LLM 按需拉取） */
 export type WorkerReference = Record<string, unknown>;
 /** 子任务（sub_workers/<ref>/WORKER.md 的摘要） */
+/** 一条输入声明（P1-4）：Worker 声明后平台在调用模型前预检，缺必填即拦截 */
+export interface WorkerInputSpec {
+  name: string;
+  type: "text" | "number" | "date" | "file" | "url" | "json";
+  required: boolean;
+  description: string;
+  example: string;
+}
+
+/**
+ * 输入契约预检失败的载荷明细（P1-4）。
+ * 真源：backend/app/modules/engine/runtime.py::_finalize_input_contract —— run.error 上
+ * `{code:"missing_inputs", missing:[字段名], inputs:[RunInputSpec]}`；补齐后可原样重发。
+ */
+export interface RunInputSpec extends WorkerInputSpec {
+  /** 本次运行是否已提供（file 类由会话附件按声明顺序顶替） */
+  provided: boolean;
+  /** 已提供的值（字符串形态），未提供为 null */
+  value: string | null;
+}
 export interface SubWorkerOut {
   /** sub_workers 文件夹名（= task_steps.worker_step_ref） */
   ref: string;
@@ -319,6 +458,8 @@ export interface SubWorkerOut {
   optional: boolean;
   description: string;
   capability_hint: string[];
+  /** 子任务级输入声明（只做展示与校验，run 级门由主 Worker 声明） */
+  inputs: WorkerInputSpec[];
 }
 export interface WorkerVersionOut {
   version: string;
@@ -343,6 +484,8 @@ export interface WorkerOut {
   capabilities: string[];
   references: WorkerReference[] | null;
   playbook: string;
+  /** 输入契约（P1-4）：缺任一必填项时 run 在调用模型前失败（前端展示失败卡） */
+  inputs: WorkerInputSpec[];
   sub_workers: SubWorkerOut[];
   has_files: boolean;
 }
@@ -388,7 +531,18 @@ export interface TaskStepOut {
   status: string;
   /** template | planner | agent_raised | user */
   source: string;
-  resolution: { question?: string; answer?: string; at?: string } | null;
+  resolution: {
+    question?: string;
+    answer?: string;
+    at?: string;
+    /** P1-6：受阻/收敛原因枚举（run_ended | deadline_exceeded | user_cancelled | manual） */
+    reason?: string;
+    /** P1-6：收敛动作（close | requeue | escalate）与自由文本补充 */
+    action?: "close" | "requeue" | "escalate";
+    detail?: string;
+    escalated?: boolean;
+    converged_at?: string;
+  } | null;
   run_id: string | null;
   raised_at: string | null;
   resolved_at: string | null;

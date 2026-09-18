@@ -27,6 +27,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tasksApi } from "@/api/tasks";
 import type { TaskStepOut } from "@/api/types";
 import {
+  STEP_BLOCK_REASON_LABELS,
+  STEP_CONVERGE_LABELS,
   STEP_SOURCE_LABELS,
   STEP_STATUS_COLORS,
   STEP_STATUS_LABELS,
@@ -45,6 +47,13 @@ const STATE_TAG_COLOR: Record<TaskState, string> = {
   waiting: "default",
   awaiting: "warning",
   terminated: "error",
+};
+
+/** 收敛动作说明（P1-6）：后果一句话说清，避免误点「关闭支线」 */
+const CONVERGE_TIPS: Record<"close" | "requeue" | "escalate", string> = {
+  close: "不再需要该支线：置为已跳过，主任务可正常收口",
+  requeue: "重新排队：回到待执行，等后续 run 重跑该支线",
+  escalate: "转人工：保持受阻并标记「已转人工」，等待人工处理",
 };
 
 export default function TaskHeader({
@@ -73,6 +82,23 @@ export default function TaskHeader({
     onError: () => antdMessage.error("子任务状态更新失败"),
   });
 
+  // 受阻支线收敛（P1-6）：关闭/重新排队/转人工，替代人工 SQL 改库
+  const convergeMutation = useMutation({
+    mutationFn: ({
+      stepId,
+      action,
+    }: {
+      stepId: string;
+      action: "close" | "requeue" | "escalate";
+    }) => tasksApi.convergeStep(taskId, stepId, { action }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      antdMessage.success(`${STEP_CONVERGE_LABELS[vars.action]}成功`);
+    },
+    onError: () => antdMessage.error("支线收敛失败（可能已被处理）"),
+  });
+
   if (!task) return null;
 
   const state = deriveTaskState(task);
@@ -84,7 +110,27 @@ export default function TaskHeader({
     <List.Item
       style={{ padding: "8px 4px", alignItems: "flex-start" }}
       actions={[
-        step.status !== "done" ? (
+        // 受阻支线走收敛入口（P1-6）：不再用「完成/跳过」两义混淆的通用按钮
+        step.status === "blocked" ? (
+          <Space size={8} key="converge">
+            {(["close", "requeue", "escalate"] as const).map((action) => (
+              <Popconfirm
+                key={action}
+                title={`${STEP_CONVERGE_LABELS[action]}？`}
+                okText="确定"
+                cancelText="取消"
+                onConfirm={() => convergeMutation.mutate({ stepId: step.id, action })}
+              >
+                <Tooltip title={CONVERGE_TIPS[action]}>
+                  <Button type="link" size="small" style={{ fontSize: 12, padding: 0 }}>
+                    {STEP_CONVERGE_LABELS[action]}
+                  </Button>
+                </Tooltip>
+              </Popconfirm>
+            ))}
+          </Space>
+        ) : null,
+        step.status !== "done" && step.status !== "blocked" ? (
           <Popconfirm
             key="done"
             title="标记为已完成？"
@@ -97,7 +143,7 @@ export default function TaskHeader({
             </Tooltip>
           </Popconfirm>
         ) : null,
-        step.status !== "skipped" && step.status !== "done" ? (
+        step.status !== "skipped" && step.status !== "done" && step.status !== "blocked" ? (
           <Tooltip key="skip" title="跳过该子任务">
             <Button
               type="text"
@@ -138,6 +184,25 @@ export default function TaskHeader({
           <div style={{ fontSize: 12, marginTop: 2 }}>
             <Typography.Text type="secondary">用户答复：</Typography.Text>
             {step.resolution.answer}
+          </div>
+        )}
+        {step.status === "blocked" && (
+          <div style={{ fontSize: 12, marginTop: 2 }}>
+            <Typography.Text type="secondary">受阻原因：</Typography.Text>
+            <Tag color="warning" style={{ fontSize: 11, marginInlineStart: 4 }}>
+              {(step.resolution?.reason && STEP_BLOCK_REASON_LABELS[step.resolution.reason]) ||
+                "未标注"}
+            </Tag>
+            {step.resolution?.escalated && (
+              <Tag style={{ fontSize: 11 }}>已转人工</Tag>
+            )}
+            {step.resolution?.detail}
+          </div>
+        )}
+        {step.status === "pending" && step.resolution?.action === "requeue" && (
+          <div style={{ fontSize: 12, marginTop: 2 }}>
+            <Tag style={{ fontSize: 11 }}>已重新排队</Tag>
+            {step.resolution?.detail}
           </div>
         )}
       </div>

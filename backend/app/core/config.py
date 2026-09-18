@@ -43,6 +43,59 @@ class Settings(BaseSettings):
     search_rest_base_url: str = "http://localhost:8204"
     # 探测超时：必须短——它在 lifespan 里同步执行，服务没起时不能拖慢启动
     search_probe_timeout: float = 3.0
+    # run 全局超时缺省值（秒）：run 创建时的 budget 快照 > Agent 配置 > 此值（方案 §4 P0-1）。
+    # 超时以绝对截止时间 deadline_at 表达，分段执行（interrupt/resume）不重置。
+    run_default_timeout_seconds: int = 600
+    # 暂停（等用户确认/等外部回调）对截止时间的顺延上限（秒）：
+    # 超出部分不再顺延，避免"次日才确认"使超时保护形同虚设
+    max_run_pause_seconds: int = 3600
+    # 连续外部/解析失败熔断阈值（方案 §4 P0-3 第二道闸）：
+    # 同一 run 内连续 N 次 external_unavailable / parse_error → 结束 run，
+    # error.code=tool_failure_loop，不进入终答。run.get("tool_failure_limit") 可覆盖
+    tool_failure_limit: int = 3
+    # 单条工具观察 / 终答超过此字符数即自动落 run_artifacts，上下文与 result.text
+    # 只保留摘要 + 产物引用（方案 §4 P0-5：长结果不再被 120 字符折叠折成一句话）
+    artifact_inline_max_chars: int = 4000
+    # 外置后留在上下文/终答里的预览字符数（引用行不计入）
+    artifact_preview_chars: int = 800
+    # ---- 外部等待一等化（方案 §4 P0-4）----
+    # 灰度开关：外部服务（采购 Agent）实现回调契约前保持关闭——
+    # 关闭时派发类工具照旧返回并对模型可见轮询工具，等待不进平台
+    await_external_enabled: bool = False
+    # 等待缺省超时（秒）：超时后置 expired 并注入结构化失败（error.code=await_expired）
+    await_default_timeout_seconds: int = 900
+    # 等待巡检间隔（秒）：扫到期未回的行，翻状态并唤醒 run
+    await_sweep_interval_seconds: int = 15
+    # 平台对外可达基址：外部服务回调 await 结果时用的地址前缀
+    # （开发默认本机；容器/部署环境必须配成外部服务能访问的实际地址）
+    platform_base_url: str = "http://localhost:8000"
+    # run token 上限缺省值（方案 §5 P1-2）：解析链 = runs.budget 快照 > Agent 配置 >
+    # 此值。Agent 未配置（NULL）即继承此缺省，不再等价于"不限"；显式写 0 才是"不限"
+    # （逃生舱，仅建议临时排查用）。
+    # 定 1_000_000 的理由：这是**跑飞保护**不是成本旋钮——每轮都要重发历史，25 轮 ×
+    # 中等上下文（~4 万 token）已接近百万量级，配额给小了会把正常长任务掐死；
+    # 真要控成本请在 Agent 上显式配 max_tokens_per_run。
+    run_default_max_tokens: int = 1_000_000
+    # 模型调用缺省限流（方案 §5 P1-2）：provider.limits 未配置时兜底；0 = 不限。
+    # 显式配了 limits 的 provider 以自身配置为准（字段同名，语义一致）。
+    model_default_rate_limit_rps: float = 0.0
+    model_default_rate_limit_tpm: int = 0
+    # 限流单次最长等待（秒）：超过则放行并记日志——限流是保护措施，
+    # 不该把 run 变成无限等待（真限死了上游也会返回错误，比静默挂住好排查）
+    model_rate_limit_max_wait_seconds: float = 60.0
+    # 并发 run 上限（方案 §5 P1-1）：超出即拒绝准入并给明确反馈，不静默排队。
+    # 只闸"新 run"，恢复/确认（既有 run 的续跑）不受限——续跑被丢弃会留下
+    # 永远悬停的等待行，比短暂超并发更糟
+    max_concurrent_runs: int = 4
+    # 进度巡检间隔（秒，方案 §5 P1-5）：平台 watcher 按此周期比对非终态 run 的
+    # 进度快照，有变化才推 `progress` 事件。周期即进度推送的最大延迟，
+    # 定 5s 是为了让"无模型参与也能看到进度前进"在体感上接近实时；
+    # 巡检只在有非终态 run 时才真正查库（空闲时一次 select 就返回）。
+    progress_watch_interval_seconds: float = 5.0
+    # 外部服务取件体积上限（字节，方案 §5 P2-1）：超过即 413，不让一次取件把
+    # 平台出口带宽/内存打满。定 20MB 是因为对话附件上限本就是 10MB（图片 5MB），
+    # 产物（报告/明细表）比附件大一档但仍是"可下载"量级；真要发大文件走钉盘/对象存储。
+    open_file_max_bytes: int = 20 * 1024 * 1024
 
 
 settings = Settings()

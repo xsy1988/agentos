@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
+from app.modules.capabilities.capacity import target_agent_warnings
 from app.modules.capabilities.models import Capability
+from app.modules.discovery.assembler import MAX_TOOLS_HARD
 from app.modules.workers import registry
 from app.modules.workers.registry import WorkerError
 from app.modules.workers.schemas import (
@@ -25,11 +27,13 @@ from app.modules.workers.schemas import (
     FileNodeOut,
     SubWorkerCreateIn,
     SubWorkerOut,
+    VersionBuildIn,
     VersionBuildOut,
     WorkerCreateIn,
     WorkerFileCreateIn,
     WorkerFileIn,
     WorkerFileOut,
+    WorkerInputSpec,
     WorkerOut,
     WorkerPatchIn,
     WorkerVersionOut,
@@ -43,7 +47,7 @@ router = APIRouter(
 
 
 def _err(e: WorkerError) -> HTTPException:
-    return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e))
 
 
 def _get_meta(name: str):
@@ -60,6 +64,17 @@ def _resolve_version(name: str, version: str | None) -> str:
     if target is None or target not in meta.versions:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"版本「{version}」不存在")
     return target
+
+
+async def _expanded_tool_count(db: AsyncSession, names: list[str]) -> int:
+    """Worker 声明的能力名单 → 展开后的工具总数（发布前硬门校验）。"""
+    from app.modules.discovery.assembler import count_capability_tools
+    from app.modules.discovery.retriever import cap_dict
+
+    if not names:
+        return 0
+    rows = list((await db.scalars(select(Capability).where(Capability.name.in_(names)))).all())
+    return await count_capability_tools([cap_dict(c) for c in rows])
 
 
 def _to_out(meta) -> WorkerOut:
@@ -86,6 +101,7 @@ def _to_out(meta) -> WorkerOut:
         capabilities=wdef.capabilities if wdef else [],
         references=wdef.references if wdef else None,
         playbook=wdef.playbook if wdef else "",
+        inputs=[WorkerInputSpec(**i.to_dict()) for i in (wdef.inputs if wdef else [])],
         sub_workers=[
             SubWorkerOut(
                 ref=s.ref,
@@ -95,6 +111,7 @@ def _to_out(meta) -> WorkerOut:
                 optional=s.optional,
                 description=s.description,
                 capability_hint=s.capability_hint,
+                inputs=[WorkerInputSpec(**i.to_dict()) for i in s.inputs],
             )
             for s in (wdef.ordered_sub_workers() if wdef else [])
         ],
@@ -114,7 +131,11 @@ async def list_workers() -> list[WorkerOut]:
 async def create_worker(body: WorkerCreateIn) -> WorkerOut:
     try:
         meta = registry.create_worker(
-            body.name, description=body.description, icon=body.icon, color=body.color
+            body.name,
+            description=body.description,
+            icon=body.icon,
+            color=body.color,
+            inputs=[i.to_registry() for i in body.inputs],
         )
     except WorkerError as e:
         raise _err(e) from e
@@ -154,15 +175,39 @@ async def delete_worker(name: str) -> None:
 @router.post(
     "/{name}/versions", response_model=VersionBuildOut, status_code=status.HTTP_201_CREATED
 )
-async def build_version(name: str) -> VersionBuildOut:
-    """手动构建新版本：复制当前生效版本 → vN+1，并把 active 指向新版本。"""
+async def build_version(
+    name: str,
+    body: VersionBuildIn | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> VersionBuildOut:
+    """手动构建新版本：复制当前生效版本 → vN+1，并把 active 指向新版本。
+
+    发布前校验展开后的工具数（方案 §4 P0-2）：Worker 没有 Agent 上下文，拿不到
+    它的 `tool_budget`，故以 `MAX_TOOLS_HARD` 为硬门——超过 24 个工具的能力组合
+    任何 Agent 都装不下，与其上线后在 run 里失败，不如在发布这一步就拒绝。
+
+    可选的 `target_agents` 补上"更早预警"：把展开工具数与指定 Agent 的 `tool_budget`
+    比对，装不下只出 warnings，**不阻断发布**（硬门已经兜住了物理上限）。
+    """
     meta = _get_meta(name)
     copied_from = meta.effective_version or ""
+    wdef = registry.get_def(name, copied_from) if copied_from else None
+    names = list(wdef.capabilities) if wdef else []
+    tool_count = await _expanded_tool_count(db, names)
+    if tool_count > MAX_TOOLS_HARD:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"能力展开后共 {tool_count} 个工具，超过硬上限 {MAX_TOOLS_HARD}；"
+            "请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker",
+        )
+    warnings = await target_agent_warnings(db, tool_count, body.target_agents if body else [])
     try:
         version = registry.build_version(name)
     except WorkerError as e:
         raise _err(e) from e
-    return VersionBuildOut(version=version, copied_from=copied_from)
+    return VersionBuildOut(
+        version=version, copied_from=copied_from, tool_count=tool_count, warnings=warnings
+    )
 
 
 @router.delete("/{name}/versions/{version}", status_code=status.HTTP_204_NO_CONTENT)
@@ -248,7 +293,9 @@ async def create_sub_worker(name: str, body: SubWorkerCreateIn, version: str | N
     """新建子任务文件夹脚手架（sub_workers/<名>/WORKER.md）。"""
     v = _resolve_version(name, version)
     try:
-        registry.create_sub_worker(name, v, body.name, kind=body.kind)
+        registry.create_sub_worker(
+            name, v, body.name, kind=body.kind, inputs=[i.to_registry() for i in body.inputs]
+        )
     except WorkerError as e:
         raise _err(e) from e
     wdef = registry.get_def(name, v)
@@ -263,6 +310,7 @@ async def create_sub_worker(name: str, body: SubWorkerCreateIn, version: str | N
         optional=sub.optional,
         description=sub.description,
         capability_hint=sub.capability_hint,
+        inputs=[WorkerInputSpec(**i.to_dict()) for i in sub.inputs],
     )
 
 

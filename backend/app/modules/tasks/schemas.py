@@ -100,6 +100,10 @@ class TaskCreateIn(BaseModel):
     agent_id: UUID | None = None
     text: str = Field(default="", max_length=32000)
     model_provider_id: UUID | None = None
+    # 幂等键（P1-9）：「新开会话并发送」连点两次不会建出两个主任务
+    client_message_id: str | None = Field(default=None, max_length=64)
+    # 输入契约取值（P1-4）：新建即提供输入，首条 run 就不必再问一轮
+    inputs: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
 
 class TaskCreateOut(BaseModel):
@@ -126,3 +130,13 @@ class StepUpdateIn(BaseModel):
 
     status: Literal["pending", "doing", "done", "skipped", "blocked", "awaiting_user"] | None = None
     resolution: dict | None = None
+
+
+class StepConvergeIn(BaseModel):
+    """受阻支线的前台收敛动作（P1-6）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["close", "requeue", "escalate"]
+    # 自由文本只做人话补充：收敛原因恒为枚举 manual，不在文本里写理由（P1-6）
+    detail: str | None = Field(default=None, max_length=500)

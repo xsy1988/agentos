@@ -15,10 +15,13 @@ class MemoryFile(UUIDPkMixin, TimestampMixin, Base):
     """kind=platform 平台记忆（长期不变的关键事实）/ daily 日期记忆（每日一条）。"""
 
     __tablename__ = "memory_files"
-    __table_args__ = (UniqueConstraint("kind", "date"),)
+    # 显式 nullable=True：属性名 date 与注解里的 datetime.date 同名，会被类命名空间遮蔽
+    # 导致 SQLAlchemy 把类型解析成 MappedColumn(O) 而非 date | None，默认判成 NOT NULL；
+    # 同时显式命名约束以匹配 m5a 迁移的 uq_memory_files_kind_date
+    __table_args__ = (UniqueConstraint("kind", "date", name="uq_memory_files_kind_date"),)
 
     kind: Mapped[str] = mapped_column(String(16))  # platform / daily
-    date: Mapped[date | None] = mapped_column(Date)  # daily 专用；platform 为空
+    date: Mapped[date | None] = mapped_column(Date, nullable=True)  # daily 专用；platform 为空
     title: Mapped[str] = mapped_column(String(255))
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(settings.embedding_dim))

@@ -77,7 +77,11 @@ async def _collect_trace(run_id: str) -> tuple[str, str]:
         elif ev.event_type == "tool_call":
             lines.append(f"调用工具 {p.get('name')}: {str(p.get('args'))[:120]}")
         elif ev.event_type == "tool_result":
-            lines.append(f"工具结果({p.get('name')}): {str(p.get('content'))[:120]}")
+            # P0-3 起 payload 为 {tool, ok, elapsed_ms, result}；旧行是 {name, content}
+            name = p.get("tool") or p.get("name")
+            body = p.get("result") if p.get("result") is not None else p.get("content")
+            mark = "" if p.get("ok", True) else "[失败]"
+            lines.append(f"工具结果{mark}({name}): {str(body)[:120]}")
         elif ev.event_type == "thought":
             lines.append(f"思考: {str(p.get('text'))[:100]}")
     trace = "\n".join(lines)[:8000]

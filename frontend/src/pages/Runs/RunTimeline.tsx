@@ -23,12 +23,19 @@ import {
   BulbOutlined,
   ToolOutlined,
   RobotOutlined,
+  WarningOutlined,
   MessageOutlined,
   ScheduleOutlined,
+  ClockCircleOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
 import { useSSEStore } from "@/store/sse";
+import { EVENT_TYPES } from "@/api/eventTypes";
+import { describeError } from "@/api/errors";
+import AwaitPanel, { hasUnresolvedAwait } from "@/components/AwaitPanel";
+import CopyRefButton from "@/components/CopyRefButton";
+import { runReference } from "@/utils/clipboard";
 import type { RunEventOut } from "@/api/types";
 
 // 事件类型 → 图标/颜色映射
@@ -37,14 +44,22 @@ const EVENT_META: Record<string, { icon: React.ReactNode; color: string }> = {
   message_delta: { icon: <MessageOutlined />, color: "blue" },
   thought: { icon: <BulbOutlined />, color: "gold" },
   plan_updated: { icon: <ScheduleOutlined />, color: "cyan" },
+  progress: { icon: <ScheduleOutlined />, color: "geekblue" },
   tool_call: { icon: <ToolOutlined />, color: "purple" },
   tool_result: { icon: <ToolOutlined />, color: "green" },
-  context_assembly: { icon: <RobotOutlined />, color: "default" },
   context_compacted: { icon: <RobotOutlined />, color: "orange" },
-  interrupt: { icon: <RobotOutlined />, color: "warning" },
+  capability_overflow: { icon: <WarningOutlined />, color: "volcano" },
+  await_started: { icon: <ClockCircleOutlined />, color: "blue" },
+  await_resolved: { icon: <ClockCircleOutlined />, color: "green" },
+  await_expired: { icon: <ClockCircleOutlined />, color: "orange" },
+  blocked: { icon: <WarningOutlined />, color: "volcano" },
+  unblocked: { icon: <WarningOutlined />, color: "green" },
   error: { icon: <RobotOutlined />, color: "red" },
-  budget_used: { icon: <RobotOutlined />, color: "default" },
 };
+
+// 只登记真实存在的事件类型（EVENT_TYPES 为单点真源）——EVENT_META 里的多余条目
+// 会让维护者以为平台具备该能力（曾经有 context_assembly / interrupt / budget_used 三条死条目）
+const KNOWN_EVENT_TYPES = new Set<string>(EVENT_TYPES);
 
 const SPEEDS = [
   { value: 2000, label: "0.5x" },
@@ -100,9 +115,12 @@ function EventContent({ event }: { event: RunEventOut }) {
   }
 
   if (event_type === "tool_call" || event_type === "tool_result") {
-    const name = String(payload.tool_name ?? payload.name ?? "unknown");
+    const name = String(payload.tool_name ?? payload.name ?? payload.tool ?? "unknown");
     const data = event_type === "tool_call" ? payload.args : payload.result;
     const dataStr = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    // P0-3：失败结果带结构段，直接标识失败（历史实现把所有结果都画成"绿色工具"）
+    const failed = event_type === "tool_result" && payload.ok === false;
+    const err = failed ? describeError(payload.error) : null;
     return (
       <Collapse
         size="small"
@@ -110,17 +128,42 @@ function EventContent({ event }: { event: RunEventOut }) {
         items={[{
           key: "1",
           label: (
-            <Typography.Text className="font-mono-tight" style={{ fontSize: 12 }}>
-              {name} {event_type === "tool_result" ? "· 结果" : ""}
+            <Typography.Text
+              className="font-mono-tight"
+              type={err ? "danger" : undefined}
+              style={{ fontSize: 12 }}
+            >
+              {name} {event_type === "tool_result" ? (err ? "· 失败" : "· 结果") : ""}
+              {err ? ` [${err.code}]` : ""}
             </Typography.Text>
           ),
           children: (
-            <pre className="font-mono-tight" style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
-              {dataStr.slice(0, 2000)}
-            </pre>
+            <>
+              {err && (
+                <Typography.Text type="danger" style={{ fontSize: 12 }}>
+                  {err.title}
+                  {err.retryable ? "（可重试）" : ""}
+                </Typography.Text>
+              )}
+              <pre className="font-mono-tight" style={{ fontSize: 12, margin: 0, whiteSpace: "pre-wrap", maxHeight: 200, overflow: "auto" }}>
+                {dataStr.slice(0, 2000)}
+              </pre>
+            </>
           ),
         }]}
       />
+    );
+  }
+
+  if (event_type === "progress") {
+    // P1-5：平台 watcher 推送的进度快照（非模型轮次）——回放时据此还原"进度何时前进"
+    const done = Number(payload.done ?? 0);
+    const total = Number(payload.total ?? 0);
+    return (
+      <Typography.Text style={{ fontSize: 13 }}>
+        进度: <b>{done}/{total}</b>
+        {payload.label ? ` · ${String(payload.label)}` : ""}
+      </Typography.Text>
     );
   }
 
@@ -136,19 +179,25 @@ function EventContent({ event }: { event: RunEventOut }) {
     );
   }
 
-  if (event_type === "interrupt") {
-    return (
-      <Tag color="warning">中断: {String(payload.kind ?? "unknown")}</Tag>
-    );
-  }
-
   if (event_type === "error") {
-    return <Tag color="error">错误: {String(payload.message ?? payload.error ?? "")}</Tag>;
+    const err = describeError(payload);
+    return (
+      <Tag color="error">
+        错误: {err.title}
+        {err.code !== "unknown" ? ` [${err.code}]` : ""}
+        {err.detail ? ` ${err.detail.replace(/\s+/g, " ").slice(0, 160)}` : ""}
+      </Tag>
+    );
   }
 
   // 默认：JSON 摘要
   return (
     <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+      {!KNOWN_EVENT_TYPES.has(event_type) && (
+        <Tag color="warning" style={{ marginRight: 4 }}>
+          未登记事件
+        </Tag>
+      )}
       {JSON.stringify(payload).slice(0, 120)}
     </Typography.Text>
   );
@@ -223,6 +272,18 @@ export default function RunTimeline({
     queryKey: ["runs", "recent"],
     queryFn: () => runsApi.list({ limit: 20 }),
   });
+
+  // 选中 run 详情：等待面板要判状态、「复制引用」要有完整引用串
+  // （最近列表只有 20 条，选中的 run 可能不在其中）
+  const { data: selectedRun } = useQuery({
+    queryKey: ["run", runId],
+    queryFn: () => (runId ? runsApi.get(runId) : Promise.resolve(undefined)),
+    enabled: !!runId,
+    refetchInterval: 5000,
+  });
+
+  // P0-4：平台代为持有的外部等待（run 停在等待态，或事件里还有未落定的等待）
+  const awaiting = selectedRun?.status === "waiting_external" || hasUnresolvedAwait(allEvents);
 
   if (!runId) {
     return (
@@ -345,10 +406,12 @@ export default function RunTimeline({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {visibleCount}/{allEvents.length} 事件
           </Typography.Text>
+          {selectedRun && <CopyRefButton text={runReference(selectedRun)} withText />}
         </div>
 
         {/* 事件列表 */}
         <div style={{ flex: 1, overflow: "auto", padding: "8px 16px" }}>
+          {awaiting && <AwaitPanel runId={runId} />}
           {isLoading ? (
             <div style={{ textAlign: "center", padding: 24 }}>
               <Typography.Text type="secondary">加载中…</Typography.Text>

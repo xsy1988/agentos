@@ -27,6 +27,14 @@ class RunContext:
         # 本 run 预算上限（runs.budget 快照）：max_iterations / max_tokens_per_run /
         # timeout_seconds 等。M2-2c 扩展字段（兼容冻结协议的增量扩展，见 ADR-10）
         self.limits: dict[str, int] = {}
+        # 本轮 prompt 的 token 估算（P1-2 增量）：agent 节点在 on_turn_start 之前写入，
+        # 预算钩子据此在**发起模型调用前**判断是否会超限。0 = 未估算（钩子跳过前置闸）。
+        self.prompt_tokens_est: int = 0
+        # 产物归属（P0-5 收尾）：本 run 所属任务与当前子任务。运行时在加载 run/解析子任务
+        # 输入契约时写入，`_externalize` 落产物时读取——归属是元数据，读不到就留 NULL，
+        # 不为它额外加一次查询（写产物本身已经够重）。
+        self.task_id: str | None = None
+        self.step_id: str | None = None
 
 
 class HookError(Exception):
@@ -40,6 +48,31 @@ class BudgetExceededError(HookError):
         super().__init__(f"budget gate [{gate}]: {detail}")
         self.gate = gate
         self.detail = detail
+
+
+class ToolFailureLoopError(HookError):
+    """连续工具失败熔断（方案 §4 P0-3 第二道闸）：run 落 failed，不进入终答。"""
+
+    def __init__(self, code: str, detail: str, *, source: str, tools: list[str]) -> None:
+        super().__init__(f"tool failure loop [{code}]: {detail}")
+        self.code = code
+        self.detail = detail
+        self.source = source
+        self.tools = tools
+
+
+class ToolCapacityExceededError(HookError):
+    """必得能力集超出硬上限（方案 §4 P0-2）：宁可显式失败，不可静默截断。
+
+    run 落 `failed` + `error.code=tool_capacity_exceeded`，提示缩小 `domain_ids`
+    或提高 `tool_budget`；不发终答、不进入 ReAct 循环。
+    """
+
+    def __init__(self, required: int, hard_limit: int, names: list[str]) -> None:
+        super().__init__(f"required tools {required} > hard limit {hard_limit}")
+        self.required = required
+        self.hard_limit = hard_limit
+        self.names = names
 
 
 class ToolCallRequest:
@@ -61,12 +94,15 @@ class ToolResultInfo:
         content: Any,
         elapsed_ms: int = 0,
         args_snapshot: dict[str, Any] | None = None,
+        error: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.ok = ok
         self.content = content
         self.elapsed_ms = elapsed_ms
         self.args_snapshot = args_snapshot or {}  # 循环检测指纹用（M2-2c 扩展）
+        # 结构化失败（方案 §4 P0-3）：{code, detail, retryable, source}；成功为 None
+        self.error = error
 
 
 class EngineHook(Protocol):

@@ -66,3 +66,13 @@ class KbChunk(UUIDPkMixin, Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# 向量检索索引：与 m4a 迁移中的原生 DDL 同名同义，声明在 metadata 里是为了让
+# autogenerate 不会把它当成"多余的索引"删掉（HNSW 无法用普通 Column index=True 表达）
+Index(
+    "ix_kb_chunks_embedding_hnsw",
+    KbChunk.embedding,
+    postgresql_using="hnsw",
+    postgresql_ops={"embedding": "vector_cosine_ops"},
+)

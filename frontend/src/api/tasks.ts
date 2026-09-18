@@ -32,6 +32,10 @@ export const tasksApi = {
     agent_id?: string | null;
     text?: string;
     model_provider_id?: string | null;
+    // 幂等键（P1-9）：连点「新开会话并发送」/超时重试都命中同一个主任务
+    client_message_id?: string | null;
+    // 输入契约取值（P1-4）：新建即提供输入，首条 run 不必再多问一轮
+    inputs?: Record<string, string | number | boolean | null>;
   }) => api.post<TaskCreateOut>("/tasks", body),
   update: (taskId: string, body: { title?: string; status?: string }) =>
     api.patch<TaskDetailOut>(`/tasks/${taskId}`, body),
@@ -44,4 +48,11 @@ export const tasksApi = {
     stepId: string,
     body: { status?: string; resolution?: Record<string, unknown> | null },
   ) => api.patch<TaskDetailOut>(`/tasks/${taskId}/steps/${stepId}`, body),
+  /** 受阻支线收敛（P1-6）：close=关闭支线 / requeue=重新排队 / escalate=转人工。
+   *  这是替代「人工 SQL 改 task_steps」的前台入口，动作会进 run 事件流。 */
+  convergeStep: (
+    taskId: string,
+    stepId: string,
+    body: { action: "close" | "requeue" | "escalate"; detail?: string },
+  ) => api.post<TaskDetailOut>(`/tasks/${taskId}/steps/${stepId}/converge`, body),
 };

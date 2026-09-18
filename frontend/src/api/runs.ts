@@ -17,11 +17,16 @@ export const runsApi = {
   abort: (runId: string) =>
     api.post<{ run_id: string; status: string; detail?: string }>(`/runs/${runId}/abort`),
   // answer：approved/rejected 为计划与高危工具确认；其余文本为支线子任务答复（ADR-24）；
-  // extra.data/applied：侧边栏 plugin 前端的统一结构化回传（§3.5）
+  // extra.data/applied：侧边栏 plugin 前端的统一结构化回传（§3.5）；
+  // extra.inputs：补输入卡提交（P1-4），只带 inputs、answer 留空也是合法恢复
   confirm: (
     runId: string,
     answer: string,
-    extra?: { data?: unknown; applied?: Array<{ capability: string; result: unknown }> },
+    extra?: {
+      data?: unknown;
+      applied?: Array<{ capability: string; result: unknown }>;
+      inputs?: Record<string, string | number | boolean | null>;
+    },
   ) =>
     api.post<{ run_id: string; status: string; answer: string }>(`/runs/${runId}/confirm`, {
       answer,

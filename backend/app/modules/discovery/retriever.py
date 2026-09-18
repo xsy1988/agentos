@@ -51,8 +51,11 @@ async def embed_text(query: str) -> list[float] | None:
     return await _embed_query(query)
 
 
-def _cap_dict(cap: Any) -> dict[str, Any]:
-    """ORM → 引擎侧 dict（capability 粒度，payload 含 schema/transport 等）。"""
+def cap_dict(cap: Any) -> dict[str, Any]:
+    """ORM → 引擎侧 dict（capability 粒度，payload 含 schema/transport 等）。
+
+    装配与 Worker 发布前展开校验共用。
+    """
     return {
         "id": str(cap.id),
         "name": cap.name,
@@ -157,9 +160,26 @@ async def _task_scope(db: Any, task_id: str) -> dict[str, Any] | None:
         "worker_name": task.worker_name,
         "worker_version": task.worker_version,
         "domain_ids": domain_ids,
+        # 必得集标记（方案 §4 P0-2）：主任务绑定 Worker 声明的域内能力在本次 run 内
+        # **全量保留**，不参与 tool_budget 竞争（装配由 assembler.partition_tools 完成）
+        "required_ids": domain_ids,
         "common_ids": common_ids,
         "hints": tuple(hints),
     }
+
+
+def _order_required(
+    caps: list[dict[str, Any]], *, hints: tuple[str, ...] = ()
+) -> list[dict[str, Any]]:
+    """必得集内部排序（纯函数）：当前主线步骤 `capability_hint` 点名的能力提到最前。
+
+    层内保持传入顺序（与 `order_by_scope` 同纪律），只做“题名优先”的一次稳定重排。
+    """
+    out = list(caps)
+    if hints:
+        named = set(hints)
+        out.sort(key=lambda c: 0 if c["name"] in named else 1)
+    return out
 
 
 async def retrieve_capabilities(
@@ -167,14 +187,18 @@ async def retrieve_capabilities(
 ) -> dict[str, Any]:
     """语义 Top-K + Agent pinned 常驻，语义结果按主任务归属分层。
 
-    返回 {"semantic": [...], "pinned": [...], "scope": {...}|None}；
+    返回 `{"semantic": [...], "pinned": [...], "required": [...], "scope": {...}|None}`；
     条目带 `scope`（task_domain / task_common / global），assembler 据此写 source。
+
+    `required` = 必得集（方案 §4 P0-2）：Agent pinned + 当前主任务域内能力。域内能力
+    按 id **显式加载**，不受语义 Top-K 候选窗口限制——否则“必得”就会退化成“看运气”。
     """
     from app.modules.capabilities.models import Capability, CapabilityBinding
 
     vec = await _embed_query(query)
     pinned: list[dict[str, Any]] = []
     semantic: list[dict[str, Any]] = []
+    required: list[dict[str, Any]] = []
     scope: dict[str, Any] | None = None
     async with session_factory() as db:
         pinned_rows = await db.scalars(
@@ -186,7 +210,7 @@ async def retrieve_capabilities(
                 Capability.enabled.is_(True),  # noqa: E712
             )
         )
-        pinned = [_cap_dict(c) for c in pinned_rows]
+        pinned = [cap_dict(c) for c in pinned_rows]
         if vec is not None:
             rows = await db.scalars(
                 select(Capability)
@@ -198,7 +222,7 @@ async def retrieve_capabilities(
                 .order_by(Capability.embedding.cosine_distance(vec))
                 .limit(k * CANDIDATE_FACTOR)
             )
-            semantic = [_cap_dict(c) for c in rows]
+            semantic = [cap_dict(c) for c in rows]
             if task_id:
                 scope = await _task_scope(db, task_id)
             if scope:
@@ -211,4 +235,35 @@ async def retrieve_capabilities(
                 )
             else:
                 semantic = semantic[:k]
-    return {"semantic": semantic, "pinned": pinned, "scope": scope}
+        scope = scope or (await _task_scope(db, task_id) if task_id else None)
+        required = await _load_required(db, pinned, scope)
+    return {"semantic": semantic, "pinned": pinned, "required": required, "scope": scope}
+
+
+async def _load_required(
+    db: Any, pinned: list[dict[str, Any]], scope: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """必得集加载（pinned 全量 + 主任务域内能力按 id 显式取）。
+
+    域内能力**不走向量检索**：Worker 声明的能力必须 100% 可见（方案 §4 P0-2 的 E4）。
+    """
+    from app.modules.capabilities.models import Capability
+
+    out: list[dict[str, Any]] = list(pinned)
+    seen = {c["id"] for c in out}
+    ids = set((scope or {}).get("required_ids") or set())
+    if ids:
+        try:
+            uuids = [uuid.UUID(i) for i in ids]
+        except (ValueError, AttributeError):
+            uuids = []
+        if uuids:
+            rows = await db.scalars(
+                select(Capability).where(
+                    Capability.id.in_(uuids),
+                    Capability.enabled.is_(True),  # noqa: E712
+                )
+            )
+            domain = [cap_dict(c) for c in rows if str(c.id) not in seen]
+            out.extend(_order_required(domain, hints=tuple((scope or {}).get("hints") or ())))
+    return out

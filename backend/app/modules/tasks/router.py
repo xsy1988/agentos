@@ -8,18 +8,21 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
 from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation
-from app.modules.runs.models import Run
+from app.modules.runs import events as run_events
+from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run, RunArtifact
+from app.modules.runs.schemas import ArtifactOut, TaskArtifactOut
 from app.modules.tasks import service
 from app.modules.tasks.models import Task, TaskStep
 from app.modules.tasks.schemas import (
     ConversationBrief,
+    StepConvergeIn,
     StepCreateIn,
     StepUpdateIn,
     TaskCreateIn,
@@ -32,6 +35,7 @@ from app.modules.tasks.schemas import (
     WorkerGroupBrief,
 )
 from app.modules.workers import registry
+from app.modules.workers.inputs import InputContractError, sanitize_provided_inputs
 from app.modules.workers.registry import COMMON_WORKER, COMMON_WORKER_DISPLAY
 
 router = APIRouter(
@@ -40,8 +44,7 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-# 未终态 run：看板据此显示「执行中 / 待确认」
-NON_TERMINAL_RUN_STATUSES = ("pending", "running", "paused_awaiting_confirm")
+# 未终态 run（看板据此显示「执行中 / 待确认 / 等待外部」）真源见 runs/models
 
 
 # ---------- 序列化辅助 ----------
@@ -298,7 +301,27 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     if not meta.enabled:
         raise HTTPException(status.HTTP_409_CONFLICT, f"Worker「{body.worker_name}」已停用")
     agent = await conv_service.resolve_agent(db, body.agent_id)
+    try:
+        provided_inputs = sanitize_provided_inputs(body.inputs)
+    except InputContractError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
+
+    # 幂等（P1-9）：判重必须发生在建会话/任务之前——重复提交若走到 create_user_run
+    # 才发现，会话与主任务骨架已经落库，前台的「连点两次」会多出空任务。
+    key = conv_service.normalize_client_message_id(body.client_message_id)
+    if key is not None:
+        existing = await conv_service.find_run_by_client_message_id(db, key)
+        if existing is not None:
+            task_id = (existing.input or {}).get("task_id")
+            task = await db.get(Task, UUID(str(task_id))) if task_id else None
+            if task is None or existing.conversation_id is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, "重复提交：该消息已处理")
+            return TaskCreateOut(
+                task=(await _decorate_tasks(db, [task]))[0],
+                conversation_id=existing.conversation_id,
+                run_id=existing.id,
+            )
 
     # 未显式命名 → 保持默认标题，首条消息到达时自动命名并同步任务标题
     conv = Conversation(agent_id=agent.id, title=body.title or "新会话")
@@ -321,6 +344,8 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
             attachments=[],
             model_override=model_override,
             task=task,
+            client_message_id=key,
+            provided_inputs=provided_inputs,
         )
     await db.commit()
     await db.refresh(task)
@@ -376,6 +401,45 @@ async def list_task_steps(task_id: UUID, db: AsyncSession = Depends(get_db)) -> 
     return [TaskStepOut.model_validate(s) for s in rows.all()]
 
 
+@router.get("/{task_id}/artifacts", response_model=list[TaskArtifactOut])
+async def list_task_artifacts(
+    task_id: UUID,
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> list[TaskArtifactOut]:
+    """任务级产物视图（P0-5 收尾）：跨本任务的 run 归集产物，正文按需取 `/artifacts/{id}`。
+
+    归集口径两条腿并用：产物自身的 `task_id`（新写入路径）+ 子任务绑定的 run（`task_steps.run_id`，
+    覆盖本次归属列之前的存量行）。只看 `task_id` 会让老数据集体消失，只看 run 则丢掉"任务内
+    新增/人工挂载"的归属。排序按时间倒序（最新成果在最上），`limit` 挡住超大任务的一次性拉取。
+    """
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    steps = list((await db.scalars(select(TaskStep).where(TaskStep.task_id == task_id))).all())
+    run_ids = [s.run_id for s in steps if s.run_id is not None]
+    conditions = [RunArtifact.task_id == task_id]
+    if run_ids:
+        conditions.append(RunArtifact.run_id.in_(run_ids))
+    stmt = (
+        select(RunArtifact)
+        .where(or_(*conditions))
+        .order_by(RunArtifact.created_at.desc())
+        .limit(limit)
+    )
+    rows = list((await db.scalars(stmt)).all())
+    step_names = {s.id: s.name for s in steps}
+    return [
+        TaskArtifactOut(
+            **ArtifactOut.model_validate(a).model_dump(),
+            task_id=a.task_id or task_id,
+            step_id=a.step_id,
+            step_name=step_names.get(a.step_id) if a.step_id else None,
+        )
+        for a in rows
+    ]
+
+
 @router.post("/{task_id}/steps", response_model=TaskDetailOut, status_code=status.HTTP_201_CREATED)
 async def create_task_step(
     task_id: UUID, body: StepCreateIn, db: AsyncSession = Depends(get_db)
@@ -423,6 +487,52 @@ async def update_task_step(
         task = await service.update_step_status(db, step, body.status, resolution=body.resolution)
     elif body.resolution is not None:
         step.resolution = body.resolution
+    await db.commit()
+    await db.refresh(task)
+    return await _task_detail(db, task)
+
+
+@router.post("/{task_id}/steps/{step_id}/converge", response_model=TaskDetailOut)
+async def converge_task_step(
+    task_id: UUID,
+    step_id: UUID,
+    body: StepConvergeIn,
+    db: AsyncSession = Depends(get_db),
+) -> TaskDetailOut:
+    """前台收敛受阻支线（P1-6）：关闭支线 / 重新排队 / 转人工。
+
+    替代「人工 SQL 改 task_steps」：状态与 `resolution.reason`（恒为 manual 枚举）
+    一次落库，并在该支线所属 run 的事件流里留痕（close/requeue → unblocked，
+    escalate → blocked），SSE 与事件重放因此都能看到收敛动作。
+    """
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    try:
+        step = await service.converge_blocked_step(
+            db, task, step_id, action=body.action, detail=body.detail
+        )
+    except ValueError as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if step is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "子任务不存在")
+    # 事件载荷必须在 commit 前取（commit 会让 ORM 实例过期）
+    event_payload = {
+        "step_id": str(step.id),
+        "task_id": str(task.id),
+        "name": step.name,
+        "action": body.action,
+        "reason": "manual",
+        "status": step.status,
+    }
+    # 收敛动作是「关于该 run 的事实」：附着在支线所属 run 的事件流上。
+    # 无 run 归属的支线（人工添加/模板遗留）没有可附着的事件流，只落状态（§5 P1-6）。
+    if step.run_id is not None:
+        if body.action == "escalate":
+            await run_events.emit_event(step.run_id, "blocked", event_payload, db=db)
+        else:
+            await run_events.emit_event(step.run_id, "unblocked", event_payload, db=db)
     await db.commit()
     await db.refresh(task)
     return await _task_detail(db, task)

@@ -13,12 +13,12 @@
 
 Agent 平台是一个任务导向的 Agent 运行平台：**任务是第一等公民，会话是任务的执行外壳**。
 你要入驻的东西叫 **Worker**——一类可复用的工作目标，本质是一个任务型 Agent 的「任务定义」。
-平台引擎（LangGraph 七节点循环图）负责调度执行，你的职责是：
+平台引擎（LangGraph 八节点循环图，含外部等待闸门 `await_gate`）负责调度执行，你的职责是：
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │  你提供                                                      │
-│  ① Worker 定义：WORKER.md（干什么/怎么干/遇何问题/调哪个能力）│
+│  ① Worker 定义：WORKER.md（干什么/怎么干/遇何问题/调哪个能力）+ inputs 输入契约 │
 │  ② 能力（可执行单元）：mcp server / plugin 前端 / ……         │
 │  ③（可选）外部服务本体：保持在你自己的进程/主机上运行        │
 ├─────────────────────────────────────────────────────────────┤
@@ -196,7 +196,9 @@ Worker 的 `capabilities` 引用清单里写内置工具名即可**（`probe_url
 
 ### 2.3 plugin：前端页面（+可选后端通道）
 
-平台中**只有 plugin 携带前端页面**，唯一宿主是任务详情右侧边栏（可拖拽变宽，最大 ≤50vw）。
+平台中**只有 plugin 携带前端页面**，唯一宿主是任务详情右侧边栏（可拖拽变宽，**默认上限半屏**，用户可在顶栏把上限放宽到 70%）。P1-8 起 plugin 前端**不再独占右栏**：它占据右栏上半部分，任务详情在下半部分同屏并存（任务详情可折叠把高度全让给 plugin）。因此**不要假设自己拥有整栏高度**，也不要在自己的页面里再画一层"整页"布局。
+
+> `open_sidebar` 卡的 `sidebar.width_hint` 语义：期望宽度占屏比例，**取值 ≤ 0.5**，是**换算基准而不是硬约束**——实际宽度还会被窗口宽度与用户配置的上限（半屏 / 70%）再夹一次，下界 300px。想要更宽请调整自身布局自适应，不要靠 `width_hint` 索要更大面积。
 
 **模式 A：iframe（推荐外部 plugin——任意技术栈，强隔离）**
 
@@ -305,6 +307,77 @@ xxx_status   (read)   → 按 task_id 查询进度/产出
 
 产出报告建议回流平台知识库（入库并向量化），供 `search_knowledge` 跨任务检索复用。
 
+#### 2.6.1 平台持有等待（P0-4，推荐；需外部服务实现回调）
+
+上一小节的 `xxx_status` 范式有一个固有代价：**等待期间 run 被模型自己的轮询占住**——
+每次轮询都是一次 iteration + 一次工具调用 + 一段上下文，分钟级流程会吃掉可观的时长与
+token 预算，且 run 一旦被重启对账收殓就前功尽弃。
+
+平台因此提供**一等外部等待**：派发类工具只出网一次，随后**平台**持有等待状态，外部服务
+完成后主动回调——模型侧**零轮询**。
+
+**工作方式**（平台内建，无需 Worker 侧改动接口）：
+
+1. 平台登记 `await_broker` 行（`waiting`），把回传地址注入派发工具的 args：
+
+   ```json
+   {"await_callback": {
+      "await_id": "...", "url": "https://<平台>/api/v1/open/awaits/<await_id>/resolve",
+      "token": "<回调专属凭据>", "idempotency_key": "<参数指纹>"}}
+   ```
+
+   > 示例见 `app/modules/engine/tools_builtin.py:_procurement_trigger`：**原样透传**给外部服务即可。
+   > 另：派发工具如声明了**第 2 个形参**，还能从**工具执行上下文**（P1-10，`engine/tool_context.py`）直接取到
+   > `callback_token` / `await_id` / `callback_url` 与 `run_id` / 工具幂等键，不必再从 `args` 里抠。MCP 通道的
+   > 上下文走协议 `_meta`（`_meta.agentos`），**不并入工具入参 JSON**——多塞未知键会撞 Server 的
+   > `inputSchema` 校验（对端如何对待未知 `_meta` 尚未在真实 Server 上验证）。
+
+2. 派发成功后 run 进入 `waiting_external`（暂停执行段：`active_ms` 停表、`deadline_at` 顺延、
+   `iterations`/`tool_calls` 不增长），可安全重启。
+3. 外部服务完成后回调平台：
+
+   ```bash
+   curl -X POST "$PLATFORM/api/v1/open/awaits/$AWAIT_ID/resolve" \
+     -H "X-API-Key: $OPEN_API_TOKEN" -H 'Content-Type: application/json' \
+     -d '{"callback_token":"<注册响应里的 token>","idempotency_key":"<同上>","payload":{"score":92}}'
+   ```
+
+   | 返回 | 含义与处置 |
+   |---|---|
+   | `200 {"resumed":true}` | 首次落定，已唤醒 run；**正常路径** |
+   | `200 {"resumed":false}` | 幂等重放或已被超时/撤销先落定：**不要重试派发**，这不是错误 |
+   | `401` | `X-API-Key` 缺失/错误（或平台未配置 `open_api_token` → `503`） |
+   | `403` | `callback_token` 与 `await_id` 不匹配（勿在日志里打印 token） |
+   | `404` | 等待记录不存在（`await_id` 错） |
+   | `409` | 带了 `idempotency_key` 但与登记时不一致（串号回调） |
+
+**外部服务必须做到的三件事**
+
+1. **按 `idempotency_key` 去重**：平台的重放边界是 `at-most-once`——派发已出网但进程在
+   落库前崩溃时，重放会**再出网一次**。外部服务据此键去重才能避免重复计费/重复入库。
+2. **回调失败要重试**（带同一个 `idempotency_key`）：网络抖动导致的回调丢失只能靠外部侧
+   重试补齐；平台侧的超时（`deadline_at`）是**兜底**而不是主路径——超时后 run 收到的是
+   结构化失败 `await_expired`，成果会丢。
+3. **不依赖平台主动回调**：一期只做**拉取式**（外部服务调平台）。平台不会主动 POST 到外部
+   地址（避免 SSRF 面），所以 `await_callback.url` 是你唯一要实现的通道。
+
+**灰度与前置条件**
+
+平台的等待模式由 `settings.await_external_enabled` 控制，**默认 `false`**：开关关闭时行为与
+旧版完全一致（派发工具照常同步执行、`xxx_status` 轮询工具模型可见），因此**外部服务在实现
+回调契约之前，平台侧必须保持 `false`**。开关打开后：
+
+- 派发类工具（`app/modules/awaits/policy.py:AWAIT_DISPATCH_BUILTINS`）不再由模型侧等到结果；
+- 被取代的轮询工具（同文件 `AWAIT_SUPERSEDED_BUILTINS`）**从模型可见列表中移除**
+  （能力仍保留给平台/人工使用）——这是"模型不可能轮询"的硬保证。
+
+**观测与人工干预**（用户 JWT）
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| `GET` | `/api/v1/awaits?run_id=&status=` | 等待全貌（等谁、等到何时、等了多久）；**不含** `callback_token` |
+| `POST` | `/api/v1/awaits/{await_id}/cancel` | 人工撤销等待；run 收到结构化 `await_cancelled` |
+
 ---
 
 ## 3. Worker 编写规范
@@ -314,7 +387,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 
 | 级别 | 内容 | 载入时机 |
 |---|---|---|
-| **L1** | yaml 头 `name` + `description`（一句话讲清「什么场景用它」） | 常驻上下文（意图识别、看板） |
+| **L1** | yaml 头 `name` + `description`（一句话讲清「什么场景用它」）+ `inputs` 输入契约（§3.1.1） | `name`/`description` 常驻上下文（意图识别、看板）；`inputs` 用于调用前的齐备性判定 |
 | **L2** | 正文 playbook | Worker 激活时注入**永不压缩区** |
 | **L3** | `references` 清单 + `references/*.md` | 执行到相应节点按需拉取 |
 
@@ -343,6 +416,69 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 - search_knowledge (read)：检索历史沉淀
 ```
 
+### 3.1.1 输入契约 `inputs`（P1-4，必需输入由平台判定，不靠模型自觉）
+
+Worker 需要的外部输入（报价单、客户名、币种……）写在 front-matter 的 `inputs:` 里，
+**平台在调用模型之前判定齐备性**——缺必填就直接拦截并告诉你差哪个字段，而不是让模型
+拿着空上下文硬干（编数据）或反问用户。**不声明 = 平台不管**（既有 Worker 零回归）。
+
+```yaml
+---
+name: 供应商报价对比
+description: 对比多家供应商报价并给出推荐（采购比价场景用）
+capabilities: [probe_url, parse_quote, search_knowledge]
+inputs:
+  - name: quote_file          # 必填字段，见下方命名规则
+    type: file                # text | number | date | file | url | json（缺省 text）
+    required: true            # 缺省 false
+    description: 待比价的报价单（xlsx/pdf）   # ≤500 字符，缺失时展示给用户
+    example: 报价单-2026Q1.xlsx               # ≤200 字符
+  - name: budget
+    type: number
+    required: false
+    description: 预算上限（含税，人民币）
+---
+```
+
+**声明约束**（任一不满足 → `POST /workers` 走 4xx、开放注册走 **422**）：
+
+| 约束 | 值 |
+|---|---|
+| 条目数 | ≤ 16 |
+| `name` | 小写字母开头的 ASCII 标识：`^[a-z][a-z0-9_]{0,39}$`，**同一 Worker 内不得重名** |
+| `type` | `text` / `number` / `date` / `file` / `url` / `json`（缺省 `text`） |
+| `required` | 布尔值（字符串 `"yes"` 会被拒——避免"看起来必填其实不是"） |
+| `description` / `example` | ≤500 / ≤200 字符 |
+| 其它键 | **一律拒绝**（未知字段会让声明与平台理解悄悄不一致） |
+
+**取值只来自平台能确定性判定的事实**（这是这项能力的核心纪律——**不让模型填**、
+不做文本抽取，因此"齐备判定"不会随模型输出漂移）：
+
+1. **显式传值**：`POST /conversations/{id}/messages` 或 `POST /tasks` 的 `inputs` 对象
+   （`{"quote_file": "报价单-2026Q1.xlsx"}`；只接受文本/数字/布尔，单值 ≤2000 字符）；
+2. **会话附件**：`file` 类型输入由随消息附带的附件**按声明顺序逐个顶替**（附件是平台
+   事实，不依赖模型转述）——注意**一个附件只消费一次**，多个 `file` 输入共享同一附件
+   目前不支持；
+3. **跨轮累积**：同一会话里历史 run 提供过的取值会被沿用（第一轮给了报价单，第三轮
+   不该被拦）。**未在 `inputs` 里声明的键一律忽略**（契约外输入不参与判定、也不进上下文）。
+
+**行为**：
+
+- 缺必填 → run **在调用模型前**落 `failed`，结构化 `error.code = "missing_inputs"`
+  （含 `missing` 字段名数组、每项声明的 `provided`/`value`、`retryable: false`、
+  `phase: "pre_invoke"`），用户看到的是"缺哪个输入 + 这个输入是干什么用的 + 补齐后
+  重新发起"。**此路径不消耗模型调用**。
+- 齐备 → 平台把"输入契约 + 实测取值"注入 Worker 的**永不压缩区**，模型看到的是
+  「已预检」而不是自己猜自己要什么。
+- **确认 / 等待恢复（`Command`）不重复设门**：计划已批准、执行已过半，此刻拦下来只会
+  丢进度。
+- **定时任务**（无交互入口补输入）触发声明了 `required: true` 的 Worker 会被拦 →
+  这类 Worker 请声明 `required: false`，或让输入走"附件/历史累积"通道。
+
+**边界（如实说明）**：门是 **run 级**（主 Worker 声明）；子任务 `inputs` 只做声明、
+校验、展示与 API 暴露，**没有 step 级门**（拦住子任务需要 interrupt-ask 机制，属独立
+工程项）；**平台目前没有 inputs 表单 UI**（补输入的通道是 API / 外部系统）。
+
 ### 3.2 子任务拆分（sub_workers）
 
 - 每个子任务一个文件夹：`sub_workers/<名>/WORKER.md`；
@@ -351,7 +487,11 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
   `ask_user`（文本澄清）/ `request_decision`（富交互决策卡，指向你的 plugin）/
   `declare_subtask`（非阻塞登记）触发；
 - `capability_hint`（能力名数组）给该步打检索提示——在本 Worker 域内优先装配这些能力
-  （软约束，不是白名单）。
+  （软约束，不是白名单）；
+- **`inputs`（可选，P1-4）**：语法与约束同 §3.1.1。子任务的 `inputs` 目前只做**声明、
+  校验、展示**（注册/编辑时会被校验，`GET /workers/{name}` 会回传），**不会**在子任务
+  开始时拦截——平台只有 run 级预检门（见 §3.1.1「边界」）。写它是为了把"这一步要什么"
+  讲清楚、供人审与后续演进，不要指望它替你挡住缺失输入。
 
 ### 3.3 版本纪律
 
@@ -360,6 +500,28 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 - L3 `references` 条目示例：
   `{"kind": "plugin", "title": "决策面板", "capability": "acme_review_panel"}`、
   `{"kind": "skill", "title": "比价方法论", "capability": "acme_bid_method"}`。
+
+### 3.4 容量硬门（P0-2，发布前拦截）
+
+发布版本（`POST /api/v1/workers/{name}/versions`）时平台会把 `capabilities:` 展开成工具清单并计数，
+**展开后工具数 > `MAX_TOOLS_HARD`（24）直接 `422` 拒绝**：
+
+```text
+能力展开后共 31 个工具，超过硬上限 24；请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker
+```
+
+为什么是发布时拦：Worker 本身不知道调用方 Agent 的 `tool_budget`，**24 是"任何 Agent 都装不下"
+的物理上限**（单 run 能塞进上下文窗口的工具数）。与其上线后在 run 里失败，不如在这一步拒绝。
+两条入口共用同一道门，因此第三方**在注册时就会拿到错误**，不必等到上线：
+
+| 入口 | 校验对象 | 拒绝响应 |
+|---|---|---|
+| `POST /api/v1/workers/{name}/versions`（平台侧发布） | 生效版本的 `capabilities:` 展开结果 | `422 能力展开后共 N 个工具，超过硬上限 24；请先收敛 WORKER.md 的 capabilities 名单，或按需拆分 Worker` |
+| `POST /api/v1/open/workers/register`（一键注册） | 本次提交的能力包展开结果 | `422 Worker「X」的 capabilities 展开后共 N 个工具，超过硬上限 24；请收敛 capabilities 名单，或按需拆分 Worker` |
+
+> 与运行期装配的分工：`tool_budget` 是"共享区名额"（放不下就按语义距离丢共享区工具），
+> `MAX_TOOLS_HARD` 约束**必得集**（pinned + 本 Worker 域，永不切片）；真的超过时装配层
+> 会显式失败并给出 `capability_overflow` 事件，而不是悄悄少给你几个工具。
 
 ---
 
@@ -391,7 +553,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `worker` | object | ✓ | Worker 定义：`name`(≤128，禁路径分隔符/点开头)、`description`(L1，必填)、`icon`/`color`(可选)、`capabilities`(能力名引用清单)、`references`(L3 清单)、`playbook`(L2 正文；空则落脚手架模板)、`sub_workers`(数组：`name/seq/kind/optional/description/playbook/capability_hint`，`optional` 缺省按 kind 推断) |
+| `worker` | object | ✓ | Worker 定义：`name`(≤128，禁路径分隔符/点开头)、`description`(L1，必填)、`icon`/`color`(可选)、`capabilities`(能力名引用清单)、`references`(L3 清单)、`playbook`(L2 正文；空则落脚手架模板)、`inputs`(**输入契约**，P1-4：数组，`name/type/required/description/example`，约束见 §3.1.1)、`sub_workers`(数组：`name/seq/kind/optional/description/playbook/capability_hint/inputs`，`optional` 缺省按 kind 推断) |
 | `capabilities` | array | | 逐项结构同 §2 各示例（`type/name/description/risk_level/payload/secret_env/test_info/version/category`）；**幂等：同名已存在则跳过，沿用平台既有配置** |
 | `if_exists` | enum | 缺省 `fail` | Worker 已存在时的决策：`fail`(409) / `skip`(沿用现状) / `new_version`(保留历史、发布 vN+1) |
 
@@ -431,7 +593,7 @@ Worker = `data/workers/<名>/` 下的一套文件包，核心是一份 **WORKER.
 | 401 / 503 | 令牌无效 / 开放接口未启用 |
 | 404 | 查询的 Worker 不存在 |
 | 409 | Worker 已存在且 `if_exists=fail` |
-| 422 | payload 结构非法；tool 未带合法 `payload.builtin`；引用清单有未注册能力；`secret_env` 超长等 |
+| 422 | payload 结构非法；tool 未带合法 `payload.builtin`；引用清单有未注册能力；`secret_env` 超长；**`inputs` 声明非法**（未知字段 / 非法 `name` 或 `type` / 重名 / 超过 16 条 / `required` 非布尔 / 描述或示例超长）等 |
 
 ### 4.4 完整示例（curl）
 
@@ -476,6 +638,12 @@ curl -X POST http://<平台地址>/api/v1/open/workers/register \
       {"kind": "plugin", "title": "审核面板", "capability": "acme_review_panel"}
     ],
     "playbook": "# ACME 客户尽调\n\n## 第零步：依赖预检（必做）\n…（五件事见 §3.1）",
+    "inputs": [
+      {"name": "customer_name", "type": "text", "required": true,
+       "description": "被尽调的客户名称（与 CRM 中一致）", "example": "示例科技有限公司"},
+      {"name": "credit_file", "type": "file", "required": false,
+       "description": "客户提供的信用报告（pdf），有则一并核验"}
+    ],
     "sub_workers": [
       {"name": "拉取客户档案", "seq": 1, "kind": "main",
        "description": "从 ACME CRM 拉取客户基础档案与跟进记录",
@@ -497,6 +665,9 @@ curl -X POST http://<平台地址>/api/v1/open/workers/register \
 - [ ] L2 playbook 非空且覆盖「五件事 + 第零步依赖预检」（空模板会在 `warnings` 里提示）；
 - [ ] 主线子任务有 `seq`、支线 `kind=branch`；需富交互的步骤 playbook 指明了
       `request_decision` + 对应 plugin；
+- [ ] **必需输入写进了 `worker.inputs`**（§3.1.1）：`required` 如实（别把可缺的写成必填，
+      否则每次执行都会被拦）；`file` 类型配 `description` 讲清要哪份文件；定时任务触发的
+      Worker 不要声明 `required: true`；
 - [ ] 端到端验证：平台内新建会话发一条命中你 Worker 的消息 → 看板出现任务卡 →
       planner 按主线骨架推进 → 支线抛卡/侧边栏处理 → 回传续跑 → 进度三处同源（看板/任务卡/事件）；
 - [ ] 写操作工具触发确认门（risk_level 定级生效）；只读工具不打扰用户。

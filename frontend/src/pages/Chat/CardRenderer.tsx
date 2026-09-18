@@ -8,23 +8,33 @@
  * - subtask_clarification：{question, title, step_id, kind}（ADR-24，文本答复回注）
  * - interactive_decision：{card_type, title, summary, severity, body, actions[], sidebar, step_id,
  *     idempotency_key}（决策2 新增，带 sidebar；点「去处理」开侧边栏渲染 plugin 前端，§3.5）
+ * - input_required：{step_id, step_name, sub_ref, missing[], message, inputs[]}（P1-4 子任务级
+ *     输入门，见 StepInputCard；补齐后从暂停点继续，不重跑已产出的进度）
  *
  * 自定义卡（业务扩展，不改内核）：未命中注册表的 card_type 落到 GenericCard——
  * 按声明式模板 {title, summary, severity, body, actions} 通用渲染（server_driven 思路）；
  * 需要富交互的卡面经 actions.kind=open_sidebar 走 plugin 前端（iframe），即「plugin 自带卡面」。
  */
 import { useState } from "react";
-import type { ComponentType, ReactNode } from "react";
-import { Button, Card, Input, Space, Table, Tag, Typography } from "antd";
+import type { ReactNode } from "react";
+import { Button, Input, Space, Table, Tag, Typography } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
   ExclamationCircleOutlined,
   ExportOutlined,
+  InfoCircleOutlined,
   InteractionOutlined,
   QuestionCircleOutlined,
 } from "@ant-design/icons";
-import type { SidebarDescriptor } from "@/api/types";
+import { artifactsApi } from "@/api/artifacts";
+import CopyRefButton from "@/components/CopyRefButton";
+import StepInputCard from "./StepInputCard";
+import { SEVERITY_META, Shell, normSeverity } from "./CardShell";
+import type { CardComponent, Severity } from "./CardShell";
+import { artifactReference } from "@/utils/clipboard";
+import type { RunArtifactRef, SidebarDescriptor } from "@/api/types";
+import { fmtSize } from "@/utils/format";
 
 /** 卡片动作（§3.6）：kind 决定点击行为。 */
 export interface CardAction {
@@ -40,58 +50,15 @@ export interface CardContext {
   /** 事件 payload.payload：卡片主体 */
   inner: Record<string, unknown>;
   runId: string;
-  /** 计划/高危工具：approved/rejected；支线提问：用户自由文本；决策卡：action.key */
-  onConfirm: (answer?: string) => void;
+  /** 计划/高危工具：approved/rejected；支线提问：用户自由文本；决策卡：action.key；
+   *  补输入卡：`("", inputs)` —— 只提交输入、不带答复也是合法恢复（P1-4 收尾） */
+  onConfirm: (
+    answer?: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => void;
   onReject: () => void;
   /** interactive_decision「去处理」：打开右侧 plugin 前端侧边栏（§3.5） */
   onOpenSidebar: (sidebar: SidebarDescriptor) => void;
-}
-
-type CardComponent = ComponentType<{ ctx: CardContext }>;
-
-type Severity = "info" | "warn" | "danger";
-
-const SEVERITY_META: Record<Severity, { color: string; bg: string }> = {
-  info: { color: "var(--ant-color-primary)", bg: "rgba(22,119,255,0.06)" },
-  warn: { color: "var(--ant-color-warning)", bg: "rgba(250,173,20,0.06)" },
-  danger: { color: "var(--ant-color-error)", bg: "rgba(255,77,79,0.06)" },
-};
-
-function normSeverity(v: unknown, fallback: Severity = "info"): Severity {
-  const s = String(v ?? "").toLowerCase();
-  return s === "danger" || s === "warn" || s === "info" ? s : fallback;
-}
-
-/** 卡片外壳：统一非模态样式（出现在输入框上方），按 severity 着色。 */
-function Shell({
-  severity,
-  title,
-  icon,
-  children,
-}: {
-  severity: Severity;
-  title: string;
-  icon?: ReactNode;
-  children: ReactNode;
-}) {
-  const meta = SEVERITY_META[severity];
-  return (
-    <Card
-      size="small"
-      style={{
-        margin: "0 16px 8px",
-        borderColor: meta.color,
-        borderWidth: severity === "danger" ? 2 : 1,
-        background: meta.bg,
-      }}
-    >
-      <Space size={6} style={{ marginBottom: 8 }}>
-        {icon}
-        <Typography.Text strong>{title}</Typography.Text>
-      </Space>
-      {children}
-    </Card>
-  );
 }
 
 interface PlanItem {
@@ -452,9 +419,142 @@ const GenericCard: CardComponent = ({ ctx }) => (
   <DeclarativeCard ctx={ctx} fallbackTitle={`需要确认（${ctx.cardType}）`} />
 );
 
+/** 结果信封 outcome → 展示文案（done/partial/failed/blocked）。 */
+const OUTCOME_LABEL: Record<string, string> = {
+  done: "已完成",
+  partial: "部分完成",
+  failed: "失败",
+  blocked: "受阻",
+};
+
+/** 非 done 的机器可读原因 → 人话（后端 reason 字段，值域见方案 §4 P0-5）。 */
+const REASON_LABEL: Record<string, string> = {
+  timeout: "执行超时（已保留部分结果）",
+  verify_not_achieved: "验收未达成",
+  budget_exhausted: "预算耗尽",
+  cancelled: "已取消",
+  aborted: "已中止",
+};
+
+function outcomeSeverity(outcome: string): Severity {
+  if (outcome === "failed") return "danger";
+  if (outcome === "partial" || outcome === "blocked") return "warn";
+  return "info";
+}
+
+function fmtTokens(metrics: Record<string, unknown>): string {
+  const tokens = Number(metrics.input_tokens ?? 0) + Number(metrics.output_tokens ?? 0);
+  return tokens > 0 ? ` · token ${tokens.toLocaleString()}` : "";
+}
+
+/** 产物行：text/json 就地展开正文，file 下载落盘。任务级产物视图复用同一实现。 */
+export function ArtifactRow({ artifact }: { artifact: RunArtifactRef }) {
+  const [text, setText] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const isFile = artifact.kind === "file";
+
+  async function open() {
+    setBusy(true);
+    try {
+      if (isFile) {
+        const blob = await artifactsApi.fetchContent(artifact.id);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = artifact.name || artifact.id;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const detail = await artifactsApi.get(artifact.id);
+      const payload = detail.payload;
+      setText(
+        payload && "text" in payload
+          ? String(payload.text)
+          : JSON.stringify(payload ?? detail, null, 2),
+      );
+    } catch (e) {
+      setText(`加载失败：${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <Space size={6} wrap>
+        <Typography.Text style={{ fontSize: 12 }}>{artifact.name || artifact.id}</Typography.Text>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {artifact.kind} · {fmtSize(artifact.size)}
+        </Typography.Text>
+        <Button size="small" type="link" loading={busy} onClick={open}>
+          {isFile ? "下载" : text ? "收起" : "查看"}
+        </Button>
+        <CopyRefButton text={artifactReference(artifact)} tooltip="复制产物引用" />
+      </Space>
+      {text !== null && (
+        <pre
+          className="font-mono-tight"
+          style={{
+            fontSize: 12,
+            margin: "4px 0 0",
+            whiteSpace: "pre-wrap",
+            maxHeight: 240,
+            overflow: "auto",
+          }}
+        >
+          {text.length > 4000 ? `${text.slice(0, 4000)}…` : text}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ⑥ result：结果卡（内置，P0-5）。
+ *
+ * 只渲染**结果元信息**（outcome / reason / metrics / artifacts）：
+ * 正文已作为 assistant 消息落库并渲染，卡面再渲染一次就是双渲染。
+ * 卡本身进事件流（`card` 事件），因此历史重放不丢信息。
+ */
+const ResultCard: CardComponent = ({ ctx }) => {
+  const inner = ctx.inner;
+  const outcome = String(inner.outcome ?? "done");
+  const severity = outcomeSeverity(outcome);
+  const reason = String(inner.reason ?? "");
+  const metrics = (inner.metrics ?? {}) as Record<string, unknown>;
+  const artifactList = (inner.artifacts ?? []) as RunArtifactRef[];
+  const iterations = Number(metrics.iterations ?? 0);
+  const toolCalls = Number(metrics.tool_calls ?? 0);
+  const activeMs = Number(metrics.active_ms ?? 0);
+  return (
+    <Shell
+      severity={severity}
+      title={`运行结果 · ${OUTCOME_LABEL[outcome] ?? outcome}`}
+      icon={<InfoCircleOutlined style={{ color: SEVERITY_META[severity].color }} />}
+    >
+      {reason && (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {REASON_LABEL[reason] ?? reason}
+        </Typography.Text>
+      )}
+      <div style={{ fontSize: 11, color: "var(--ant-color-text-tertiary)", margin: "4px 0 8px" }}>
+        {activeMs > 0 ? `活跃 ${(activeMs / 1000).toFixed(1)}s` : ""}
+        {iterations > 0 ? ` · 迭代 ${iterations}` : ""}
+        {toolCalls > 0 ? ` · 工具 ${toolCalls}` : ""}
+        {fmtTokens(metrics)}
+      </div>
+      {artifactList.map((a) => (
+        <ArtifactRow key={a.id} artifact={a} />
+      ))}
+    </Shell>
+  );
+};
+
 /**
  * 卡片注册表：card_type → 渲染器。
- * 内置 4 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision）；
+ * 内置 6 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision/result/
+ * input_required）；
  * task_switch_suggested 走独立 TaskSwitchCard（send_message 返回，非 SSE 确认事件）。
  * 业务自定义卡无需改此表：声明式模板自动落 GenericCard，plugin 卡面经 open_sidebar 走侧边栏。
  */
@@ -463,6 +563,8 @@ export const CARD_REGISTRY: Record<string, CardComponent> = {
   high_risk_tool: HighRiskToolCard,
   subtask_clarification: SubtaskClarificationCard,
   interactive_decision: InteractiveDecisionCard,
+  result: ResultCard,
+  input_required: StepInputCard,
 };
 
 export default function CardRenderer({
@@ -474,13 +576,24 @@ export default function CardRenderer({
 }: {
   payload: Record<string, unknown>;
   runId: string;
-  onConfirm: (answer?: string) => void;
-  onReject: () => void;
-  onOpenSidebar: (sidebar: SidebarDescriptor) => void;
+  /** 结果卡等只读卡片不传动作回调：缺省为空操作 */
+  onConfirm?: (
+    answer?: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => void;
+  onReject?: () => void;
+  onOpenSidebar?: (sidebar: SidebarDescriptor) => void;
 }) {
   const cardType = String(payload.reason ?? "generic");
   const inner = (payload.payload ?? {}) as Record<string, unknown>;
   const Renderer = CARD_REGISTRY[cardType] ?? GenericCard;
-  const ctx: CardContext = { cardType, inner, runId, onConfirm, onReject, onOpenSidebar };
+  const ctx: CardContext = {
+    cardType,
+    inner,
+    runId,
+    onConfirm: onConfirm ?? (() => {}),
+    onReject: onReject ?? (() => {}),
+    onOpenSidebar: onOpenSidebar ?? (() => {}),
+  };
   return <Renderer ctx={ctx} />;
 }

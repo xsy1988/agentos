@@ -171,8 +171,16 @@ class McpConnection:
         """会话是否可用：owner 任务在跑且 session 已建立。"""
         return self.session is not None and self._owner is not None and not self._owner.done()
 
-    async def call_tool(self, tool_name: str, args: dict[str, Any]) -> str:
+    async def call_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> str:
         """调用工具，返回文本化结果。串行排队。
+
+        `meta` 是 MCP `tools/call` 的 `_meta` 字段（P1-10 的执行上下文走这里，
+        不塞进 args——多塞字段会撞 Server 的 inputSchema 校验）。
 
         死会话（owner 已终结 / 对端拆流）抛 McpNotConnected 或 anyio ClosedResourceError，
         由池的 call_tool 自愈；工具本身报错抛 RuntimeError（不自愈）。
@@ -181,7 +189,7 @@ class McpConnection:
         if session is None or not self._alive():
             raise McpNotConnected(f"MCP Server 未连接: {self.name}")
         async with self.lock:
-            result = await session.call_tool(tool_name, args)
+            result = await session.call_tool(tool_name, args, meta=meta)
         if result.isError:
             raise RuntimeError(f"MCP 工具执行报错: {self._content_text(result)}")
         self.consecutive_failures = 0
@@ -196,10 +204,15 @@ class McpConnection:
             resp = await session.list_tools()
         self.consecutive_failures = 0
         tools = list(resp.tools)
+        # 一并缓存 MCP 官方注解（P2-4）：多工具能力只有一个能力级 risk_level，
+        # 只读工具要么被整包当成 write 反复触发高危确认，要么被整包当 read 放行写操作。
+        # 注解是 Server 自己对每个工具的声明，比能力级一刀切细，也比按名字猜可靠。
         self.tools_cache = {
             t.name: {
                 "description": t.description or "",
                 "input_schema": t.inputSchema or {"type": "object", "properties": {}},
+                "read_only_hint": getattr(t.annotations, "readOnlyHint", None) is True,
+                "destructive_hint": getattr(t.annotations, "destructiveHint", None) is True,
             }
             for t in tools
         }
@@ -326,7 +339,14 @@ class McpPool:
 
     # ---------- 工具调用（engine tools 节点入口） ----------
 
-    async def call_tool(self, cap_id: UUID, tool_name: str, args: dict[str, Any]) -> str:
+    async def call_tool(
+        self,
+        cap_id: UUID,
+        tool_name: str,
+        args: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+    ) -> str:
+        """调用 MCP 工具；`meta` 透传到 `tools/call` 的 `_meta`（P1-10 执行上下文）。"""
         conn = self._conns.get(cap_id)
         if conn is None:
             # 不在池中（刚被摘除 / 启动时没连上）：即时 rebuild 一次再取
@@ -335,7 +355,7 @@ class McpPool:
             if conn is None:
                 raise McpNotConnected(f"MCP Server 不在池中: {cap_id}")
         try:
-            return await conn.call_tool(tool_name, args)
+            return await conn.call_tool(tool_name, args, meta=meta)
         except (McpNotConnected, ClosedResourceError, BrokenResourceError, EndOfStream) as e:
             # 死会话（对端容器/进程重启）：即时 retire + rebuild + 重试一次，不干等 60s
             # 健康循环——用户实测诉求：web_search 命中死会话应当立刻自愈而非整条流水线瘫掉
@@ -349,7 +369,7 @@ class McpPool:
             fresh = self._conns.get(cap_id)
             if fresh is None or fresh is conn:
                 raise
-            return await fresh.call_tool(tool_name, args)
+            return await fresh.call_tool(tool_name, args, meta=meta)
 
     async def _rebuild_guarded(self) -> None:
         """在任意任务（引擎请求 / 健康循环）里安全跑一次 rebuild。
@@ -413,6 +433,8 @@ class McpPool:
                             "tool_name": t.tool_name,
                             "description": cached["description"],
                             "input_schema": cached["input_schema"],
+                            "read_only_hint": cached.get("read_only_hint", False),
+                            "destructive_hint": cached.get("destructive_hint", False),
                         }
                     )
         return out

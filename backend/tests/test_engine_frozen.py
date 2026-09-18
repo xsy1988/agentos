@@ -11,9 +11,33 @@ from app.modules.engine.hooks import (
 )
 from app.modules.engine.state import LoopState
 
+# 显式期望清单（评审时一眼可见变更）。EVENT_TYPES 是唯一真源，
+# 这里断言"真源 = 期望清单"——两边各改一半会红灯（P0-6）。
+EXPECTED_EVENT_TYPES = (
+    "await_expired",  # 外部等待超时（P0-4，runtime._emit_await_outcome / graph.await_gate）
+    "await_resolved",  # 外部等待被回调/撤销（P0-4）
+    "await_started",  # 平台开始持有外部等待（P0-4，runtime._pause_for_await）
+    "blocked",  # 支线受阻（P1-6，runtime._reconcile_awaiting_steps / tasks.router converge）
+    "budget_warning",
+    "card",  # 结果卡/过程卡（P0-5，runtime._emit_result_card 发射）
+    "confirmation_request",
+    "capability_overflow",  # 必得能力集容量不足（P0-2，assembler 发射）
+    "context_compacted",  # L1/L2 上下文压缩（assembler 发射）
+    "error",
+    "message_delta",
+    "message_reset",  # 工具轮与终答轮的分隔标记（流式分段，w4）
+    "plan_updated",
+    "progress",  # 推送式进度（P1-5，runtime._sweep_progress 发射，唯一非模型轮次事件）
+    "run_status",
+    "thought",
+    "tool_call",
+    "tool_result",
+    "unblocked",  # 受阻支线被前台收敛（P1-6，tasks.router converge）
+)
+
 
 def test_loop_state_keys() -> None:
-    # 冻结的六个键，多一个少一个都算接口变更
+    # 冻结的七个键，多一个少一个都算接口变更（pending_awaits 为 P0-4 增量）
     assert set(LoopState.__annotations__) == {
         "messages",
         "protected_context",
@@ -21,23 +45,14 @@ def test_loop_state_keys() -> None:
         "plan_ref",
         "budget_state",
         "confirmation",
+        "pending_awaits",
     }
 
 
 def test_event_types_frozen() -> None:
-    # message_reset：工具轮与终答轮的分隔标记（流式分段，w4）
-    assert set(EVENT_TYPES) == {
-        "message_delta",
-        "message_reset",
-        "thought",
-        "tool_call",
-        "tool_result",
-        "plan_updated",
-        "confirmation_request",
-        "budget_warning",
-        "run_status",
-        "error",
-    }
+    # 注册表与期望清单一致；发射点覆盖由 tests/test_event_registry.py 守护（P0-6）
+    assert set(EVENT_TYPES) == set(EXPECTED_EVENT_TYPES)
+    assert len(EVENT_TYPES) == len(set(EVENT_TYPES)), "EVENT_TYPES 存在重复条目"
 
 
 async def _hook_chain_order() -> None:

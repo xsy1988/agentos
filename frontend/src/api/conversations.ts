@@ -2,6 +2,17 @@
 import { api } from "./client";
 import type { ConversationOut, MessageOut, SendMessageOut } from "./types";
 
+/** 发消息的可选参数（run 级覆盖 / 附件 / 涉密确认 / 幂等键），InputBar 与对话页共用。 */
+export interface SendMessageOptions {
+  modelProviderId?: string;
+  attachmentIds?: string[];
+  confirmUpload?: boolean;
+  forceCurrentTask?: boolean;
+  clientMessageId?: string;
+  /** 输入契约取值（P1-4）：{输入名: 取值}，键需与 Worker 声明的 inputs 同名 */
+  inputs?: Record<string, string | number | boolean | null>;
+}
+
 export const conversationsApi = {
   list: () => api.get<ConversationOut[]>("/conversations"),
   create: (title: string, agentId?: string) =>
@@ -17,20 +28,21 @@ export const conversationsApi = {
       `/conversations/${convId}/messages`,
       beforeId ? { before_id: beforeId } : undefined,
     ),
+  // clientMessageId：前端生成的幂等键（P1-9），重试复用同一个键 → 后端返回首次的 run
   sendMessage: (
     convId: string,
     text: string,
-    modelProviderId?: string,
-    attachmentIds?: string[],
-    confirmUpload?: boolean,
-    forceCurrentTask?: boolean,
+    opts: SendMessageOptions = {},
   ) =>
     api.post<SendMessageOut>(`/conversations/${convId}/messages`, {
       text,
-      model_provider_id: modelProviderId ?? null,
-      attachment_ids: attachmentIds ?? [],
-      confirm_upload: confirmUpload ?? false,
+      model_provider_id: opts.modelProviderId ?? null,
+      attachment_ids: opts.attachmentIds ?? [],
+      confirm_upload: opts.confirmUpload ?? false,
       // 「仍在本会话继续」：跳过新主任务检测，直接在当前任务里执行（ADR-27）
-      force_current_task: forceCurrentTask ?? false,
+      force_current_task: opts.forceCurrentTask ?? false,
+      client_message_id: opts.clientMessageId ?? null,
+      // 输入契约取值（P1-4）：随 run.input 快照固化，引擎据此预检必需输入
+      inputs: opts.inputs ?? {},
     }),
 };

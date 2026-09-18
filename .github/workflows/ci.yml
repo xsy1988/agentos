@@ -1,0 +1,122 @@
+name: CI
+
+# 四个代码门分支（后端 lint / 后端类型 / 后端单测 / 前端 lint+类型+构建）在 push、PR 上自动跑；
+# 真库验收需要 PostgreSQL，只在手动触发时跑（避免给常规提交装上数据库依赖）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # 仅供 CI 使用（真实密钥不入库）；测试与构建不访问真实第三方服务
+  SECRET_KEY: ci-not-a-secret
+
+jobs:
+  backend-lint:
+    name: 后端 lint（ruff check + format --check）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  backend-types:
+    name: 后端类型（mypy）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - run: uv run mypy app
+
+  backend-test:
+    name: 后端单测（DB-free 层）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  frontend:
+    name: 前端（lint + typecheck + build）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  acceptance:
+    name: 真库验收（手动触发）
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+asyncpg://agent:agent_dev_password@localhost:5432/agent_platform
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: agent
+          POSTGRES_PASSWORD: agent_dev_password
+          POSTGRES_DB: agent_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agent -d agent_platform"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --frozen
+      # 空库从零迁到 head，顺带演练历史迁移的 upgrade 路径
+      - run: uv run alembic upgrade head
+      - run: uv run alembic check
+      - run: uv run python -m scripts.verify_schema
+      # V1–V11 + 三条失败路径 + P1-4/P1-5/P1-6/P1-9/P2-6 的真实端到端验收
+      - run: uv run python -m scripts.accept_v16

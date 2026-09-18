@@ -1,14 +1,26 @@
-"""InProcessBackend —— EngineBackend 协议的一期进程内实现（M2-2a 冻结协议）。"""
+"""InProcessBackend —— EngineBackend 协议的一期进程内实现（M2-2a 冻结协议）。
 
-import json
+增量扩展：M7a 任务架构、M9a 结果产物（P0-5，`save_artifact`/`list_artifacts`）、
+M9b 外部等待（P0-4，`ensure_await` 等 4 个方法）。
+"""
+
 import uuid
 from typing import Any
 
-from sqlalchemy import text
-
 from app.core.db import session_factory
 from app.modules.engine.models import Plan as PlanModel
+from app.modules.runs import events as run_events
 from app.modules.tasks.models import Task as TaskModel
+
+
+def _maybe_uuid(value: str | None) -> uuid.UUID | None:
+    """宽松解析（P0-5 收尾）：归属标识来自内存上下文，脏值只能让归属退化，不能让写入失败。"""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        return None
 
 
 class InProcessBackend:
@@ -43,6 +55,8 @@ class InProcessBackend:
                         "base_url": provider.base_url,
                         "model_name": provider.model_name,
                         "params": provider.params,
+                        # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                        "limits": dict(provider.limits or {}),
                         "api_key_encrypted": (
                             bytes(provider.api_key_encrypted)
                             if provider.api_key_encrypted
@@ -68,6 +82,8 @@ class InProcessBackend:
                 "base_url": provider.base_url,
                 "model_name": provider.model_name,
                 "params": provider.params,
+                # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                "limits": dict(provider.limits or {}),
                 "api_key_encrypted": (
                     bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
                 ),
@@ -99,6 +115,8 @@ class InProcessBackend:
                 "base_url": provider.base_url,
                 "model_name": provider.model_name,
                 "params": provider.params,
+                # limits 随 provider 一起下发（P1-2）：engine 构造模型时登记进限流器
+                "limits": dict(provider.limits or {}),
                 "api_key_encrypted": (
                     bytes(provider.api_key_encrypted) if provider.api_key_encrypted else None
                 ),
@@ -106,16 +124,7 @@ class InProcessBackend:
 
     async def emit_event(self, run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         async with session_factory() as db:
-            result = await db.execute(
-                text(
-                    "INSERT INTO run_events (run_id, seq, event_type, payload) "
-                    "SELECT :rid, COALESCE(MAX(seq), 0) + 1, :et, CAST(:p AS jsonb) "
-                    "FROM run_events WHERE run_id = :rid RETURNING seq"
-                ),
-                {"rid": run_id, "et": event_type, "p": json.dumps(payload, ensure_ascii=False)},
-            )
-            seq = int(result.scalar_one())
-            await db.execute(text("SELECT pg_notify('run_events', :rid)"), {"rid": run_id})
+            seq = await run_events.emit_event(run_id, event_type, payload, db=db)
             await db.commit()
             return seq
 
@@ -190,6 +199,7 @@ class InProcessBackend:
     # ---- M7a 增量扩展（ADR-23~28：任务架构）----
 
     async def ensure_task_id(self, conversation_id: str) -> str | None:
+        from app.modules.conversations.models import Conversation
         from app.modules.tasks import service as tasks_service
 
         try:
@@ -197,11 +207,35 @@ class InProcessBackend:
         except ValueError:
             return None
         async with session_factory() as db:
-            task = await tasks_service.ensure_task_for_conversation(db, conv_id)
+            conv = await db.get(Conversation, conv_id)
+            if conv is None:
+                return None
+            task = await tasks_service.ensure_task_for_conversation(db, conv)
             if task is None:
                 return None
             await db.commit()
             return str(task.id)
+
+    async def step_id_for_run(self, run_id: str) -> str | None:
+        """本 run 直接绑定的子任务 id（`task_steps.run_id == run`）；无绑定返回 None。"""
+        from sqlalchemy import select
+
+        from app.modules.tasks.models import TaskStep
+
+        try:
+            rid = uuid.UUID(run_id)
+        except ValueError:
+            return None
+        async with session_factory() as db:
+            step = (
+                await db.scalars(
+                    select(TaskStep)
+                    .where(TaskStep.run_id == rid)
+                    .order_by(TaskStep.created_at)
+                    .limit(1)
+                )
+            ).first()
+        return str(step.id) if step is not None else None
 
     async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
         from app.modules.tasks import service as tasks_service
@@ -311,3 +345,156 @@ class InProcessBackend:
             )
             await db.commit()
             return len(closed)
+
+    # ---- M9a 增量扩展（方案 §4 P0-5：结果产物一等化）----
+
+    async def save_artifact(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        name: str | None,
+        mime: str | None,
+        size: int,
+        storage: str,
+        payload: Any,
+        idempotency_key: str | None = None,
+        task_id: str | None = None,
+        step_id: str | None = None,
+    ) -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from app.modules.runs.models import RunArtifact
+
+        async with session_factory() as db:
+            if idempotency_key:
+                existing = await db.scalar(
+                    select(RunArtifact).where(RunArtifact.idempotency_key == idempotency_key)
+                )
+                if existing is not None:
+                    return _artifact_brief(existing)
+            artifact = RunArtifact(
+                run_id=uuid.UUID(run_id),
+                kind=kind,
+                name=name,
+                mime=mime,
+                size=size,
+                storage=storage,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                task_id=_maybe_uuid(task_id),
+                step_id=_maybe_uuid(step_id),
+            )
+            db.add(artifact)
+            await db.commit()
+            await db.refresh(artifact)
+            return _artifact_brief(artifact)
+
+    async def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        from sqlalchemy import select
+
+        from app.modules.runs.models import RunArtifact
+
+        async with session_factory() as db:
+            rows = await db.scalars(
+                select(RunArtifact)
+                .where(RunArtifact.run_id == uuid.UUID(run_id))
+                .order_by(RunArtifact.created_at)
+            )
+            return [_artifact_brief(a) for a in rows]
+
+    # ---- M9b 增量扩展（方案 §4 P0-4：外部等待一等化）----
+
+    async def ensure_await(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        idempotency_key: str,
+        builtin: str,
+        capability_id: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.runs.models import Run
+
+        async with session_factory() as db:
+            run = await db.get(Run, uuid.UUID(run_id))
+            row, _created = await awaits_service.ensure_await(
+                db,
+                run_id=run_id,
+                tool_name=tool_name,
+                idempotency_key=idempotency_key,
+                conversation_id=run.conversation_id if run else None,
+                task_id=(run.input or {}).get("task_id") if run else None,
+                capability_id=capability_id,
+                payload_in={"builtin": builtin, "args": args or {}},
+            )
+            return _await_view(row, with_token=True)
+
+    async def get_await(self, await_id: str) -> dict[str, Any] | None:
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            return _await_view(row, with_token=True) if row is not None else None
+
+    async def mark_await_dispatched(self, await_id: str, *, response: Any = None) -> None:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            if row is None:
+                return
+            await awaits_service.mark_notified(
+                db, row, response=response if isinstance(response, dict) else None
+            )
+
+    async def cancel_await(self, await_id: str, *, reason: str | None = None) -> bool:
+        from app.modules.awaits import service as awaits_service
+        from app.modules.awaits.models import AwaitBroker
+
+        async with session_factory() as db:
+            row = await db.get(AwaitBroker, uuid.UUID(await_id))
+            if row is None:
+                return False
+            won = await awaits_service.cancel(db, row, reason=reason)
+            await db.commit()
+            return won
+
+
+def _await_view(row: Any, *, with_token: bool = False) -> dict[str, Any]:
+    """等待行摘要（引擎内部视图）：时间戳转 ISO，凭据仅在登记/重读时下发。"""
+    payload_in = row.payload_in or {}
+    view: dict[str, Any] = {
+        "await_id": str(row.id),
+        "run_id": str(row.run_id),
+        "tool_name": row.tool_name,
+        "builtin": payload_in.get("builtin"),
+        "args": payload_in.get("args") or {},
+        "dispatch_response": payload_in.get("dispatch_response"),
+        "idempotency_key": row.idempotency_key,
+        "status": row.status,
+        "deadline_at": row.deadline_at.isoformat() if row.deadline_at else None,
+        "notified_at": row.notified_at.isoformat() if row.notified_at else None,
+        "payload_out": row.payload_out,
+        "error": row.error,
+        "waited_ms": int(row.waited_ms or 0),
+    }
+    if with_token:
+        view["callback_token"] = row.callback_token
+    return view
+
+
+def _artifact_brief(artifact: Any) -> dict[str, Any]:
+    """产物摘要（不含 payload 正文）：拼引用行与清单共用。"""
+    return {
+        "id": str(artifact.id),
+        "run_id": str(artifact.run_id),
+        "kind": artifact.kind,
+        "name": artifact.name,
+        "mime": artifact.mime,
+        "size": int(artifact.size or 0),
+        "storage": artifact.storage,
+    }

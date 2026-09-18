@@ -20,7 +20,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.tasks.models import Task, TaskStep
+from app.modules.awaits.models import AwaitBroker
+from app.modules.conversations.models import Conversation
+from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run
+from app.modules.tasks.models import (
+    STEP_BLOCK_REASONS,
+    STEP_CONVERGE_ACTIONS,
+    Task,
+    TaskStep,
+)
 from app.modules.workers import registry
 from app.modules.workers.registry import (
     COMMON_WORKER,
@@ -30,6 +38,17 @@ from app.modules.workers.registry import (
 
 # 进度分子的状态：done 与 skipped（跳过的步骤不应把完成度永久压在 100% 以下）
 PROGRESS_COUNTED_STATUSES = ("done", "skipped")
+
+# 受阻原因的展示文案（人话）；判定/统计一律看 resolution.reason 枚举（P1-6）
+_BLOCK_NOTES = {
+    "run_ended": "run 已结束，待确认支线自动收敛",
+    "deadline_exceeded": "run 超时结束，待确认支线自动收敛",
+    "user_cancelled": "run 被取消/中止，待确认支线自动收敛",
+    "manual": "人工确认该支线受阻",
+}
+
+# 收敛动作 → 目标状态（P1-6）：关闭支线 = 不再需要；重新排队 = 回 pending 待重跑
+_CONVERGE_TARGET = {"close": "skipped", "requeue": "pending", "escalate": "blocked"}
 
 
 # ---------- Worker 定义（文件源） ----------
@@ -118,7 +137,7 @@ async def get_task_by_conversation(db: AsyncSession, conversation_id: uuid.UUID)
     return await db.scalar(select(Task).where(Task.conversation_id == conversation_id))
 
 
-async def ensure_task_for_conversation(db: AsyncSession, conversation: Any) -> Task:
+async def ensure_task_for_conversation(db: AsyncSession, conversation: Conversation) -> Task:
     """会话 → 主任务实例；旧会话（迁移遗漏/并发新建）惰性补建为「通用任务」。"""
     task = await get_task_by_conversation(db, conversation.id)
     if task is not None:
@@ -557,28 +576,86 @@ async def reconcile_orphaned_awaits(
     task: Task,
     *,
     run_id: uuid.UUID,
-) -> int:
-    """run 非正常终态收敛（failed/cancelled/aborted）：把挂在本 run 上、
+    reason: str = "run_ended",
+) -> list[TaskStep]:
+    """run 非正常终态收敛（failed/cancelled/aborted/timeout）：把挂在本 run 上、
     仍在等用户答复的支线置 blocked —— run 已结束，没人会再来答复，
     不收敛则看板永久误报「待确认」。
 
     正常 done 的 run 不收敛：其 awaiting_user 由答复回填/进度重算自然处理。
+    `reason` 必须取自 STEP_BLOCK_REASONS（P1-6 枚举化，禁自由文本后缀），由调用方
+    按终态映射；`note` 只做人话展示，判定与统计一律看 `reason`。
+    返回被收敛的支线，供调用方发 `blocked` 事件。
     """
-    steps = (
-        await db.scalars(
-            select(TaskStep).where(
-                TaskStep.task_id == task.id,
-                TaskStep.run_id == run_id,
-                TaskStep.status == "awaiting_user",
+    if reason not in STEP_BLOCK_REASONS:
+        raise ValueError(f"非法的受阻原因：{reason}")
+    steps = list(
+        (
+            await db.scalars(
+                select(TaskStep).where(
+                    TaskStep.task_id == task.id,
+                    TaskStep.run_id == run_id,
+                    TaskStep.status == "awaiting_user",
+                )
             )
-        )
-    ).all()
+        ).all()
+    )
     for s in steps:
         payload = dict(s.resolution or {})
-        payload.setdefault("note", "run 已结束，待确认支线自动收敛")
+        payload["reason"] = reason
+        payload.setdefault("note", _BLOCK_NOTES[reason])
+        payload["at"] = datetime.now(UTC).isoformat()
         s.resolution = payload
         await update_step_status(db, s, "blocked", run_id=run_id)
-    return len(steps)
+    return steps
+
+
+async def converge_blocked_step(
+    db: AsyncSession,
+    task: Task,
+    step_id: uuid.UUID,
+    *,
+    action: str,
+    detail: str | None = None,
+    run_id: uuid.UUID | None = None,
+) -> TaskStep | None:
+    """前台收敛受阻支线（P1-6）：关闭支线 / 重新排队 / 转人工。
+
+    这是唯一替代「人工 SQL 改 task_steps」的入口，纪律与状态机一致：
+    - 仅 `blocked` 支线有收敛语义：非 blocked 抛 ValueError（API 层 409）；
+    - 原因恒为枚举 `manual`，动作写进 `resolution.action`，自由文本只进 `detail`；
+    - `close` → skipped（可让主任务收口）；`escalate` → 保持 blocked + `escalated=true`；
+    - `requeue` → pending 且 `autoclose=False`：重新排队不该顺手把主任务判完成，
+      该支线由后续 run 重跑，收口交给常规 `recompute_progress` 路径。
+    返回收敛后的支线；None 表示支线不存在或不属于该任务（API 层 404）。
+    """
+    if action not in STEP_CONVERGE_ACTIONS:
+        raise ValueError(f"非法的收敛动作：{action}")
+    step = await db.get(TaskStep, step_id)
+    if step is None or step.task_id != task.id:
+        return None
+    if step.status != "blocked":
+        raise ValueError(f"仅受阻（blocked）支线可收敛，当前状态为 {step.status}")
+    payload = dict(step.resolution or {})
+    payload["action"] = action
+    payload["reason"] = "manual"
+    if detail:
+        payload["detail"] = detail
+    payload["converged_at"] = datetime.now(UTC).isoformat()
+    if action == "escalate":
+        payload["escalated"] = True
+    target = _CONVERGE_TARGET[action]
+    await update_step_status(
+        db,
+        step,
+        target,
+        resolution=payload,
+        run_id=run_id,
+        autoclose=target != "pending",
+    )
+    if target == "pending":
+        step.resolved_at = None
+    return step
 
 
 async def answer_branch_step(
@@ -733,8 +810,96 @@ async def render_task_card(db: AsyncSession, task_id: uuid.UUID) -> str:
             "\n注意：用户曾明确要求在本会话处理其它主任务（越界 "
             f"{len(task.out_of_scope)} 次），请聚焦当前主任务，必要时提示新开会话。\n"
         )
+    waiting_section = await _render_waiting_section(db, task.id)
     return (
         f"# {header}\n{playbook_section}{step_section}\n"
         f"## 子任务清单（进度 {task.progress_done}/{task.progress_total}）\n"
-        f"{body}\n{out_of_scope}"
+        f"{body}\n{out_of_scope}{waiting_section}"
     )
+
+
+async def _render_waiting_section(db: AsyncSession, task_id: uuid.UUID) -> str:
+    """P0-4：把本主任务仍在等待的外部回调渲染进任务卡（新执行段可直接看到等待状态）。
+
+    等待由平台持有，外部流程回调后自动继续；此处只为让模型知道「在等什么、等多久」，
+    避免其重新派发或轮询状态查询工具。
+    """
+    rows = list(
+        (
+            await db.scalars(
+                select(AwaitBroker)
+                .where(AwaitBroker.task_id == task_id, AwaitBroker.status == "waiting")
+                .order_by(AwaitBroker.created_at)
+            )
+        ).all()
+    )
+    if not rows:
+        return ""
+    now = datetime.now(UTC)
+    items: list[str] = []
+    for row in rows:
+        waited_s = int((now - row.created_at).total_seconds()) if row.created_at else 0
+        deadline = row.deadline_at.strftime("%Y-%m-%d %H:%M:%S") if row.deadline_at else "—"
+        items.append(f"- {row.tool_name}：已等待 {max(waited_s, 0)}s，最晚 {deadline} 自动超时")
+    return (
+        "\n## 等待外部回调（平台持有，勿轮询）\n"
+        + "\n".join(items)
+        + "\n外部流程完成后平台会自动注入结果并继续；未结束前请勿重新派发该请求。\n"
+    )
+
+
+# ---------- 推送式进度（P1-5） ----------
+
+# run 阶段文案：进度停滞时"在等什么"比"在做哪一步"更值得讲清楚。
+# 只登记"等"的三种情形；running 阶段回落到当前活跃子任务名。
+_RUN_PHASE_LABELS = {
+    "pending": "排队中",
+    "waiting_external": "等待外部回调",
+    "paused_awaiting_confirm": "等待确认",
+}
+# 活跃子任务口径：仍有推进/等待/受阻动作的状态，取 seq 最小的那条（与任务卡同源）
+_ACTIVE_STEP_STATUSES = ("doing", "awaiting_user", "blocked")
+
+
+async def list_progress_snapshots(db: AsyncSession) -> list[dict[str, Any]]:
+    """非终态 run 的进度快照（P1-5）：平台侧推送式进度的一次取数。
+
+    行由 **run** 驱动而非"引擎运行任务表"：等待外部回调/等确认的 run 执行段已结束
+    （不在表里），但它的进度仍需被平台推送——这正是"进度不由模型轮询"的含义。
+    进度读主任务的反范式列（`recompute_progress` 是唯一写入口），故与任务卡/看板同数，
+    不出现"事件说 2/5、看板说 1/5"。
+
+    返回项：`{run_id, run_status, done, total, label}`；无子任务骨架（total=0）的 run
+    也返回，由调用方决定是否值得推。
+    """
+    rows = (
+        await db.execute(
+            select(Run.id, Run.status, Task.id, Task.progress_done, Task.progress_total)
+            .join(Task, Task.conversation_id == Run.conversation_id)
+            .where(Run.status.in_(NON_TERMINAL_RUN_STATUSES))
+            .order_by(Run.created_at)
+        )
+    ).all()
+    if not rows:
+        return []
+    task_ids = [row[2] for row in rows]
+    steps = (
+        await db.execute(
+            select(TaskStep.task_id, TaskStep.name)
+            .where(TaskStep.task_id.in_(task_ids), TaskStep.status.in_(_ACTIVE_STEP_STATUSES))
+            .order_by(TaskStep.task_id, TaskStep.seq)
+        )
+    ).all()
+    active: dict[Any, str] = {}
+    for task_id, name in steps:
+        active.setdefault(task_id, name)
+    return [
+        {
+            "run_id": str(run_id),
+            "run_status": run_status,
+            "done": int(done or 0),
+            "total": int(total or 0),
+            "label": _RUN_PHASE_LABELS.get(run_status) or active.get(task_id, ""),
+        }
+        for run_id, run_status, task_id, done, total in rows
+    ]

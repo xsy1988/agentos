@@ -4,18 +4,19 @@
  * 布局：任务看板（左，替代原会话流水，ADR-23） | 任务条 + 消息流（SSE）+ 输入栏
  * 关键能力：SSE 流式渲染、思考/工具折叠态、任务进度、支线子任务确认、新主任务软提示、断线重连
  */
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Layout, Alert, message as antdMessage } from "antd";
 import { MessageOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
-import { conversationsApi } from "@/api/conversations";
+import { conversationsApi, type SendMessageOptions } from "@/api/conversations";
 import { runsApi } from "@/api/runs";
 import { tasksApi } from "@/api/tasks";
 import type { SendMessageTaskSwitch, TaskOut } from "@/api/types";
 import { useSSE } from "@/hooks/useSSE";
 import { useSSEStore } from "@/store/sse";
 import { useUIStore } from "@/store/ui";
+import { newClientMessageId } from "@/utils/id";
 import TaskBoard from "./TaskBoard";
 import TaskHeader from "./TaskHeader";
 import MessageStream from "./MessageStream";
@@ -40,6 +41,8 @@ export default function ChatPage() {
   } | null>(null);
   // 新主任务软提示（ADR-27）：不落消息不建 run，等用户拍板
   const [suggestion, setSuggestion] = useState<SendMessageTaskSwitch | null>(null);
+  // 提示卡「新开会话并发送」的幂等键：同一张卡重试复用，换卡即换键（P1-9）
+  const switchKeyRef = useRef<{ sig: string; key: string } | null>(null);
   const [switching, setSwitching] = useState(false);
   // 乐观用户消息（发送即上屏）：Kimi 式即时反馈，真实消息落库后 MessageStream 自动接管
   const [optimistic, setOptimistic] = useState<{ text: string; key: string } | null>(null);
@@ -60,8 +63,10 @@ export default function ChatPage() {
       }
       // 任务架构（ADR-25）：进度与支线变化复用 plan_updated 事件族，
       // 前端只需让任务看板/任务条重新取数，不新增事件类型
+      // P1-5：`progress` 是平台 watcher 的推送式进度——任务看板/任务条据此刷新，
+      // 不需要模型轮询也能看到进度前进
       if (
-        ["plan_updated", "confirmation_request"].includes(event.event_type) ||
+        ["plan_updated", "confirmation_request", "progress"].includes(event.event_type) ||
         event.event_type === "run_status"
       ) {
         queryClient.invalidateQueries({ queryKey: ["tasks"] });
@@ -93,28 +98,14 @@ export default function ChatPage() {
   // SSE 连接（当有 activeRun 时）
   useSSE(activeRun?.runId ?? null, { onEvent: handleSSEEvent });
 
-  // 发送消息（modelProviderId：对话内临时换模型；attachmentIds：附件；
-  // confirmUpload：图片外发涉密确认，由 InputBar 的确认弹窗触发，均可选）
-  const handleSend = async (
-    text: string,
-    modelProviderId?: string,
-    attachmentIds?: string[],
-    confirmUpload?: boolean,
-    forceCurrentTask?: boolean,
-  ) => {
+  // 发送消息（opts：对话内临时换模型 / 附件 / 涉密确认 / 幂等键，均由 InputBar 组装）
+  const handleSend = async (text: string, opts: SendMessageOptions = {}) => {
     if (!activeConvId) return;
     // 乐观上屏：不等后端落库，消息立即出现在消息流（提交卡死感反馈的核心）
     setOptimistic({ text, key: `optimistic-${Date.now()}` });
     let result;
     try {
-      result = await conversationsApi.sendMessage(
-        activeConvId,
-        text,
-        modelProviderId,
-        attachmentIds,
-        confirmUpload,
-        forceCurrentTask,
-      );
+      result = await conversationsApi.sendMessage(activeConvId, text, opts);
     } catch (e) {
       // 发送失败：撤回乐观气泡并向上抛（InputBar 捕获后保留输入内容/处理 428 确认门）
       setOptimistic(null);
@@ -137,11 +128,32 @@ export default function ChatPage() {
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
   };
 
-  // 确认卡片操作：approved/rejected（计划、高危工具）或支线子任务的文本答复（ADR-24）
-  const handleConfirm = async (answer: string) => {
+  // 补输入重发（P1-4）：missing_inputs 拦截后，把用户补齐的输入并入同一次发送。
+  // 复用 handleSend，保证乐观气泡/activeRun/上下文面板行为与普通发送一致；
+  // 同会话 inputs 快照在后端按时间累加，故只需带上本次补的项。
+  const handleResubmit = useCallback(
+    async (text: string, inputs: Record<string, string | number | boolean | null>) => {
+      try {
+        await handleSend(text, { inputs });
+      } catch (e) {
+        antdMessage.error(e instanceof Error ? e.message : "重发失败，请稍后重试");
+      }
+    },
+    [handleSend],
+  );
+
+  // 补输入卡（P1-4）：提交的是取值而非答复，缺省答复按空串处理
+  const isStepInputCard = String(confirming?.payload?.reason ?? "") === "input_required";
+
+  // 确认卡片操作：approved/rejected（计划、高危工具）、支线子任务的文本答复（ADR-24）
+  // 或补输入卡的取值提交（P1-4 子任务级输入门）。
+  const handleConfirm = async (
+    answer: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => {
     if (!confirming) return;
     try {
-      await runsApi.confirm(confirming.runId, answer);
+      await runsApi.confirm(confirming.runId, answer, inputs ? { inputs } : undefined);
     } catch (e) {
       antdMessage.error(e instanceof Error ? e.message : "提交失败");
       return;
@@ -166,8 +178,9 @@ export default function ChatPage() {
       setActiveConvId(convId);
       setConfirming(null);
       // 恢复未终态 run：优先显式 runId，其次看板返回的 active_run_id
-      // （后端 NON_TERMINAL_RUN_STATUSES：pending / running / paused_awaiting_confirm）。
-      // 恢复后 useSSE 以 after=0 重放全部事件，执行过程/确认卡都能重建。
+      // （后端 NON_TERMINAL_RUN_STATUSES：pending / running / paused_awaiting_confirm /
+      //  waiting_external）。恢复后 useSSE 以 after=0 重放全部事件，
+      // 执行过程/确认卡/外部等待状态都能重建。
       const resumeRunId = runId ?? task.active_run_id ?? null;
       if (resumeRunId) {
         setActiveRun({ runId: resumeRunId, status: "running" });
@@ -185,11 +198,19 @@ export default function ChatPage() {
     if (!suggestion) return;
     const s = suggestion;
     setSwitching(true);
+    // 幂等键（P1-9）：同一张卡的重复点击/超时重试复用同一个键，不会建出两个主任务；
+    // 换了提示卡（内容或 Worker 不同）即新意图，重新取键。
+    const sig = JSON.stringify([s.suggested_worker.worker_name, s.pending_text]);
+    if (switchKeyRef.current?.sig !== sig) {
+      switchKeyRef.current = { sig, key: newClientMessageId() };
+    }
     try {
       const res = await tasksApi.create({
         worker_name: s.suggested_worker.worker_name,
         text: s.pending_text,
+        client_message_id: switchKeyRef.current.key,
       });
+      switchKeyRef.current = null;
       setSuggestion(null);
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
@@ -214,7 +235,7 @@ export default function ChatPage() {
     if (!suggestion) return;
     const pending = suggestion.pending_text;
     setSuggestion(null);
-    await handleSend(pending, undefined, undefined, undefined, true);
+    await handleSend(pending, { forceCurrentTask: true });
   };
 
   // 任务被删除：清空选中与其会话
@@ -280,6 +301,7 @@ export default function ChatPage() {
                 convId={activeConvId}
                 activeRun={activeRun}
                 optimistic={optimistic}
+                onResubmit={handleResubmit}
               />
             </div>
             {suggestion && (
@@ -294,7 +316,11 @@ export default function ChatPage() {
               <CardRenderer
                 payload={confirming.payload}
                 runId={confirming.runId}
-                onConfirm={(answer) => handleConfirm(answer ?? "approved")}
+                onConfirm={(answer, inputs) =>
+                  // 补输入卡只提交取值、不带答复：缺省不能写成 "approved"
+                  // （那是"批准了计划"的语义，会污染确认历史）
+                  handleConfirm(answer ?? (isStepInputCard ? "" : "approved"), inputs)
+                }
                 onReject={() => handleConfirm("rejected")}
                 onOpenSidebar={openSidebar}
               />

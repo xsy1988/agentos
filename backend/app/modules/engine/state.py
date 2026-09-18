@@ -23,6 +23,7 @@ class BudgetState(TypedDict, total=False):
     input_tokens: int
     output_tokens: int
     tool_calls: int  # 工具调用总次数
+    tool_failure_streak: int  # 连续工具失败计数（P0-3 熔断账本；成功即清零）
     loop_strikes: dict[str, int]  # 工具指纹 → 连续相同调用计数（死循环检测）
 
 
@@ -50,3 +51,6 @@ class LoopState(TypedDict, total=False):
     budget_state: BudgetState
     # 待确认参数包；None = 无确认请求
     confirmation: Confirmation | None
+    # 本轮待走外部等待的调用队列（P0-4，覆盖语义非追加）：
+    # tools 节点把派发类建单工具拆到这里，由 await_gate 逐个挂起等待回调
+    pending_awaits: list[dict[str, Any]]

@@ -58,3 +58,10 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 本仓自己的模块必须零废弃告警：Deprecation/PendingDeprecation 一律当失败
+# （Starlette/FastAPI 状态常量、标准库迁移等）。若第三方库发出本仓修不了的告警，
+# 用带库名的 ignore/default 精确豁免并写明原因，不放宽整体闸门。
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+]

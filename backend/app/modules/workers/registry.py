@@ -4,9 +4,9 @@
 
     manifest.yaml            # {enabled: bool, active_version: "v2"|null(=最新)}
     v1/WORKER.md             # 主任务：yaml 头（name/description/icon/color/
-                             #   capabilities/references）+ 正文 playbook
+                             #   capabilities/references/inputs）+ 正文 playbook
     v1/sub_workers/<子任务>/WORKER.md   # 子任务：yaml 头（seq/kind/optional/
-                             #   description/capability_hint）+ 正文 playbook
+                             #   description/capability_hint/inputs）+ 正文 playbook
     v1/references/*.md       # 主任务引用文件（WORKER.md 指定，LLM 按需加载）
     v1/tests/                # 自动测试数据（按需）
     v2/...                   # 每个版本一个文件夹，手动构建递增
@@ -15,7 +15,9 @@
 - 目录名 = Worker 唯一标识（允许中文）；WORKER.md 头 name 必须与目录名一致；
 - 只有 active 版本可编辑；历史版本只读；
 - 所有文件读写路径必须落在该版本目录内（防 ``../`` 越界）；
-- 「通用任务」不再是文件，是代码内建常量 COMMON_WORKER（无步骤骨架）。
+- 「通用任务」不再是文件，是代码内建常量 COMMON_WORKER（无步骤骨架）；
+- front-matter 的 ``inputs``（P1-4 输入契约）在 **写入与解析两侧**都严格校验：
+  未知键/非法 type/重名 一律 4xx，不允许拼错的声明被静默忽略。
 
 缓存：per (name, version) 的 mtime 指纹缓存，写操作后主动失效；
 未变更时热路径（发消息意图识别、任务卡渲染）零解析开销。
@@ -33,6 +35,12 @@ from typing import Any
 import yaml
 
 from app.core.config import settings
+from app.modules.workers.inputs import (
+    InputContractError,
+    InputSpec,
+    dump_input_specs,
+    parse_input_specs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +74,8 @@ class SubWorker:
     kind: str = "main"  # main | branch
     optional: bool = False
     capability_hint: list[str] = field(default_factory=list)
+    # 输入契约（P1-4）：该子任务推进前需要哪些输入（声明并注入指引，门在 run 级）
+    inputs: list[InputSpec] = field(default_factory=list)
     references: list[dict] | None = None
 
 
@@ -80,6 +90,7 @@ class WorkerDef:
     icon: str | None = None
     color: str | None = None
     capabilities: list[str] = field(default_factory=list)  # 工具引用清单（能力名）
+    inputs: list[InputSpec] = field(default_factory=list)  # 输入契约（P1-4）
     references: list[dict] | None = None
     sub_workers: list[SubWorker] = field(default_factory=list)
 
@@ -178,6 +189,14 @@ def dump_md(front: dict[str, Any], body: str) -> str:
     return f"{FRONT_DELIM}\n{body_yaml}{FRONT_DELIM}\n\n{body.strip()}\n"
 
 
+def _parse_inputs(raw: Any, *, scope: str) -> list[InputSpec]:
+    """解析 `inputs` 声明（P1-4）：契约错误统一转 `WorkerError`（router 转 4xx）。"""
+    try:
+        return parse_input_specs(raw, scope=scope)
+    except InputContractError as e:
+        raise WorkerError(str(e)) from e
+
+
 def _read_manifest(name: str) -> dict[str, Any]:
     path = worker_dir(name) / "manifest.yaml"
     if not path.exists():
@@ -273,6 +292,7 @@ def _load_def(name: str, version: str) -> WorkerDef:
                     kind=str(s_front.get("kind") or "main"),
                     optional=bool(s_front.get("optional") or False),
                     capability_hint=[str(x) for x in hint] if isinstance(hint, list) else [],
+                    inputs=_parse_inputs(s_front.get("inputs"), scope=f"子任务「{sub.name}」"),
                     references=s_front.get("references")
                     if isinstance(s_front.get("references"), list)
                     else None,
@@ -287,6 +307,7 @@ def _load_def(name: str, version: str) -> WorkerDef:
         icon=str(front["icon"]) if front.get("icon") is not None else None,
         color=str(front["color"]) if front.get("color") is not None else None,
         capabilities=[str(x) for x in caps] if isinstance(caps, list) else [],
+        inputs=_parse_inputs(front.get("inputs"), scope=f"Worker「{name}」"),
         references=front.get("references") if isinstance(front.get("references"), list) else None,
         sub_workers=sub_workers,
     )
@@ -384,6 +405,7 @@ def _dump_main_md(
     color: str | None,
     capabilities: list[str] | None,
     references: list[dict] | None,
+    inputs: list[InputSpec] | None = None,
 ) -> str:
     front: dict[str, Any] = {"name": name, "description": description}
     if icon:
@@ -391,6 +413,8 @@ def _dump_main_md(
     if color:
         front["color"] = color
     front["capabilities"] = capabilities or []
+    if inputs:
+        front["inputs"] = dump_input_specs(inputs)
     if references:
         front["references"] = references
     body = (
@@ -408,7 +432,13 @@ def _dump_main_md(
     return dump_md(front, body)
 
 
-def _dump_sub_md(name: str, seq: int, kind: str, description: str) -> str:
+def _dump_sub_md(
+    name: str,
+    seq: int,
+    kind: str,
+    description: str,
+    inputs: list[InputSpec] | None = None,
+) -> str:
     front: dict[str, Any] = {
         "name": name,
         "seq": seq,
@@ -417,6 +447,8 @@ def _dump_sub_md(name: str, seq: int, kind: str, description: str) -> str:
         "description": description,
         "capability_hint": [],
     }
+    if inputs:
+        front["inputs"] = dump_input_specs(inputs)
     body = f"# {name}\n\n（这一步怎么干、遇到什么问题、调哪个能力）\n"
     return dump_md(front, body)
 
@@ -429,17 +461,20 @@ def create_worker(
     color: str | None = None,
     capabilities: list[str] | None = None,
     references: list[dict] | None = None,
+    inputs: list[dict] | None = None,
 ) -> WorkerMeta:
     """新建 Worker 文件包脚手架（v1 + manifest）。已存在则报错。"""
     _assert_name(name)
     d = worker_dir(name)
     if d.exists():
         raise WorkerError(f"Worker「{name}」已存在")
+    specs = _parse_inputs(inputs, scope=f"Worker「{name}」")
     vdir = d / "v1"
     (vdir / "sub_workers").mkdir(parents=True)
     (vdir / "references").mkdir()
     (vdir / "WORKER.md").write_text(
-        _dump_main_md(name, description, icon, color, capabilities, references), encoding="utf-8"
+        _dump_main_md(name, description, icon, color, capabilities, references, specs),
+        encoding="utf-8",
     )
     _write_manifest(name, {"enabled": True})
     invalidate(name)
@@ -452,22 +487,24 @@ def create_worker(
 def _write_sub_workers(vdir: Path, sub_workers: list[dict[str, Any]] | None) -> None:
     """把子任务清单逐个写成 sub_workers/<名>/WORKER.md。"""
     for st in sub_workers or []:
+        synced = _parse_inputs(st.get("inputs"), scope=f"子任务「{st['name']}」")
         sub_dir = vdir / "sub_workers" / str(st["name"])
         sub_dir.mkdir(exist_ok=True)
-        sub_dir.joinpath("WORKER.md").write_text(
-            dump_md(
-                {
-                    "name": st["name"],
-                    "seq": st.get("seq", 0),
-                    "kind": st.get("kind", "main"),
-                    "optional": bool(st.get("optional", False)),
-                    "description": st.get("description", ""),
-                    "capability_hint": st.get("capability_hint") or [],
-                },
-                st.get("playbook", ""),
-            ),
-            encoding="utf-8",
+        content = dump_md(
+            {
+                "name": st["name"],
+                "seq": st.get("seq", 0),
+                "kind": st.get("kind", "main"),
+                "optional": bool(st.get("optional", False)),
+                "description": st.get("description", ""),
+                "capability_hint": st.get("capability_hint") or [],
+                **({"inputs": dump_input_specs(synced)} if synced else {}),
+            },
+            st.get("playbook", ""),
         )
+        rel = f"sub_workers/{st['name']}/WORKER.md"
+        _validate_worker_md(str(vdir.parent.name), rel, content)
+        sub_dir.joinpath("WORKER.md").write_text(content, encoding="utf-8")
 
 
 def _dump_worker_md(
@@ -478,6 +515,7 @@ def _dump_worker_md(
     capabilities: list[str] | None,
     references: list[dict] | None,
     playbook: str,
+    inputs: list[InputSpec] | None = None,
 ) -> str:
     """主 WORKER.md：有 playbook 用正文，无则落脚手架模板。"""
     if playbook:
@@ -487,10 +525,12 @@ def _dump_worker_md(
         if color:
             front["color"] = color
         front["capabilities"] = capabilities or []
+        if inputs:
+            front["inputs"] = dump_input_specs(inputs)
         if references:
             front["references"] = references
         return dump_md(front, playbook)
-    return _dump_main_md(name, description, icon, color, capabilities, references)
+    return _dump_main_md(name, description, icon, color, capabilities, references, inputs)
 
 
 def ensure_worker(
@@ -503,18 +543,20 @@ def ensure_worker(
     references: list[dict] | None = None,
     playbook: str = "",
     sub_workers: list[dict[str, Any]] | None = None,
+    inputs: list[dict] | None = None,
 ) -> WorkerMeta:
     """幂等 seed：不存在则按给定内容创建（已存在不覆盖，保护用户编辑）。"""
     meta = get_meta(name)
     if meta is not None:
         return meta
     _assert_name(name)
+    specs = _parse_inputs(inputs, scope=f"Worker「{name}」")
     d = worker_dir(name)
     vdir = d / "v1"
     (vdir / "sub_workers").mkdir(parents=True)
     (vdir / "references").mkdir()
     (vdir / "WORKER.md").write_text(
-        _dump_worker_md(name, description, icon, color, capabilities, references, playbook),
+        _dump_worker_md(name, description, icon, color, capabilities, references, playbook, specs),
         encoding="utf-8",
     )
     _write_sub_workers(vdir, sub_workers)
@@ -536,6 +578,7 @@ def publish_version(
     references: list[dict] | None = None,
     playbook: str = "",
     sub_workers: list[dict[str, Any]] | None = None,
+    inputs: list[dict] | None = None,
 ) -> str:
     """基于当前生效版本构建 vN+1，并整体覆写为新内容（开放 API 演进注册用）。
 
@@ -549,10 +592,11 @@ def publish_version(
         raise WorkerError(f"Worker「{name}」不存在")
     if meta.effective_version is None:
         raise WorkerError(f"Worker「{name}」没有可复制的版本")
+    specs = _parse_inputs(inputs, scope=f"Worker「{name}」")
     version = build_version(name)
     vdir = version_dir(name, version)
     (vdir / "WORKER.md").write_text(
-        _dump_worker_md(name, description, icon, color, capabilities, references, playbook),
+        _dump_worker_md(name, description, icon, color, capabilities, references, playbook, specs),
         encoding="utf-8",
     )
     shutil.rmtree(vdir / "sub_workers", ignore_errors=True)
@@ -668,7 +712,7 @@ def read_version_file(name: str, version: str, rel_path: str) -> str:
 
 
 def _validate_worker_md(name: str, rel_path: str, content: str) -> None:
-    """WORKER.md 写入校验：frontmatter 可解析 + name 与目录/文件夹一致。"""
+    """WORKER.md 写入校验：frontmatter 可解析 + name 与目录/文件夹一致 + inputs 合法。"""
     parts = rel_path.split("/")
     front, _ = _split_md(content)
     if parts == ["WORKER.md"]:
@@ -677,6 +721,7 @@ def _validate_worker_md(name: str, rel_path: str, content: str) -> None:
                 f"WORKER.md 头 name「{front['name']}」与 Worker「{name}」不一致"
                 "（重命名 = 新建 Worker）"
             )
+        _parse_inputs(front.get("inputs"), scope=f"Worker「{name}」")
     elif len(parts) == 3 and parts[0] == "sub_workers" and parts[2] == "WORKER.md":
         if front.get("name") and str(front["name"]).strip() != parts[1]:
             raise WorkerError(
@@ -684,6 +729,7 @@ def _validate_worker_md(name: str, rel_path: str, content: str) -> None:
             )
         if front.get("kind") not in (None, "main", "branch"):
             raise WorkerError(f"子任务 kind 只能是 main/branch，得到「{front.get('kind')}」")
+        _parse_inputs(front.get("inputs"), scope=f"子任务「{parts[1]}」")
 
 
 def write_version_file(name: str, version: str, rel_path: str, content: str) -> None:
@@ -729,7 +775,14 @@ def delete_version_file(name: str, version: str, rel_path: str) -> None:
     invalidate(name)
 
 
-def create_sub_worker(name: str, version: str, sub_name: str, *, kind: str = "main") -> Path:
+def create_sub_worker(
+    name: str,
+    version: str,
+    sub_name: str,
+    *,
+    kind: str = "main",
+    inputs: list[dict] | None = None,
+) -> Path:
     """新建子任务文件夹（sub_workers/<名>/WORKER.md 脚手架）。"""
     assert_version_writable(name, version)
     if not sub_name or "/" in sub_name or sub_name in (".", "..") or sub_name.startswith("."):
@@ -740,11 +793,12 @@ def create_sub_worker(name: str, version: str, sub_name: str, *, kind: str = "ma
     if wdef.find_sub(sub_name) is not None:
         raise WorkerError(f"子任务「{sub_name}」已存在")
     seq = max((s.seq for s in wdef.sub_workers), default=0) + 1
+    specs = _parse_inputs(inputs, scope=f"子任务「{sub_name}」")
+    content = _dump_sub_md(sub_name, seq, kind, "", specs)
+    _validate_worker_md(name, f"sub_workers/{sub_name}/WORKER.md", content)
     sub_dir = version_dir(name, version) / "sub_workers" / sub_name
     sub_dir.mkdir(parents=True, exist_ok=True)
-    sub_dir.joinpath("WORKER.md").write_text(
-        _dump_sub_md(sub_name, seq, kind, ""), encoding="utf-8"
-    )
+    sub_dir.joinpath("WORKER.md").write_text(content, encoding="utf-8")
     invalidate(name)
     return sub_dir
 

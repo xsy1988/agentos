@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.capabilities import service as cap_service
+from app.modules.capabilities.capacity import target_agent_warnings
 from app.modules.capabilities.models import Capability
 from app.modules.capabilities.schemas import CapabilityCreateIn
 from app.modules.engine.tools_builtin import BUILTIN_TOOLS
@@ -37,7 +38,7 @@ def _guard_third_party_tool(cap: CapabilityCreateIn) -> None:
     if builtin_key in BUILTIN_TOOLS:
         return
     raise HTTPException(
-        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
         f"能力「{cap.name}」：第三方注册 type=tool 必须携带 payload.builtin 且为平台已注册的"
         f"内置工具键（现有：{', '.join(sorted(BUILTIN_TOOLS))}）。"
         "新的可执行能力请注册 mcp（外部工具服务）或 plugin（前端 + 可选 transport）。",
@@ -86,6 +87,7 @@ def _normalize_sub_workers(subs: list[OpenSubWorkerIn]) -> list[dict]:
             "description": s.description,
             "capability_hint": s.capability_hint,
             "playbook": s.playbook,
+            "inputs": [i.to_registry() for i in s.inputs],
         }
         for s in subs
     ]
@@ -109,21 +111,40 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
     # 2. 引用清单校验（平台已有 ∪ 本次提交）
     ref_names = set(body.worker.capabilities)
     if ref_names:
-        rows = await db.scalars(
-            select(Capability).where(Capability.name.in_(ref_names))  # type: ignore[arg-type]
+        rows = list(
+            (
+                await db.scalars(
+                    select(Capability).where(Capability.name.in_(ref_names))  # type: ignore[arg-type]
+                )
+            ).all()
         )
         registered = {c.name for c in rows}
     else:
+        rows = []
         registered = set()
     submitted = {c.name for c in body.capabilities}
     missing = sorted(ref_names - registered - submitted)
     if missing:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"Worker「{body.worker.name}」引用的能力未注册且未包含在本次提交中："
             f"{', '.join(missing)}。请把它们加入 capabilities 一并提交，"
             "或改引平台已有能力（GET /open/capabilities 查询）。",
         )
+
+    # 2.5 容量硬门：声明的能力展开后的工具总数不得越过硬上限（方案 §4 P0-2）
+    from app.modules.discovery.assembler import MAX_TOOLS_HARD, count_capability_tools
+    from app.modules.discovery.retriever import cap_dict
+
+    tool_count = await count_capability_tools([cap_dict(c) for c in rows])
+    if tool_count > MAX_TOOLS_HARD:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Worker「{body.worker.name}」的 capabilities 展开后共 {tool_count} 个工具，"
+            f"超过硬上限 {MAX_TOOLS_HARD}；请收敛 capabilities 名单，或按需拆分 Worker。",
+        )
+    # 2.6 更早预警（P0-2 增量）：绑定了目标 Agent 时，把"装不下"报出来（非阻断）
+    warnings.extend(await target_agent_warnings(db, tool_count, body.target_agents))
 
     # 3. Worker 文件包落盘
     meta = registry.get_meta(body.worker.name)
@@ -138,6 +159,7 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
                 references=body.worker.references,
                 playbook=body.worker.playbook,
                 sub_workers=_normalize_sub_workers(body.worker.sub_workers),
+                inputs=[i.to_registry() for i in body.worker.inputs],
             )
             action, version = "created", meta.effective_version
         elif body.if_exists == "fail":
@@ -158,10 +180,11 @@ async def register_bundle(db: AsyncSession, body: OpenWorkerRegisterIn) -> OpenW
                 references=body.worker.references,
                 playbook=body.worker.playbook,
                 sub_workers=_normalize_sub_workers(body.worker.sub_workers),
+                inputs=[i.to_registry() for i in body.worker.inputs],
             )
             action = "new_version"
     except WorkerError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
 
     if not body.worker.playbook:
         warnings.append(

@@ -16,15 +16,16 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
-from app.modules.runs.models import Run
-from app.modules.runs.schemas import ConfirmIn, RunEventOut, RunOut
+from app.modules.runs.models import Run, RunArtifact
+from app.modules.runs.schemas import ArtifactDetailOut, ArtifactOut, ConfirmIn, RunEventOut, RunOut
+from app.modules.workers.inputs import InputContractError, sanitize_provided_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,16 @@ router = APIRouter(
     tags=["runs"],
     dependencies=[Depends(get_current_user)],
 )
+
+# 产物取件独立成面（P0-5）：`/runs/{id}/artifacts` 列清单，`/artifacts/{id}` 取正文
+artifacts_router = APIRouter(
+    prefix="/artifacts",
+    tags=["artifacts"],
+    dependencies=[Depends(get_current_user)],
+)
+
+# 与 app.main 的 API_PREFIX 一致：kind=file 重定向到既有取件接口
+API_PREFIX = "/api/v1"
 
 TERMINAL_STATUSES = ("done", "failed", "cancelled")
 
@@ -54,6 +65,19 @@ async def list_runs(
     if status_filter:
         stmt = stmt.where(Run.status == status_filter)
     return list((await db.scalars(stmt)).all())
+
+
+@router.get("/capacity")
+async def run_capacity() -> dict[str, Any]:
+    """并发准入观测面（P1-1）：活跃 run 数 / 上限 / 是否还能准入。
+
+    声明在 `/{run_id}` **之前**——否则 "capacity" 会被当成 run_id 解析成 422。
+    """
+    from app.modules.engine.runtime import engine_runtime
+
+    active = engine_runtime.active_run_count()
+    limit = settings.max_concurrent_runs
+    return {"active_runs": active, "max_concurrent_runs": limit, "admission_open": active < limit}
 
 
 @router.get("/{run_id}", response_model=RunOut)
@@ -80,6 +104,16 @@ async def list_run_events(
     result = await db.execute(stmt)
     rows = result.mappings().all()
     return [RunEventOut(**dict(r)) for r in rows]  # type: ignore[arg-type]
+
+
+@router.get("/{run_id}/artifacts", response_model=list[ArtifactOut])
+async def list_run_artifacts(run_id: UUID, db: AsyncSession = Depends(get_db)) -> list[RunArtifact]:
+    """run 的产物清单（P0-5）：正文不在此响应里，按需取 `GET /artifacts/{id}`。"""
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    stmt = select(RunArtifact).where(RunArtifact.run_id == run_id).order_by(RunArtifact.created_at)
+    return list((await db.scalars(stmt)).all())
 
 
 @router.post("/{run_id}/abort", status_code=status.HTTP_202_ACCEPTED)
@@ -109,13 +143,30 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     if run.status != "paused_awaiting_confirm":
-        raise HTTPException(status.HTTP_409_CONFLICT, f"任务不在待确认状态（当前 {run.status}）")
+        # P0-4：等待外部回调（waiting_external）不是"待确认"，给出可行动的提示而非裸状态
+        hint = (
+            "任务正在等待外部流程回调，无需确认；如需放弃等待可调用 POST /awaits/{await_id}/cancel"
+            if run.status == "waiting_external"
+            else f"任务不在待确认状态（当前 {run.status}）"
+        )
+        raise HTTPException(status.HTTP_409_CONFLICT, hint)
     # 统一结构化回传（§3.5）：data/applied 仅在存在时随 answer 一并投给引擎
     inbox_payload: dict[str, Any] = {"answer": body.answer}
     if body.data is not None:
         inbox_payload["data"] = body.data
     if body.applied is not None:
         inbox_payload["applied"] = body.applied
+    # 补输入卡（P1-4 收尾）：只提交输入、不填 answer 也要能恢复；取值在 API 入口先校验
+    # （非法 → 422，别让它进引擎变成一个失败的 run），同时兼容前端把表单塞在 data.inputs 的写法。
+    raw_inputs = body.inputs
+    if raw_inputs is None and isinstance(body.data, dict):
+        raw_inputs = body.data.get("inputs")
+    try:
+        provided_inputs = sanitize_provided_inputs(raw_inputs)
+    except InputContractError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
+    if provided_inputs:
+        inbox_payload["inputs"] = provided_inputs
     await db.execute(
         text(
             "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "
@@ -195,3 +246,19 @@ async def stream_run_events(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@artifacts_router.get("/{artifact_id}", response_model=ArtifactDetailOut)
+async def get_artifact(
+    artifact_id: UUID, db: AsyncSession = Depends(get_db)
+) -> RunArtifact | RedirectResponse:
+    """取单条产物（P0-5）：`kind=file` 重定向到既有 files 取件接口，其余回正文 JSON。
+
+    重定向而非代理下载：文件正文的鉴权/落盘/清理全归 files 模块，产物表只做引用。
+    """
+    artifact = await db.get(RunArtifact, artifact_id)
+    if artifact is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "产物不存在")
+    if artifact.kind == "file" and artifact.file_id is not None:
+        return RedirectResponse(f"{API_PREFIX}/files/{artifact.file_id}/content")
+    return artifact

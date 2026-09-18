@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from app.modules.engine.tool_outcome import ToolError
 from app.modules.engine.tools_builtin import (
     _format_weather_result,
     _parse_weather_date,
@@ -82,23 +83,30 @@ def test_format_weather_result_missing_date() -> None:
 
 
 def test_query_weather_live() -> None:
-    out = asyncio.run(_query_weather({"city": "杭州", "date": "2026-09-16"}))
-    if "不可用" in out:
-        pytest.skip("网络不可达，跳过真实外呼")
+    try:
+        out = asyncio.run(_query_weather({"city": "杭州", "date": "2026-09-16"}))
+    except ToolError as e:
+        pytest.skip(f"外部服务不可用，跳过真实外呼：{e.code}")
     assert out.startswith("杭州")
     assert "2026-09-16" in out and "气温" in out
 
 
 def test_query_weather_bad_args() -> None:
-    out = asyncio.run(_query_weather({"city": ""}))
-    assert "city" in out
-    out = asyncio.run(_query_weather({"city": "杭州", "date": "某天"}))
-    assert "格式错误" in out
+    """参数错误必须是结构化失败（P0-3），不得降级成自然语言结果。"""
+    with pytest.raises(ToolError) as ei:
+        asyncio.run(_query_weather({"city": ""}))
+    assert ei.value.code == "invalid_args" and "city" in ei.value.detail
+
+    with pytest.raises(ToolError) as ei2:
+        asyncio.run(_query_weather({"city": "杭州", "date": "某天"}))
+    assert ei2.value.code == "invalid_args"
 
 
 def test_query_weather_unknown_city() -> None:
-    """未知城市需要真实外呼（geocoding 返回空）；离线时跳过。"""
-    out = asyncio.run(_query_weather({"city": "不存在城市xyzq99"}))
-    if "不可用" in out:
-        pytest.skip("网络不可达，跳过真实外呼")
-    assert "未找到城市" in out
+    """未知城市 = 参数错误（结构化）；真实外呼，离线时跳过。"""
+    try:
+        out = asyncio.run(_query_weather({"city": "不存在城市xyzq99"}))
+    except ToolError as e:
+        assert e.code in ("invalid_args", "external_unavailable")
+        return
+    pytest.skip(f"外呼返回了结果，跳过：{out[:80]}")

@@ -1,10 +1,10 @@
 """runs 请求/响应模型。"""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 class ConfirmIn(BaseModel):
@@ -21,6 +21,24 @@ class ConfirmIn(BaseModel):
     data: Any | None = None
     # 已落库的写入类 mcp 结果：[{capability, result}]
     applied: list[dict[str, Any]] | None = None
+    # 补输入卡提交（P1-4 收尾）：{输入名: 文本值}，落进 run.input["inputs"] 后由图内
+    # 子任务输入门重判。仅提交输入、不填 answer 也是合法恢复。
+    inputs: dict[str, str | int | float | bool | None] | None = None
+
+
+class RunError(BaseModel):
+    """run 级失败载荷（§4 P0-3）：字段固定，前端失败卡据此渲染文案与重试入口。
+
+    `extra="allow"` 兼容历史行（旧数据只有 `{code, detail}`，或预算闸带 `gate`）。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    code: str = "unknown"
+    detail: str = ""
+    retryable: bool = False
+    source: str = "engine"
+    phase: str | None = None
 
 
 class RunOut(BaseModel):
@@ -33,12 +51,24 @@ class RunOut(BaseModel):
     status: str
     input: dict
     result: dict | None
-    error: dict | None
+    error: RunError | None
     budget: dict
     budget_used: dict
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    # P0-1 时长账本：deadline_at 为绝对截止时间；active_ms 不含暂停/等待
+    deadline_at: datetime | None = None
+    active_ms: int | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def elapsed_ms(self) -> int | None:
+        """总存活时长（含暂停），读取时计算，不落列；未启动的 run 为 None。"""
+        if self.started_at is None:
+            return None
+        end = self.finished_at or datetime.now(UTC)
+        return max(0, int((end - self.started_at).total_seconds() * 1000))
 
 
 class RunEventOut(BaseModel):
@@ -50,3 +80,39 @@ class RunEventOut(BaseModel):
     event_type: str
     payload: dict
     created_at: datetime
+
+
+class ArtifactOut(BaseModel):
+    """run 产物摘要（P0-5）：不含正文，列表与结果卡共用。
+
+    `kind=file` 时正文在既有 files 表（`GET /artifacts/{id}` 会重定向到取件接口）。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    run_id: UUID
+    kind: str
+    name: str | None
+    mime: str | None
+    size: int
+    storage: str
+    created_at: datetime
+
+
+class ArtifactDetailOut(ArtifactOut):
+    """单条产物详情：带正文（`payload`），供 `GET /artifacts/{id}` 直取。"""
+
+    payload: Any | None = None
+
+
+class TaskArtifactOut(ArtifactOut):
+    """任务级产物条目（P0-5 收尾）：跨本任务的 run 归集，带子任务归属供按步分组。
+
+    `task_id` / `step_id` 是产物落库时的归属（老行可能为 NULL，路由按 `task_steps.run_id` 兜底）；
+    `step_name` 由路由用本任务子任务表补齐，前端不必再拉一次步骤清单。
+    """
+
+    task_id: UUID | None = None
+    step_id: UUID | None = None
+    step_name: str | None = None

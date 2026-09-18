@@ -8,7 +8,9 @@
 
 from typing import Any, Protocol
 
-# 九类事件的合法值（模块详细设计 §1.1.7）+ message_reset（轮次分隔，见 graph agent 节点）
+# 事件类型的唯一真源（模块详细设计 §1.1.7 + message_reset/context_compacted）。
+# 纪律（P0-6）：任何新增事件类型必须先登记在此，并以字符串字面量发射；
+# tests/test_event_registry.py 会扫描全部发射点断言其 ⊆ 本集合。
 EVENT_TYPES = (
     "message_delta",
     "message_reset",
@@ -20,6 +22,20 @@ EVENT_TYPES = (
     "budget_warning",
     "run_status",
     "error",
+    "context_compacted",
+    "card",
+    "capability_overflow",
+    # M9b 增量扩展（方案 §4 P0-4：外部等待一等化）
+    "await_started",
+    "await_resolved",
+    "await_expired",
+    # M9c 增量扩展（方案 §5 P1-6：阻碍与决策的结构化可见）
+    "blocked",
+    "unblocked",
+    # M9c 增量扩展（方案 §5 P1-5：推送式进度）
+    # `progress` 是唯一由**平台 watcher** 而非模型轮次发射的事件：模型不参与也能
+    # 看到进度前进（含等待外部回调期间的进度快照）
+    "progress",
 )
 
 
@@ -70,6 +86,14 @@ class EngineBackend(Protocol):
         """会话 → 主任务实例 id（1 会话 = 1 主任务；无会话的 timer run 返回 None）。"""
         ...
 
+    async def step_id_for_run(self, run_id: str) -> str | None:
+        """run → 该 run 直接绑定的子任务 id（P1-10 工具执行上下文的 `step_id`）。
+
+        一个 run 可推进多个主线步骤，故这里只回答"本 run 绑定的那一步"；
+        无绑定（或 run_id 非法）返回 None，不抛错。
+        """
+        ...
+
     async def get_task_context(self, task_id: str) -> dict[str, Any] | None:
         """主任务上下文（任务卡文本 + 步骤清单），装配进 system_prompt 保护区。"""
         ...
@@ -109,4 +133,64 @@ class EngineBackend(Protocol):
 
     async def finalize_task_plan(self, task_id: str, run_id: str, *, achieved: bool) -> int:
         """run 终态回写：achieved 时推进绑定主步骤至 done，返回推进条数。"""
+        ...
+
+    # ---- M9a 增量扩展（方案 §4 P0-5：结果产物一等化）----
+
+    async def save_artifact(
+        self,
+        run_id: str,
+        *,
+        kind: str,
+        name: str | None,
+        mime: str | None,
+        size: int,
+        storage: str,
+        payload: Any,
+        idempotency_key: str | None = None,
+        task_id: str | None = None,
+        step_id: str | None = None,
+    ) -> dict[str, Any]:
+        """落一条 run 产物，返回 `{id, kind, name, mime, size, storage}`（供拼引用行）。
+
+        `idempotency_key` 非空且已存在时返回已有行（重放/重试不重复落库）。
+        `task_id` / `step_id` 为可选归属（P0-5 收尾）：任务级产物视图据此跨 run 归集，
+        缺省留 NULL —— 归属是元数据，不能因它让产物写入失败。
+        """
+        ...
+
+    async def list_artifacts(self, run_id: str) -> list[dict[str, Any]]:
+        """run 的产物清单（按 created_at 升序），结果卡与产物面板共用。"""
+        ...
+
+    # ---- M9b 增量扩展（方案 §4 P0-4：外部等待一等化）----
+
+    async def ensure_await(
+        self,
+        *,
+        run_id: str,
+        tool_name: str,
+        idempotency_key: str,
+        builtin: str,
+        capability_id: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """登记（或复用）一笔外部等待，返回等待行摘要（含一次性 callback 凭据）。
+
+        幂等键 `(run_id, tool_name, idempotency_key)` 唯一：重放/重试复用同一行，
+        绝不重复派发外部请求。返回值含 `await_id/status/deadline_at/callback_url/
+        callback_token/notified_at/idempotency_key`。
+        """
+        ...
+
+    async def get_await(self, await_id: str) -> dict[str, Any] | None:
+        """读等待行当前状态（恢复路径以 DB 为准，不消费 interrupt 返回值）。"""
+        ...
+
+    async def mark_await_dispatched(self, await_id: str, *, response: Any = None) -> None:
+        """记「已派发」：置 notified_at 并存派发响应（重放不再重复派发）。"""
+        ...
+
+    async def cancel_await(self, await_id: str, *, reason: str | None = None) -> bool:
+        """撤销等待（派发失败/放弃等待）：CAS waiting → cancelled，返回是否翻转。"""
         ...

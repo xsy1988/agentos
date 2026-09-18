@@ -5,6 +5,35 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+# ---------- 输入契约（P1-4） ----------
+
+
+class WorkerInputSpec(BaseModel):
+    """一条输入声明（WORKER.md front-matter `inputs` 项）。
+
+    `extra="forbid"` 是有意的：拼错的字段名（如 `requried`）被静默忽略，
+    比直接 422 更贵——配置者会以为门建好了，线上却永远不拦。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=40)
+    type: Literal["text", "number", "date", "file", "url", "json"] = "text"
+    required: bool = False
+    description: str = Field(default="", max_length=500)
+    example: str = Field(default="", max_length=200)
+
+    def to_registry(self) -> dict:
+        """→ registry（workers.inputs）的声明字典。"""
+        return {
+            "name": self.name,
+            "type": self.type,
+            "required": self.required,
+            "description": self.description,
+            "example": self.example,
+        }
+
+
 # ---------- Worker 级 ----------
 
 
@@ -18,6 +47,9 @@ class SubWorkerOut(BaseModel):
     optional: bool
     description: str
     capability_hint: list[str] = Field(default_factory=list)
+    # 子任务级输入声明：解析/校验/展示都有，但**不设 run 级门**
+    # （step 级门需要 interrupt-ask 机制，见优化方案 §5 P1-4）
+    inputs: list[WorkerInputSpec] = Field(default_factory=list)
 
 
 class WorkerVersionOut(BaseModel):
@@ -42,6 +74,7 @@ class WorkerOut(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     references: list[dict] | None = None
     playbook: str = ""
+    inputs: list[WorkerInputSpec] = Field(default_factory=list)
     sub_workers: list[SubWorkerOut] = Field(default_factory=list)
     has_files: bool = True  # 生效版本目录是否存在
 
@@ -56,6 +89,7 @@ class WorkerCreateIn(BaseModel):
     description: str = Field(default="", max_length=4000)
     icon: str | None = Field(default=None, max_length=32)
     color: str | None = Field(default=None, max_length=16)
+    inputs: list[WorkerInputSpec] = Field(default_factory=list, max_length=16)
 
     @field_validator("name")
     @classmethod
@@ -77,6 +111,7 @@ class SubWorkerCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     kind: Literal["main", "branch"] = "main"
     description: str = Field(default="", max_length=4000)
+    inputs: list[WorkerInputSpec] = Field(default_factory=list, max_length=16)
 
 
 # ---------- 版本内文件 ----------
@@ -104,9 +139,26 @@ class WorkerFileCreateIn(BaseModel):
     content: str = Field(default="", max_length=200_000)
 
 
+class VersionBuildIn(BaseModel):
+    """POST /workers/{name}/versions 请求体。
+
+    可选（不带请求体 = 与从前行为逐字相同）——`target_agents` 是 P0-2 的"更早预警"增量：
+    填了就比对这些 Agent 的 `tool_budget`，把"装不下"作为 warnings 提前报出来（非阻断）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_agents: list[str] = Field(default_factory=list, max_length=32)
+
+
 class VersionBuildOut(BaseModel):
     version: str
     copied_from: str
+    # 展开后的工具数（P0-2）：配置者拿它跟 Agent 的 tool_budget 比对，
+    # 避免出现"能发布但装不下"的能力组合
+    tool_count: int = 0
+    # 按 target_agents 比出来的容量提示（非阻断）：空列表 = 没填或都装得下
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------- 工具引用清单校验 ----------

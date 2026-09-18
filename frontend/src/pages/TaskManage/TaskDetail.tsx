@@ -2,13 +2,14 @@
  * 主任务详情页（/tasks/:taskId）：实例概览 + 子任务管理。
  * Worker 定义（WORKER.md 文件包）维护已拆到 /capabilities/workers，这里只读展示归属并提供跳转。
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Card,
   Empty,
   Input,
   List,
+  Popconfirm,
   Progress,
   Select,
   Space,
@@ -27,8 +28,12 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { tasksApi } from "@/api/tasks";
-import type { TaskStepOut } from "@/api/types";
+import { artifactsApi } from "@/api/artifacts";
+import type { TaskArtifactOut, TaskStepOut } from "@/api/types";
+import { ArtifactRow } from "@/pages/Chat/CardRenderer";
 import {
+  STEP_BLOCK_REASON_LABELS,
+  STEP_CONVERGE_LABELS,
   STEP_SOURCE_LABELS,
   STEP_STATUS_COLORS,
   STEP_STATUS_LABELS,
@@ -36,6 +41,52 @@ import {
   TASK_STATUS_LABELS,
   stepKindLabel,
 } from "@/pages/Chat/taskDisplay";
+
+/** 任务级产物视图（P0-5 收尾）：跨本任务全部 run 归集，按子任务分组展示。 */
+function TaskArtifactsCard({ taskId }: { taskId: string }) {
+  const { data: artifacts = [], isLoading } = useQuery({
+    queryKey: ["task-artifacts", taskId],
+    queryFn: () => artifactsApi.listByTask(taskId),
+    enabled: !!taskId,
+    refetchInterval: 30_000,
+  });
+
+  const groups = useMemo(() => {
+    const map = new Map<string, TaskArtifactOut[]>();
+    for (const a of artifacts) {
+      const key = a.step_name || "未归属子任务";
+      const list = map.get(key);
+      if (list) list.push(a);
+      else map.set(key, [a]);
+    }
+    return [...map.entries()];
+  }, [artifacts]);
+
+  return (
+    <Card size="small" title={`产物（${artifacts.length}）`} style={{ marginBottom: 12 }}>
+      {isLoading ? (
+        <Spin size="small" />
+      ) : groups.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="暂无产物（长结果才会落产物）"
+          style={{ margin: "8px 0" }}
+        />
+      ) : (
+        groups.map(([stepName, rows]) => (
+          <div key={stepName} style={{ marginBottom: 8 }}>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              {stepName}
+            </Typography.Text>
+            {rows.map((a) => (
+              <ArtifactRow key={a.id} artifact={a} />
+            ))}
+          </div>
+        ))
+      )}
+    </Card>
+  );
+}
 
 const STEP_STATUS_OPTIONS = [
   "pending",
@@ -49,14 +100,32 @@ const STEP_STATUS_OPTIONS = [
 function StepItem({
   step,
   onStatusChange,
+  onConverge,
 }: {
   step: TaskStepOut;
   onStatusChange: (step: TaskStepOut, status: string) => void;
+  onConverge: (step: TaskStepOut, action: "close" | "requeue" | "escalate") => void;
 }) {
   const resolution = step.resolution as Record<string, unknown> | null;
   return (
     <List.Item
       actions={[
+        // 受阻支线：前台收敛三动作（P1-6），人工不必再直接改库
+        ...(step.status === "blocked"
+          ? (["close", "requeue", "escalate"] as const).map((action) => (
+              <Popconfirm
+                key={action}
+                title={`${STEP_CONVERGE_LABELS[action]}？`}
+                okText="确定"
+                cancelText="取消"
+                onConfirm={() => onConverge(step, action)}
+              >
+                <Button type="link" size="small" style={{ fontSize: 12, padding: 0 }}>
+                  {STEP_CONVERGE_LABELS[action]}
+                </Button>
+              </Popconfirm>
+            ))
+          : []),
         <Select
           key="status"
           size="small"
@@ -111,6 +180,17 @@ function StepItem({
                 已答复：{String(resolution.answer)}
               </Typography.Text>
             )}
+            {step.status === "blocked" && (
+              <Typography.Text
+                type="warning"
+                style={{ fontSize: 12, display: "block" }}
+              >
+                受阻原因：
+                {STEP_BLOCK_REASON_LABELS[String(resolution?.reason ?? "")] ?? "未标注"}
+                {resolution?.detail ? ` · ${String(resolution.detail)}` : ""}
+                {resolution?.escalated ? "（已转人工）" : ""}
+              </Typography.Text>
+            )}
           </>
         }
       />
@@ -142,6 +222,22 @@ export default function TaskDetailPage() {
       tasksApi.updateStep(taskId!, stepId, { status }),
     onSuccess: invalidate,
     onError: () => antdMessage.error("状态更新失败"),
+  });
+
+  // 受阻支线收敛（P1-6）：close / requeue / escalate
+  const convergeMutation = useMutation({
+    mutationFn: ({
+      stepId,
+      action,
+    }: {
+      stepId: string;
+      action: "close" | "requeue" | "escalate";
+    }) => tasksApi.convergeStep(taskId!, stepId, { action }),
+    onSuccess: (_data, vars) => {
+      invalidate();
+      antdMessage.success(`${STEP_CONVERGE_LABELS[vars.action]}成功`);
+    },
+    onError: () => antdMessage.error("支线收敛失败（可能已被处理）"),
   });
 
   const addStepMutation = useMutation({
@@ -291,6 +387,9 @@ export default function TaskDetailPage() {
               onStatusChange={(step, status) =>
                 statusMutation.mutate({ stepId: step.id, status })
               }
+              onConverge={(step, action) =>
+                convergeMutation.mutate({ stepId: step.id, action })
+              }
             />
           )}
           locale={{
@@ -315,6 +414,9 @@ export default function TaskDetailPage() {
               onStatusChange={(step, status) =>
                 statusMutation.mutate({ stepId: step.id, status })
               }
+              onConverge={(step, action) =>
+                convergeMutation.mutate({ stepId: step.id, action })
+              }
             />
           )}
           locale={{
@@ -328,6 +430,9 @@ export default function TaskDetailPage() {
           }}
         />
       </Card>
+
+      {/* 任务级产物视图（P0-5 收尾）：跨 run 归集，按子任务分组 */}
+      <TaskArtifactsCard taskId={task.id} />
     </div>
   );
 }

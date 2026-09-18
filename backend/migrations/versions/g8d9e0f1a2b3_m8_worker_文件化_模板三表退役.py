@@ -164,6 +164,13 @@ def downgrade() -> None:
             "task_type_id", "capability_id", name="uq_task_type_capabilities_task_type_id"
         ),
     )
+    # m7a 的 downgrade 会删除这两个索引，重建时必须一并恢复，否则回滚链断裂。
+    op.create_index(
+        "ix_task_type_capabilities_capability_id", "task_type_capabilities", ["capability_id"]
+    )
+    op.create_index(
+        "ix_task_type_capabilities_task_type_id", "task_type_capabilities", ["task_type_id"]
+    )
 
     op.drop_index("ix_tasks_worker_status", table_name="tasks")
     op.add_column(

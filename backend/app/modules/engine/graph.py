@@ -1,30 +1,38 @@
 """完整图（M2-2c）—— 模块详细设计 §1.1.1。
 
 START → intent_router →(chitchat)→ agent → END（闲聊快速通道：跳过全部装配）
-                      →(task·simple)→ context_assembly → agent（简单任务直通：
+                      →(task·simple)→ context_assembly → input_gate → agent（简单任务直通：
                           跳过 planner/confirm_plan/verify——识别图片、问答等单步任务
                           不需要任务清单与验收，agent 自身可调工具补台）
-                      →(task·complex)→ context_assembly → planner → confirm_plan
+                      →(task·complex)→ context_assembly → input_gate → planner → confirm_plan
 confirm_plan →(approved)→ agent
              →(rejected)→ END
 agent ⇄ tools（ReAct 回环，钩子全程计量/审计/熔断；高危工具确认点仍生效）
+tools →(本批有派发类建单调用)→ await_gate ⇄（一次只挂一笔等待，剩余的自环）→ agent
 agent →(无 tool_calls)→ verify（仅 complex；闲聊/简单任务直达 END）→(achieved | 回环限 3 次)→ END
 
-确认点两处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）。
+暂停点五处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）
++ 支线澄清（tools 内 `ask_user` 澄清型）+ 外部等待（await_gate，P0-4）
++ 子任务缺必需输入（input_gate，P1-4）；
+五处都经 runtime `_pause` 统一落库（结束执行段计时 + 记 paused_at + 落预算账本 + 置 run 状态）。
 节点是薄壳，逻辑经 runtime 依赖注入（backend/emit/hooks/run_ctx）。
 
 interrupt 重放纪律：恢复时节点从头重放——
 1. planner 生成计划与 confirm_plan 的 interrupt 拆成两个节点，重放不重复调 LLM；
 2. tools 节点先查全部调用风险、interrupt 一次，恢复后才逐个执行——
    副作用（工具执行/审计事件/循环计数）只发生在 interrupt 之后，恰好一次。
+3. input_gate 只读 configurable 里的预检结论（runtime 每次进入图时从 DB 重算），
+   重放不读 interrupt 返回值，故恢复后判定依据必然是落库的最新取值。
 """
 
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import time
 from collections import OrderedDict
+from collections.abc import Awaitable
 from typing import Any
 
 from langchain_core.messages import (
@@ -40,8 +48,28 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from app.modules.engine.hooks import ToolCallRequest, ToolResultInfo
+from app.core.config import settings
+from app.modules.awaits import policy as await_policy
+from app.modules.engine.hooks import (
+    ToolCallRequest,
+    ToolFailureLoopError,
+    ToolResultInfo,
+)
 from app.modules.engine.state import LoopState
+from app.modules.engine.tokens import estimate_messages_tokens
+from app.modules.engine.tool_context import ToolContext, tool_idempotency_key
+from app.modules.engine.tool_outcome import (
+    ToolError,
+    classify_exception,
+    failure_content,
+    failure_error,
+    next_failure_streak,
+    normalize,
+)
+from app.modules.models_module.ratelimit import rate_limiter
+from app.modules.workers.preflight import strip_step_contract
+
+logger = logging.getLogger(__name__)
 
 # verify 回环上限（设计 §1.1.1：验证不达标带反馈回环，计数限 3 次）
 VERIFY_RETRY_LIMIT = 3
@@ -187,6 +215,48 @@ def _normalize_tool_responses(
     return new_msgs, patches
 
 
+def build_verify_verdict(
+    raw: str | None, *, verify_error: dict[str, Any] | None, retries: int
+) -> dict[str, Any]:
+    """验收输出 → `verify_verdict`（纯函数，便于守卫"验收失败不得记为达成"）。
+
+    - `passed`：验收员的真实结论（异常 / 输出不可解析 → False）；
+    - `achieved`：是否退出回环（仅"回环次数耗尽"才强制放行，并置 `exhausted`）；
+    - `verify_error`：验收自身失败的结构化原因（P0-3 可观测性）。
+    """
+    parsed = _extract_json(raw or "") if verify_error is None else None
+    if parsed is None and verify_error is None:
+        verify_error = failure_error(
+            "parse_error", f"验收输出不可解析：{(raw or '')[:200]}", source="engine"
+        )
+    passed = bool((parsed or {}).get("achieved"))
+    exhausted = retries + 1 >= VERIFY_RETRY_LIMIT
+    return {
+        "achieved": passed or exhausted,
+        "passed": passed,
+        "feedback": str((parsed or {}).get("feedback") or ""),
+        "retries": retries + 1,
+        "exhausted": exhausted,
+        "verify_error": verify_error,
+    }
+
+
+async def _guarded_call(
+    coro: Awaitable[Any], *, source: str
+) -> tuple[Any, bool, dict[str, Any] | None]:
+    """执行一次工具调用并收敛为契约 `(content, ok, error)`（方案 §4 P0-3）。
+
+    红线：异常一律转结构化失败码（`ToolError` / `classify_exception`），
+    **不得**在 except 分支里编造面向模型的自然语言"结果"。
+    """
+    try:
+        return normalize(await coro)
+    except ToolError as e:
+        return None, False, e.as_error()
+    except Exception as e:  # noqa: BLE001 —— 工具错误一律转结构化失败
+        return None, False, classify_exception(e, source=source).as_error()
+
+
 async def _get_llm(
     runtime: Any, agent_id: str, model_provider_id: str | None = None
 ) -> tuple[Any, dict[str, Any]] | None:
@@ -247,6 +317,15 @@ async def _get_internal_llm(
     return llm, agent_cfg.get("provider_id")
 
 
+async def _llm_invoke(llm: Any, provider_id: str | None, messages: list[Any]) -> Any:
+    """内部短调用的模型调用入口（P1-2）：先按 provider.limits 申请额度再调用。
+
+    所有非流式短调用（分类/规划/验收）走这里，限流只有一处实现。
+    """
+    await rate_limiter.acquire(provider_id, estimate_messages_tokens(messages))
+    return await llm.ainvoke(messages)
+
+
 async def emit_task_steps(runtime: Any, task_id: str, run_id: str) -> None:
     """把主任务当前步骤作为计划事件推给前端（计划状态区与看板同源）。
 
@@ -286,6 +365,17 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
     async def _emit_task_steps(task_id: str, run_id: str) -> None:
         await emit_task_steps(runtime, task_id, run_id)
+
+    async def _bound_step_id(run_id: str) -> str | None:
+        """本 run 直接绑定的子任务 id（P1-10 工具执行上下文的 `step_id`）。
+
+        一个 run 可以推进多个主线步骤，故 step_id 只表示 `task_steps.run_id == run`
+        的那一步；后端未提供该能力（如测试替身）时返回 None，不视为错误。
+        """
+        resolver = getattr(getattr(runtime, "backend", None), "step_id_for_run", None)
+        if resolver is None:
+            return None
+        return await resolver(run_id)
 
     # ---------- 节点 ----------
 
@@ -331,7 +421,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 usage: dict[str, int] = {}
                 try:
                     hint = "（消息附带图片）" if has_image else ""
-                    resp = await llm.ainvoke(
+                    resp = await _llm_invoke(
+                        llm,
+                        pid,
                         [
                             SystemMessage(
                                 content="把用户输入分为三类，只输出一个词，不要解释：\n"
@@ -341,7 +433,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                                 "complex=多步骤拆解、跨工具编排或含写操作副作用"
                             ),
                             HumanMessage(content=f"{text[:500]}{hint}"),
-                        ]
+                        ],
                     )
                     if getattr(resp, "usage_metadata", None):
                         usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
@@ -392,10 +484,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     async def context_assembly(state: LoopState, config: RunnableConfig) -> dict:
         """五区装配之工具描述区（M3，设计 §1.2.3）：
 
-        pinned 常驻 + 语义 Top-K（受 tool_budget 封顶）+ 元工具，经 discovery
-        装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
+        pinned 常驻 + 必得集（主任务域）全量 + 语义 Top-K（受 tool_budget 封顶）+ 元工具，
+        经 discovery 装配进 capability_cache；固定区（系统提示词）在此一并落 protected_context。
         """
-        from app.modules.discovery.assembler import assemble_tools
+        from app.modules.discovery.assembler import assemble_tools, take_overflow_payload
         from app.modules.memory.service import get_protected_memories
 
         conf = config["configurable"]
@@ -413,6 +505,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         cache = state.get("capability_cache") or {}
         if not cache.get("tools"):
             cache = await assemble_tools(query, conf["agent_id"], tool_budget, conf.get("task_id"))
+        # 容量不足留痕（P0-2）：装配被截断必须可观测（事件 + 日志），否则模型会
+        # 静默地"少了一半工具"地空转。run 级只报一次（cache 随 run 状态复用）。
+        overflow = take_overflow_payload(cache)
+        if overflow:
+            await runtime.emit_event(conf["run_id"], "capability_overflow", overflow)
         # 记忆注入（M5，模块详细设计 §2.6）：platform 全文 + 最近 2 天 daily
         # 每个 run 自动携带“我是谁 + 最近发生了什么”
         memories = await get_protected_memories()
@@ -439,6 +536,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             task_ctx = await runtime.backend.get_task_context(str(task_id))
             if task_ctx and task_ctx.get("card"):
                 system_prompt = f"{system_prompt}\n\n{task_ctx['card']}"
+        # 输入契约区（P1-4）：预检已把必需输入判定完，这里把「声明 + 实测取值」
+        # 随固定区注入——模型不必猜自己拿到什么，也不会把缺的可选项当已有的事实。
+        input_contract = conf.get("input_contract")
+        if input_contract:
+            system_prompt = f"{system_prompt}\n\n{input_contract}"
         return {
             "protected_context": {
                 "intent": "task",
@@ -449,6 +551,42 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             },
             "capability_cache": cache,
         }
+
+    async def input_gate(state: LoopState, config: RunnableConfig) -> dict:
+        """子任务级输入门（P1-4 收尾）：当前子任务缺必需输入时 interrupt 问用户。
+
+        与 run 级门（`preflight.resolve_run_inputs`）同一套取值链，差别只在**时机与处置**：
+        run 级在调用模型前硬失败（拦下整个 run），step 级在执行到该子任务时按需补——缺材料
+        是多轮会话里最正常的中间态，硬失败会连带丢掉已产出的进度。
+
+        取值由 `runtime._invoke_and_finalize` 每次进入图时从 DB 重算并随 `configurable`
+        下发，恢复后重放本节点即读到最新取值，故**不消费 interrupt 的返回值**（同 `await_gate`
+        纪律：唯一事实源是 DB，避免"返回值与落库不一致"时产生两套口径）。timer 触发无人
+        值守，缺输入不挂起（对齐 ADR-16 的 confirm_plan 策略），只留日志供运维发现。
+        """
+        conf = config["configurable"]
+        gate = conf.get("step_input_contract")
+        if not gate:
+            return {}
+        body = gate["payload"]
+        if conf.get("trigger") == "timer" and not gate["ok"]:
+            logger.warning(
+                "run %s 子任务「%s」缺必需输入 %s，但为 timer 触发（无人值守），不挂起等待",
+                conf.get("run_id"),
+                body["step_name"],
+                body["missing"],
+            )
+            return {}
+        if not gate["ok"]:
+            interrupt({"reason": "input_required", "payload": body})
+        # 契约段整体替换而非追加：本节点在恢复时会被重放，叠加会让同一段文本
+        # 随恢复次数增长（且旧取值会和新取值同时出现，互相矛盾）。
+        protected = dict(state.get("protected_context") or {})
+        base = strip_step_contract(str(protected.get("system_prompt") or ""))
+        text = str(gate.get("contract") or "")
+        if text:
+            protected["system_prompt"] = f"{base}\n\n{text}"
+        return {"protected_context": protected}
 
     async def planner(state: LoopState, config: RunnableConfig) -> dict:
         """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。
@@ -477,14 +615,16 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         task_text = _human_text(msgs[-1].content) if msgs else ""
         usage: dict[str, int] = {}
         try:
-            resp = await llm.ainvoke(
+            resp = await _llm_invoke(
+                llm,
+                pid,
                 [
                     SystemMessage(
                         content="你是任务规划器。把用户任务拆成 1-5 步执行计划。"
                         '只输出 JSON：{"steps": ["步骤1", "步骤2"]}'
                     ),
                     HumanMessage(content=task_text[:2000]),
-                ]
+                ],
             )
             obj = _extract_json(str(resp.content))
             steps = obj.get("steps") if obj else None
@@ -553,6 +693,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             if light is not None:
                 llm, turn_pid = light
         state_msgs = list(state.get("messages") or [])
+        # provider.limits 限流（P1-2）：本轮的压缩调用与主调用同一 provider，
+        # 按 prompt 估算申请一次额度（额度按 token 计，重复申请等于双重扣费）
+        await rate_limiter.acquire(turn_pid, estimate_messages_tokens(state_msgs))
         # L1/L2 压缩（估算用量 ≥ 阈值触发；保护名单不在消息区，天然安全）
         from app.modules.discovery.assembler import compact_messages, local_view
 
@@ -580,6 +723,9 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         messages.extend(state_msgs)
 
         iteration = (ctx.budget.get("iterations") or 0) + 1
+        # 前置闸（P1-2）：把本轮 prompt 估算交给预算钩子——超限在钩子里抛错，
+        # 此时尚未发起任何模型调用（压缩调用已在上面按限流申请过，不在此额内）
+        ctx.prompt_tokens_est = estimate_messages_tokens(messages)
         await hooks.on_turn_start(ctx, iteration)
 
         tools_meta = (state.get("capability_cache") or {}).get("tools") or []
@@ -637,7 +783,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     async def tools(state: LoopState, config: RunnableConfig) -> dict:
         """执行节点：按 capability_cache 条目的 kind 分派执行通道（M3）。
 
-        - tool（builtin 占位）：本进程内 BUILTIN_TOOLS
+        - tool（builtin 占位）：本进程内 BUILTIN_TOOLS（经 `call_builtin` 注入执行上下文，P1-10）
         - mcp/plugin：mcp_pool.call_tool(capability_id, tool_name)
         - meta：search_more_tools 检索元工具（命中工具并入 capability_cache）
 
@@ -647,7 +793,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         """
         from uuid import UUID
 
-        from app.modules.engine.tools_builtin import BUILTIN_TOOLS
+        from app.modules.engine.tools_builtin import call_builtin
 
         conf = config["configurable"]
         run_id: str = conf["run_id"]
@@ -714,7 +860,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                         tool_call_id=str(c["id"]),
                     )
                 )
-            return {"messages": ask_results, "budget_state": dict(ctx.budget)}
+            return {"messages": ask_results, "budget_state": dict(ctx.budget), "pending_awaits": []}
 
         # 0b) 交互决策支线（决策2/§3.6 interactive_decision）：需要用户在侧边栏
         # plugin 前端里选/删/改一批数据才能继续。同 ask_user 纪律：登记支线 →
@@ -827,7 +973,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                         tool_call_id=str(c["id"]),
                     )
                 )
-            return {"messages": decision_results, "budget_state": dict(ctx.budget)}
+            return {
+                "messages": decision_results,
+                "budget_state": dict(ctx.budget),
+                "pending_awaits": [],
+            }
 
         # 1) 风险预查（幂等读 state，重放安全）
         risky = [
@@ -855,70 +1005,154 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
 
         # 3) 逐个执行（interrupt 之后，恰好一次）
         results: list[ToolMessage] = []
-        updated_cache: dict[str, Any] | None = None
+        # 执行上下文（P1-10）的 step_id：config 未显式给出时按 run↔step 绑定查一次，
+        # 本轮所有工具调用共用同一结果（避免每个工具调用重复查库）
+        bound_step_id: str | None = None
+        step_resolved = False
+        # 同轮多次 search_more_tools：局部累积（P1-7），节点出口一次写回
+        acc_cache: dict[str, Any] = dict(state.get("capability_cache") or {})
+        cache_dirty = False
+        # 3a) 外部等待拆分（P0-4）：派发类建单工具不在本节点出网——登记等待行后由
+        # await_gate 挂起等回调。判定放在 hooks.on_tool_call 之前：恢复重放不重复计账
+        # （等待时长与等待轮次都不计入 iterations/tool_calls）。
+        deferred: list[dict[str, Any]] = []
+        # 连续失败熔断账本（P0-3）：阈值 run 预算可覆盖，默认 settings.tool_failure_limit
+        _budget: dict[str, Any] = dict(state.get("budget_state") or {})
+        streak = int(_budget.get("tool_failure_streak") or 0)
+        limits: dict[str, int] = ctx.limits
+        limit = int(limits.get("tool_failure_limit") or settings.tool_failure_limit)
+        # 跨批次保留最近失败工具名（诊断用，上限即阈值），成功一次即清零
+        recent_failed: list[str] = list(_budget.get("tool_failure_tools") or [])
+        last_error: dict[str, Any] | None = None
         for c in calls:
             meta = meta_by_name.get(c["name"])
             risk = (meta or {}).get("risk_level", "read")
+            builtin_key = str((meta or {}).get("builtin") or "")
+            if (
+                meta is not None
+                and meta.get("kind") == "builtin"
+                and await_policy.await_enabled()
+                and (approved or risk not in ("write", "dangerous"))
+                and await_policy.is_dispatch_builtin(builtin_key)
+            ):
+                deferred.append(
+                    {
+                        "id": str(c["id"]),
+                        "name": c["name"],
+                        "args": dict(c["args"]),
+                        "builtin": builtin_key,
+                        "capability_id": meta.get("capability_id"),
+                        "risk_level": risk,
+                    }
+                )
+                continue
             req = ToolCallRequest(name=c["name"], args=dict(c["args"]), risk_level=risk)
             await hooks.on_tool_call(ctx, req)
 
             t0 = time.monotonic()
+            if not step_resolved:
+                raw_step = conf.get("step_id")
+                bound_step_id = str(raw_step) if raw_step else await _bound_step_id(run_id)
+                step_resolved = True
+            tctx = ToolContext(
+                run_id=run_id,
+                task_id=str(conf["task_id"]) if conf.get("task_id") else None,
+                step_id=bound_step_id,
+                idempotency_key=tool_idempotency_key(run_id, str(c["name"]), c["args"]),
+            )
+            content: Any = None
+            error: dict[str, Any] | None = None
             if meta is None:
-                content, ok = f"未知工具：{c['name']}", False
+                ok = False
+                error = failure_error("invalid_args", f"模型调用了未注册的工具：{c['name']}")
             elif not approved and risk in ("write", "dangerous"):
-                content, ok = "用户拒绝执行该高危操作。", False
-            else:
-                try:
-                    if meta["kind"] == "meta":
-                        if meta["name"] == "search_more_tools":
-                            from app.modules.discovery.assembler import (
-                                run_search_more_tools,
-                            )
+                ok = False
+                error = failure_error(
+                    "denied_by_user", f"用户拒绝执行 {c['name']}（风险等级 {risk}）"
+                )
+            elif meta["kind"] == "meta":
+                if meta["name"] == "search_more_tools":
+                    from app.modules.discovery.assembler import (
+                        merge_tools_cache,
+                        run_search_more_tools,
+                    )
 
-                            content, updated_cache = await run_search_more_tools(
-                                dict(c["args"]),
-                                conf["agent_id"],
-                                state.get("capability_cache") or {},
-                                conf.get("task_id"),
-                            )
-                            ok = True
-                        elif meta["name"] == "declare_subtask":
-                            title = str(c["args"].get("title") or "").strip()
-                            desc = str(c["args"].get("description") or "").strip()
-                            task_id = conf.get("task_id")
-                            if not title:
-                                content, ok = "参数错误：title 不能为空", False
-                            elif not task_id:
-                                content, ok = "当前会话没有主任务，无法登记支线子任务。", False
-                            else:
-                                info = await runtime.backend.raise_subtask(
-                                    str(task_id), run_id, name=title, description=desc
-                                )
-                                if info is None:
-                                    content, ok = "登记支线子任务失败。", False
-                                else:
-                                    await _emit_task_steps(str(task_id), run_id)
-                                    content = f"已登记支线子任务：{title}（B{info['seq']}）"
-                                    ok = True
-                        else:
-                            content, ok = f"未知元工具：{c['name']}", False
-                    elif meta["kind"] == "mcp":
-                        from app.modules.capabilities.mcp_client import mcp_pool
-
-                        content = await mcp_pool.call_tool(
-                            UUID(meta["capability_id"]), meta["tool_name"], dict(c["args"])
+                    res, ok, error = await _guarded_call(
+                        run_search_more_tools(
+                            dict(c["args"]),
+                            conf["agent_id"],
+                            acc_cache,
+                            conf.get("task_id"),
+                        ),
+                        source="engine",
+                    )
+                    if ok:
+                        content, delta = res
+                        merged = merge_tools_cache(acc_cache, delta.get("new_tools") or [])
+                        # 只在真的并入新工具时才置脏，避免无谓的检查点差异
+                        cache_dirty = cache_dirty or (
+                            len(merged.get("tools") or []) != len(acc_cache.get("tools") or [])
                         )
-                        ok = True
-                    else:  # builtin 占位工具（本进程内执行）
-                        fn = BUILTIN_TOOLS.get(str(meta.get("builtin") or ""))
-                        if fn is None:
-                            content = f"工具执行通道缺失：{c['name']}"
+                        acc_cache = merged
+                elif meta["name"] == "declare_subtask":
+                    title = str(c["args"].get("title") or "").strip()
+                    desc = str(c["args"].get("description") or "").strip()
+                    task_id = conf.get("task_id")
+                    if not title:
+                        ok, error = False, failure_error("invalid_args", "title 不能为空")
+                    elif not task_id:
+                        ok = False
+                        error = failure_error("invalid_args", "当前会话没有主任务")
+                    else:
+                        info, ok, error = await _guarded_call(
+                            runtime.backend.raise_subtask(
+                                str(task_id), run_id, name=title, description=desc
+                            ),
+                            source="engine",
+                        )
+                        if ok and info is not None:
+                            content = f"已登记支线子任务：{title}（B{info['seq']}）"
+                            await _emit_task_steps(str(task_id), run_id)
+                        elif ok:
                             ok = False
-                        else:
-                            content, ok = await fn(dict(c["args"])), True
-                except Exception as e:  # noqa: BLE001 —— 工具错误包装为观察结果
-                    content, ok = f"工具执行异常: {type(e).__name__}: {e}", False
+                            error = failure_error("internal_error", "raise_subtask 返回空")
+                else:
+                    ok = False
+                    error = failure_error("invalid_args", f"未知元工具：{c['name']}")
+            elif meta["kind"] == "mcp":
+                from app.modules.capabilities.mcp_client import mcp_pool
+
+                content, ok, error = await _guarded_call(
+                    mcp_pool.call_tool(
+                        UUID(meta["capability_id"]),
+                        meta["tool_name"],
+                        dict(c["args"]),
+                        meta=tctx.as_meta(),
+                    ),
+                    source="mcp",
+                )
+            else:  # builtin 占位工具（本进程内执行）
+                # 注册键缺失 / 工具异常都在 call_builtin + _guarded_call 里收敛为结构化失败
+                content, ok, error = await _guarded_call(
+                    call_builtin(str(meta.get("builtin") or ""), dict(c["args"]), tctx),
+                    source="builtin",
+                )
             elapsed = int((time.monotonic() - t0) * 1000)
+
+            streak = next_failure_streak(
+                streak, None if ok else str((error or {}).get("code") or "")
+            )
+            if ok:
+                content = "" if content is None else content
+                # 长观察先落产物再进上下文（P0-5）：上下文只留引用行 + 预览
+                content = await runtime.save_long_output(run_id, content, name=str(c["name"]))
+                recent_failed = []
+            else:
+                # 失败以结构化载荷进上下文，绝不降级成"看起来像结果"的自然语言
+                err = error or failure_error("internal_error", "未知失败")
+                content, error = failure_content(c["name"], err), err
+                recent_failed = [*recent_failed, str(c["name"])][-limit:]
+                last_error = err
 
             info = ToolResultInfo(
                 name=c["name"],
@@ -926,13 +1160,199 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                 content=content,
                 elapsed_ms=elapsed,
                 args_snapshot=dict(c["args"]),
+                error=error,
             )
             await hooks.on_tool_result(ctx, info)
             results.append(ToolMessage(content=str(content), tool_call_id=str(c["id"])))
-        out: dict[str, Any] = {"messages": results, "budget_state": dict(ctx.budget)}
-        if updated_cache is not None:
-            out["capability_cache"] = updated_cache
+        budget_state = dict(ctx.budget)
+        budget_state["tool_failure_streak"] = streak
+        budget_state["tool_failure_tools"] = recent_failed
+        out: dict[str, Any] = {
+            "messages": results,
+            "budget_state": budget_state,
+            # 恒返回（含空列表）：await_gate 消费后必须清空，否则陈旧值会再次触发等待
+            "pending_awaits": deferred,
+        }
+        if cache_dirty:
+            out["capability_cache"] = acc_cache
+        # 连续失败熔断（第二道闸）：本批结果已全部落妥再抛，检查点里不留悬空 tool_calls
+        if streak >= limit:
+            raise ToolFailureLoopError(
+                str((last_error or {}).get("code") or "external_unavailable"),
+                f"同一 run 内连续 {streak} 次工具失败（阈值 {limit}）：{', '.join(recent_failed)}",
+                source=str((last_error or {}).get("source") or "builtin"),
+                tools=recent_failed,
+            )
         return out
+
+    async def await_gate(state: LoopState, config: RunnableConfig) -> dict:
+        """外部等待门（P0-4）：登记等待行 → 出网派发一次 → interrupt 挂起 → 按落库结果回填。
+
+        每次节点执行最多处理**一笔**等待（最多 interrupt 一次），故 runtime 读
+        `snapshot.tasks[].interrupts[0]` 与之一一对应；同一批多笔等待由自环边逐笔消费。
+
+        恢复路径不消费 interrupt 的返回值，一律以 DB 行为准（granted → 成功观察，
+        expired/cancelled → 结构化失败）：同一笔外部请求无论被回调、超时还是重投唤醒，
+        模型看到的上下文都一致，重放幂等。
+        """
+        from app.modules.awaits import service as awaits_service
+        from app.modules.engine.tools_builtin import call_builtin
+
+        conf = config["configurable"]
+        run_id = str(conf["run_id"])
+        ctx = _ctx(run_id)
+        hooks = runtime.hooks
+
+        pending = list(state.get("pending_awaits") or [])
+        if not pending:
+            return {"pending_awaits": []}
+        item = pending[0]
+        rest = pending[1:]
+        name = str(item["name"])
+        args = dict(item.get("args") or {})
+        idempotency_key = awaits_service.make_idempotency_key(args)
+        row = await runtime.backend.ensure_await(
+            run_id=run_id,
+            tool_name=name,
+            idempotency_key=idempotency_key,
+            builtin=str(item.get("builtin") or ""),
+            capability_id=item.get("capability_id"),
+            args=args,
+        )
+        await_id = str(row["await_id"])
+
+        if row.get("status") == "waiting":
+            if not row.get("notified_at"):
+                # 首次进入：派发（interrupt 之前，重放靠 notified_at 短路，绝不重复出网）
+                req = ToolCallRequest(
+                    name=name, args=args, risk_level=str(item.get("risk_level") or "write")
+                )
+                await hooks.on_tool_call(ctx, req)
+                t0 = time.monotonic()
+                callback_url = awaits_service.callback_url(await_id)
+                files_url = awaits_service.pickup_url_template(await_id)
+                # 回传凭据经两条通道下发（P1-10）：执行上下文（首选）与 args 的历史通道
+                raw_step = conf.get("step_id")
+                actx = ToolContext(
+                    run_id=run_id,
+                    task_id=str(conf["task_id"]) if conf.get("task_id") else None,
+                    step_id=str(raw_step) if raw_step else await _bound_step_id(run_id),
+                    idempotency_key=idempotency_key,
+                    callback_token=str(row.get("callback_token") or "") or None,
+                    await_id=await_id,
+                    callback_url=callback_url,
+                    files_url=files_url,
+                )
+                call_args = dict(args)
+                # 历史 args 通道（DEPRECATED，退役条件见 tools_builtin._await_callback）：
+                # 凭据首选经 actx（ToolContext）下发，这里只为兼容既有调用方保留
+                call_args["await_callback"] = {
+                    "await_id": await_id,
+                    "url": callback_url,
+                    "token": row.get("callback_token"),
+                    "idempotency_key": idempotency_key,
+                    "files_url": files_url,
+                }
+                dispatched: Any = None
+                error: dict[str, Any] | None = None
+                # 注册键缺失 / 派发异常都收敛为结构化失败（call_builtin 抛 ToolError）
+                dispatched, ok, error = await _guarded_call(
+                    call_builtin(str(item.get("builtin") or ""), call_args, actx),
+                    source="builtin",
+                )
+                if not ok:
+                    # 派发失败：不等了，撤销等待行并按失败观察回填（不留悬挂行）
+                    err = error or failure_error("internal_error", "未知失败")
+                    content = failure_content(name, err)
+                    await runtime.backend.cancel_await(
+                        await_id, reason=str(err.get("code") or "dispatch_failed")
+                    )
+                    await hooks.on_tool_result(
+                        ctx,
+                        ToolResultInfo(
+                            name=name,
+                            ok=False,
+                            content=content,
+                            elapsed_ms=int((time.monotonic() - t0) * 1000),
+                            args_snapshot=args,
+                            error=err,
+                        ),
+                    )
+                    return {
+                        "messages": [
+                            ToolMessage(content=str(content), tool_call_id=str(item["id"]))
+                        ],
+                        "pending_awaits": rest,
+                        "budget_state": dict(ctx.budget),
+                    }
+                await runtime.backend.mark_await_dispatched(
+                    await_id, response=dispatched if isinstance(dispatched, dict) else None
+                )
+                fresh = await runtime.backend.get_await(await_id)
+                if fresh is not None:
+                    row = fresh
+            # interrupt 之前不产生新副作用（重放靠 notified_at 短路），故 interrupt 放在派发之后
+            interrupt(
+                {
+                    "reason": "external_await",
+                    "payload": {
+                        "await_id": await_id,
+                        "tool": name,
+                        "idempotency_key": idempotency_key,
+                        "deadline_at": row.get("deadline_at"),
+                        "args": args,
+                        "kind": "await",
+                    },
+                }
+            )
+            # 唤醒后以 DB 为唯一事实源（回调/超时/撤销都已 CAS 落定）
+            fresh = await runtime.backend.get_await(await_id)
+            if fresh is not None:
+                row = fresh
+
+        status = str(row.get("status") or "")
+        waited_ms = int(row.get("waited_ms") or 0)
+        if status == "granted":
+            content = json.dumps(
+                {
+                    "status": "resolved",
+                    "await_id": await_id,
+                    "tool": name,
+                    "waited_ms": waited_ms,
+                    "result": row.get("payload_out") or row.get("dispatch_response") or {},
+                },
+                ensure_ascii=False,
+            )
+        else:
+            code = "await_expired" if status == "expired" else "await_cancelled"
+            detail = (
+                f"外部等待已超时（{waited_ms}ms），未拿到 {name} 的回传结果"
+                if status == "expired"
+                else f"外部等待已被撤销（{name}），未拿到回传结果"
+            )
+            if status not in ("expired", "cancelled"):
+                code, detail = "await_unresolved", f"外部等待状态未知：{status or 'unknown'}"
+            err = row.get("error") if isinstance(row.get("error"), dict) else {}
+            content = failure_content(
+                name,
+                failure_error(code, str(err.get("message") or detail), source="builtin"),
+            )
+        await hooks.on_tool_result(
+            ctx,
+            ToolResultInfo(
+                name=name,
+                ok=status == "granted",
+                content=content,
+                elapsed_ms=waited_ms,
+                args_snapshot=args,
+                error=None if status == "granted" else {"code": code},
+            ),
+        )
+        return {
+            "messages": [ToolMessage(content=str(content), tool_call_id=str(item["id"]))],
+            "pending_awaits": rest,
+            "budget_state": dict(ctx.budget),
+        }
 
     async def verify(state: LoopState, config: RunnableConfig) -> dict:
         """独立验证 LLM：评估任务是否达成；不达标带反馈回环（限 3 次）。"""
@@ -959,8 +1379,12 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         final_reply = str(msgs[-1].content) if msgs else ""
 
         usage: dict[str, int] = {}
+        verify_error: dict[str, Any] | None = None
+        raw_verdict: str | None = None
         try:
-            resp = await llm.ainvoke(
+            resp = await _llm_invoke(
+                llm,
+                pid,
                 [
                     SystemMessage(
                         content="你是任务验收员。判断针对任务的最终回复是否达成目标。"
@@ -969,13 +1393,13 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     HumanMessage(
                         content=f"任务：{task_text[:1000]}\n\n最终回复：{final_reply[:2000]}"
                     ),
-                ]
+                ],
             )
-            verdict = _extract_json(str(resp.content)) or {"achieved": True, "feedback": ""}
+            raw_verdict = str(resp.content)
             if getattr(resp, "usage_metadata", None):
                 usage = dict(resp.usage_metadata)  # type: ignore[arg-type]
-        except Exception:  # noqa: BLE001 —— 验证失败视为达成，不阻断主链路
-            verdict = {"achieved": True, "feedback": ""}
+        except Exception as e:  # noqa: BLE001 —— 验收失败一律按"未达成"处理
+            verify_error = classify_exception(e, source="engine").as_error()
 
         # verify 回环计数（BudgetState 扩展键 verify_retries，见 ADR-10）
         budget: dict[str, Any] = dict(state.get("budget_state") or {})
@@ -985,13 +1409,10 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
         # 归属实际调用的 provider（轻量/覆盖模型）
         await hooks.on_turn_end(ctx, ctx.budget.get("iterations") or 0, usage, provider_id=pid)
 
-        achieved = bool(verdict.get("achieved")) or retries + 1 >= VERIFY_RETRY_LIMIT
+        verdict = build_verify_verdict(raw_verdict, verify_error=verify_error, retries=retries)
         protected = dict(state.get("protected_context") or {})
-        protected["verify_verdict"] = {
-            "achieved": achieved,
-            "feedback": verdict.get("feedback", ""),
-            "retries": retries + 1,
-        }
+        protected["verify_verdict"] = verdict
+        achieved = verdict["achieved"]
         if not achieved:
             # 反馈注入对话区，回环让 agent 继续（设计 §1.1.1 verify 回环）
             feedback = HumanMessage(
@@ -1035,6 +1456,14 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             return END
         return "verify"
 
+    def route_tools(state: LoopState) -> str:
+        # 本批有派发类建单调用 → 先进等待门（P0-4）；否则照旧回 agent
+        return "await_gate" if state.get("pending_awaits") else "agent"
+
+    def route_await_gate(state: LoopState) -> str:
+        # 一次只挂一笔等待（每个节点执行最多 interrupt 一次）；剩余的自环继续
+        return "await_gate" if state.get("pending_awaits") else "agent"
+
     def route_verify(state: LoopState) -> str:
         verdict = (state.get("protected_context") or {}).get("verify_verdict") or {}
         if verdict.get("achieved"):
@@ -1046,23 +1475,31 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g = StateGraph(LoopState)
     g.add_node("intent_router", intent_router)
     g.add_node("context_assembly", context_assembly)
+    g.add_node("input_gate", input_gate)
     g.add_node("planner", planner)
     g.add_node("confirm_plan", confirm_plan)
     g.add_node("agent", agent)
     g.add_node("tools", tools)
+    g.add_node("await_gate", await_gate)
     g.add_node("verify", verify)
     g.add_edge(START, "intent_router")
     g.add_conditional_edges(
         "intent_router", route_intent, {"chitchat": "agent", "task": "context_assembly"}
     )
+    # 子任务输入门排在装配之后、真正干活之前：装配是纯读（无副作用）且必须在
+    # planner/agent 之前完成，门放在这里既不重复装配工作、又能拦住"拿不到材料就硬干"
+    g.add_edge("context_assembly", "input_gate")
     g.add_conditional_edges(
-        "context_assembly",
+        "input_gate",
         route_after_assembly,
         {"planner": "planner", "agent": "agent"},
     )
     g.add_edge("planner", "confirm_plan")
     g.add_conditional_edges("confirm_plan", route_confirm, {END: END, "agent": "agent"})
     g.add_conditional_edges("agent", route_agent, {"tools": "tools", "verify": "verify", END: END})
-    g.add_edge("tools", "agent")
+    g.add_conditional_edges("tools", route_tools, {"await_gate": "await_gate", "agent": "agent"})
+    g.add_conditional_edges(
+        "await_gate", route_await_gate, {"await_gate": "await_gate", "agent": "agent"}
+    )
     g.add_conditional_edges("verify", route_verify, {END: END, "agent": "agent"})
     return g.compile(checkpointer=runtime.saver)
