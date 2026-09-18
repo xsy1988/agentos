@@ -128,11 +128,32 @@ export default function ChatPage() {
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
   };
 
-  // 确认卡片操作：approved/rejected（计划、高危工具）或支线子任务的文本答复（ADR-24）
-  const handleConfirm = async (answer: string) => {
+  // 补输入重发（P1-4）：missing_inputs 拦截后，把用户补齐的输入并入同一次发送。
+  // 复用 handleSend，保证乐观气泡/activeRun/上下文面板行为与普通发送一致；
+  // 同会话 inputs 快照在后端按时间累加，故只需带上本次补的项。
+  const handleResubmit = useCallback(
+    async (text: string, inputs: Record<string, string | number | boolean | null>) => {
+      try {
+        await handleSend(text, { inputs });
+      } catch (e) {
+        antdMessage.error(e instanceof Error ? e.message : "重发失败，请稍后重试");
+      }
+    },
+    [handleSend],
+  );
+
+  // 补输入卡（P1-4）：提交的是取值而非答复，缺省答复按空串处理
+  const isStepInputCard = String(confirming?.payload?.reason ?? "") === "input_required";
+
+  // 确认卡片操作：approved/rejected（计划、高危工具）、支线子任务的文本答复（ADR-24）
+  // 或补输入卡的取值提交（P1-4 子任务级输入门）。
+  const handleConfirm = async (
+    answer: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => {
     if (!confirming) return;
     try {
-      await runsApi.confirm(confirming.runId, answer);
+      await runsApi.confirm(confirming.runId, answer, inputs ? { inputs } : undefined);
     } catch (e) {
       antdMessage.error(e instanceof Error ? e.message : "提交失败");
       return;
@@ -280,6 +301,7 @@ export default function ChatPage() {
                 convId={activeConvId}
                 activeRun={activeRun}
                 optimistic={optimistic}
+                onResubmit={handleResubmit}
               />
             </div>
             {suggestion && (
@@ -294,7 +316,11 @@ export default function ChatPage() {
               <CardRenderer
                 payload={confirming.payload}
                 runId={confirming.runId}
-                onConfirm={(answer) => handleConfirm(answer ?? "approved")}
+                onConfirm={(answer, inputs) =>
+                  // 补输入卡只提交取值、不带答复：缺省不能写成 "approved"
+                  // （那是"批准了计划"的语义，会污染确认历史）
+                  handleConfirm(answer ?? (isStepInputCard ? "" : "approved"), inputs)
+                }
                 onReject={() => handleConfirm("rejected")}
                 onOpenSidebar={openSidebar}
               />

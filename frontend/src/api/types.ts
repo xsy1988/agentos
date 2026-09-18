@@ -1,6 +1,6 @@
 /**
  * 类型定义：对齐后端 Pydantic schemas。
- * 后端源码：backend/app/modules/​schemas.py（各模块 schemas 文件）
+ * 后端源码：backend/app/modules/<模块名>/schemas.py（各模块 schemas 文件）
  */
 
 // ---- Auth ----
@@ -190,6 +190,45 @@ export interface ArtifactOut {
 /** 产物详情（`GET /artifacts/{id}`）：text/json 内联正文在 `payload`。 */
 export interface ArtifactDetailOut extends ArtifactOut {
   payload: Record<string, unknown> | null;
+}
+
+/**
+ * 任务级产物条目（`GET /tasks/{task_id}/artifacts`，P0-5 收尾）：
+ * 跨本任务的 run 归集，带子任务归属供按步分组；正文仍走 `/artifacts/{id}`。
+ */
+export interface TaskArtifactOut extends ArtifactOut {
+  task_id: string | null;
+  step_id: string | null;
+  step_name: string | null;
+}
+
+// ---- Awaits（外部等待，P0-4）----
+/** 一条外部等待（`GET /awaits` 项，真源 awaits/service.py::brief，不含 callback_token）。 */
+export interface AwaitOut {
+  await_id: string;
+  run_id: string;
+  tool: string;
+  /** waiting / granted / expired / cancelled */
+  status: string;
+  deadline_at: string | null;
+  /** 已等待毫秒（终态为精确耗时；waiting 行可能为 0） */
+  waited_ms: number;
+  attempts: number;
+  notified_at: string | null;
+  resolved_at: string | null;
+  error: Record<string, unknown> | null;
+}
+
+export interface AwaitListOut {
+  items: AwaitOut[];
+}
+
+/** 撤销等待结果（`POST /awaits/{id}/cancel`）：cancelled=false 表示已被别的路径落定。 */
+export interface AwaitCancelOut {
+  await_id: string;
+  run_id: string;
+  status: string;
+  cancelled: boolean;
 }
 
 // ---- Capabilities ----
@@ -397,6 +436,18 @@ export interface WorkerInputSpec {
   required: boolean;
   description: string;
   example: string;
+}
+
+/**
+ * 输入契约预检失败的载荷明细（P1-4）。
+ * 真源：backend/app/modules/engine/runtime.py::_finalize_input_contract —— run.error 上
+ * `{code:"missing_inputs", missing:[字段名], inputs:[RunInputSpec]}`；补齐后可原样重发。
+ */
+export interface RunInputSpec extends WorkerInputSpec {
+  /** 本次运行是否已提供（file 类由会话附件按声明顺序顶替） */
+  provided: boolean;
+  /** 已提供的值（字符串形态），未提供为 null */
+  value: string | null;
 }
 export interface SubWorkerOut {
   /** sub_workers 文件夹名（= task_steps.worker_step_ref） */

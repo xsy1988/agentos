@@ -8,14 +8,16 @@
  * - subtask_clarification：{question, title, step_id, kind}（ADR-24，文本答复回注）
  * - interactive_decision：{card_type, title, summary, severity, body, actions[], sidebar, step_id,
  *     idempotency_key}（决策2 新增，带 sidebar；点「去处理」开侧边栏渲染 plugin 前端，§3.5）
+ * - input_required：{step_id, step_name, sub_ref, missing[], message, inputs[]}（P1-4 子任务级
+ *     输入门，见 StepInputCard；补齐后从暂停点继续，不重跑已产出的进度）
  *
  * 自定义卡（业务扩展，不改内核）：未命中注册表的 card_type 落到 GenericCard——
  * 按声明式模板 {title, summary, severity, body, actions} 通用渲染（server_driven 思路）；
  * 需要富交互的卡面经 actions.kind=open_sidebar 走 plugin 前端（iframe），即「plugin 自带卡面」。
  */
 import { useState } from "react";
-import type { ComponentType, ReactNode } from "react";
-import { Button, Card, Input, Space, Table, Tag, Typography } from "antd";
+import type { ReactNode } from "react";
+import { Button, Input, Space, Table, Tag, Typography } from "antd";
 import {
   CheckOutlined,
   CloseOutlined,
@@ -26,6 +28,11 @@ import {
   QuestionCircleOutlined,
 } from "@ant-design/icons";
 import { artifactsApi } from "@/api/artifacts";
+import CopyRefButton from "@/components/CopyRefButton";
+import StepInputCard from "./StepInputCard";
+import { SEVERITY_META, Shell, normSeverity } from "./CardShell";
+import type { CardComponent, Severity } from "./CardShell";
+import { artifactReference } from "@/utils/clipboard";
 import type { RunArtifactRef, SidebarDescriptor } from "@/api/types";
 import { fmtSize } from "@/utils/format";
 
@@ -43,58 +50,15 @@ export interface CardContext {
   /** 事件 payload.payload：卡片主体 */
   inner: Record<string, unknown>;
   runId: string;
-  /** 计划/高危工具：approved/rejected；支线提问：用户自由文本；决策卡：action.key */
-  onConfirm: (answer?: string) => void;
+  /** 计划/高危工具：approved/rejected；支线提问：用户自由文本；决策卡：action.key；
+   *  补输入卡：`("", inputs)` —— 只提交输入、不带答复也是合法恢复（P1-4 收尾） */
+  onConfirm: (
+    answer?: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => void;
   onReject: () => void;
   /** interactive_decision「去处理」：打开右侧 plugin 前端侧边栏（§3.5） */
   onOpenSidebar: (sidebar: SidebarDescriptor) => void;
-}
-
-type CardComponent = ComponentType<{ ctx: CardContext }>;
-
-type Severity = "info" | "warn" | "danger";
-
-const SEVERITY_META: Record<Severity, { color: string; bg: string }> = {
-  info: { color: "var(--ant-color-primary)", bg: "rgba(22,119,255,0.06)" },
-  warn: { color: "var(--ant-color-warning)", bg: "rgba(250,173,20,0.06)" },
-  danger: { color: "var(--ant-color-error)", bg: "rgba(255,77,79,0.06)" },
-};
-
-function normSeverity(v: unknown, fallback: Severity = "info"): Severity {
-  const s = String(v ?? "").toLowerCase();
-  return s === "danger" || s === "warn" || s === "info" ? s : fallback;
-}
-
-/** 卡片外壳：统一非模态样式（出现在输入框上方），按 severity 着色。 */
-function Shell({
-  severity,
-  title,
-  icon,
-  children,
-}: {
-  severity: Severity;
-  title: string;
-  icon?: ReactNode;
-  children: ReactNode;
-}) {
-  const meta = SEVERITY_META[severity];
-  return (
-    <Card
-      size="small"
-      style={{
-        margin: "0 16px 8px",
-        borderColor: meta.color,
-        borderWidth: severity === "danger" ? 2 : 1,
-        background: meta.bg,
-      }}
-    >
-      <Space size={6} style={{ marginBottom: 8 }}>
-        {icon}
-        <Typography.Text strong>{title}</Typography.Text>
-      </Space>
-      {children}
-    </Card>
-  );
 }
 
 interface PlanItem {
@@ -483,8 +447,8 @@ function fmtTokens(metrics: Record<string, unknown>): string {
   return tokens > 0 ? ` · token ${tokens.toLocaleString()}` : "";
 }
 
-/** 产物行：text/json 就地展开正文，file 下载落盘。 */
-function ArtifactRow({ artifact }: { artifact: RunArtifactRef }) {
+/** 产物行：text/json 就地展开正文，file 下载落盘。任务级产物视图复用同一实现。 */
+export function ArtifactRow({ artifact }: { artifact: RunArtifactRef }) {
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const isFile = artifact.kind === "file";
@@ -526,6 +490,7 @@ function ArtifactRow({ artifact }: { artifact: RunArtifactRef }) {
         <Button size="small" type="link" loading={busy} onClick={open}>
           {isFile ? "下载" : text ? "收起" : "查看"}
         </Button>
+        <CopyRefButton text={artifactReference(artifact)} tooltip="复制产物引用" />
       </Space>
       {text !== null && (
         <pre
@@ -588,7 +553,8 @@ const ResultCard: CardComponent = ({ ctx }) => {
 
 /**
  * 卡片注册表：card_type → 渲染器。
- * 内置 5 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision/result）；
+ * 内置 6 类（plan_review/high_risk_tool/subtask_clarification/interactive_decision/result/
+ * input_required）；
  * task_switch_suggested 走独立 TaskSwitchCard（send_message 返回，非 SSE 确认事件）。
  * 业务自定义卡无需改此表：声明式模板自动落 GenericCard，plugin 卡面经 open_sidebar 走侧边栏。
  */
@@ -598,6 +564,7 @@ export const CARD_REGISTRY: Record<string, CardComponent> = {
   subtask_clarification: SubtaskClarificationCard,
   interactive_decision: InteractiveDecisionCard,
   result: ResultCard,
+  input_required: StepInputCard,
 };
 
 export default function CardRenderer({
@@ -610,7 +577,10 @@ export default function CardRenderer({
   payload: Record<string, unknown>;
   runId: string;
   /** 结果卡等只读卡片不传动作回调：缺省为空操作 */
-  onConfirm?: (answer?: string) => void;
+  onConfirm?: (
+    answer?: string,
+    inputs?: Record<string, string | number | boolean | null>,
+  ) => void;
   onReject?: () => void;
   onOpenSidebar?: (sidebar: SidebarDescriptor) => void;
 }) {

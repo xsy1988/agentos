@@ -23,6 +23,8 @@ const CODE_TEXT: Record<string, string> = {
   tool_failure_loop: "连续工具失败已熔断",
   tool_capacity_exceeded: "必备工具数超上限",
   missing_inputs: "缺少必需输入",
+  await_cancelled: "等待已被撤销",
+  await_expired: "外部等待超时",
   budget_exceeded: "预算耗尽",
   timeout: "执行超时",
   cancelled: "已取消",

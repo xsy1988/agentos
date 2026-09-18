@@ -2,7 +2,7 @@
  * 主任务详情页（/tasks/:taskId）：实例概览 + 子任务管理。
  * Worker 定义（WORKER.md 文件包）维护已拆到 /capabilities/workers，这里只读展示归属并提供跳转。
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Card,
@@ -28,7 +28,9 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { tasksApi } from "@/api/tasks";
-import type { TaskStepOut } from "@/api/types";
+import { artifactsApi } from "@/api/artifacts";
+import type { TaskArtifactOut, TaskStepOut } from "@/api/types";
+import { ArtifactRow } from "@/pages/Chat/CardRenderer";
 import {
   STEP_BLOCK_REASON_LABELS,
   STEP_CONVERGE_LABELS,
@@ -39,6 +41,52 @@ import {
   TASK_STATUS_LABELS,
   stepKindLabel,
 } from "@/pages/Chat/taskDisplay";
+
+/** 任务级产物视图（P0-5 收尾）：跨本任务全部 run 归集，按子任务分组展示。 */
+function TaskArtifactsCard({ taskId }: { taskId: string }) {
+  const { data: artifacts = [], isLoading } = useQuery({
+    queryKey: ["task-artifacts", taskId],
+    queryFn: () => artifactsApi.listByTask(taskId),
+    enabled: !!taskId,
+    refetchInterval: 30_000,
+  });
+
+  const groups = useMemo(() => {
+    const map = new Map<string, TaskArtifactOut[]>();
+    for (const a of artifacts) {
+      const key = a.step_name || "未归属子任务";
+      const list = map.get(key);
+      if (list) list.push(a);
+      else map.set(key, [a]);
+    }
+    return [...map.entries()];
+  }, [artifacts]);
+
+  return (
+    <Card size="small" title={`产物（${artifacts.length}）`} style={{ marginBottom: 12 }}>
+      {isLoading ? (
+        <Spin size="small" />
+      ) : groups.length === 0 ? (
+        <Empty
+          image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description="暂无产物（长结果才会落产物）"
+          style={{ margin: "8px 0" }}
+        />
+      ) : (
+        groups.map(([stepName, rows]) => (
+          <div key={stepName} style={{ marginBottom: 8 }}>
+            <Typography.Text strong style={{ fontSize: 13 }}>
+              {stepName}
+            </Typography.Text>
+            {rows.map((a) => (
+              <ArtifactRow key={a.id} artifact={a} />
+            ))}
+          </div>
+        ))
+      )}
+    </Card>
+  );
+}
 
 const STEP_STATUS_OPTIONS = [
   "pending",
@@ -382,6 +430,9 @@ export default function TaskDetailPage() {
           }}
         />
       </Card>
+
+      {/* 任务级产物视图（P0-5 收尾）：跨 run 归集，按子任务分组 */}
+      <TaskArtifactsCard taskId={task.id} />
     </div>
   );
 }

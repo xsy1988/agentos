@@ -23,11 +23,27 @@ import { runsApi } from "@/api/runs";
 import { TRACE_EVENT_TYPES } from "@/api/eventTypes";
 import { describeError } from "@/api/errors";
 import MarkdownRenderer from "@/components/MarkdownRenderer";
+import AwaitPanel, { hasUnresolvedAwait } from "@/components/AwaitPanel";
+import CopyRefButton from "@/components/CopyRefButton";
 import { fmtSize } from "@/utils/format";
+import { runReference } from "@/utils/clipboard";
 import CardRenderer from "./CardRenderer";
-import { STEP_BLOCK_REASON_LABELS, STEP_CONVERGE_LABELS } from "./taskDisplay";
+import MissingInputsCard, { parseMissingInputs } from "./MissingInputsCard";
+import { CONFIRM_LABELS, STEP_BLOCK_REASON_LABELS, STEP_CONVERGE_LABELS } from "./taskDisplay";
 import type { RunEventOut, MessageOut, RunOut } from "@/api/types";
 import type { ActiveRun } from "./index";
+
+/** 补齐输入后重发（P1-4）：走会话发送链路，由页面层实现 */
+type ResubmitHandler = (
+  text: string,
+  inputs: Record<string, string | number | boolean | null>,
+) => Promise<void>;
+
+/** run 的原始用户消息文本：补输入重发时原样带回 */
+function runInputText(run: RunOut | undefined): string {
+  const value = run?.input?.text;
+  return typeof value === "string" ? value : "";
+}
 
 // 从消息 content 提取文本
 function msgText(msg: MessageOut): string {
@@ -529,11 +545,12 @@ export function EventItem({
 
   if (event_type === "confirmation_request") {
     const reason = payload.reason as string;
+    const label = CONFIRM_LABELS[reason] ?? CONFIRM_LABELS.plan_review;
     if (resolved) {
       return (
         <Tooltip title="你已处理此确认，Agent 已继续执行">
           <Tag color="success" style={{ marginBottom: 4, fontSize: 11 }}>
-            {reason === "high_risk_tool" ? "高危操作已确认" : "计划已确认"}
+            {label.done}
           </Tag>
         </Tooltip>
       );
@@ -541,7 +558,7 @@ export function EventItem({
     return (
       <Tooltip title="Agent 已暂停，等待你在下方确认">
         <Tag color={reason === "high_risk_tool" ? "error" : "warning"} style={{ marginBottom: 4, fontSize: 11 }}>
-          {reason === "high_risk_tool" ? "高危操作待确认" : "计划待确认"}
+          {label.pending}
         </Tag>
       </Tooltip>
     );
@@ -833,7 +850,16 @@ function repliedHit(text: string, repliedTexts: string[]): boolean {
   return repliedTexts.some((m) => m.includes(head));
 }
 
-function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: string[] }) {
+function RunTraceBlock({
+  run,
+  repliedTexts,
+  onResubmit,
+}: {
+  run: RunOut;
+  repliedTexts: string[];
+  onResubmit: ResubmitHandler;
+}) {
+  const runId = run.id;
   const { data: events = [] } = useQuery({
     queryKey: ["run-events", runId],
     queryFn: () => runsApi.events(runId),
@@ -842,12 +868,18 @@ function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: s
   const rounds = splitRounds(events);
   // 结果卡（P0-5）：终态 run 的历史重放靠它，只取最后一份（重放/重试不重复渲染）
   const resultCard = [...events].reverse().find((e) => e.event_type === "card");
+  // P1-4：输入契约拦截的失败要给出补输入入口（刷新后仍从 run.error 恢复）
+  const missing = parseMissingInputs(run.error);
+  // P0-4：run 停在外部等待时，历史回放同样展示等待面板与撤销入口
+  const awaiting = run.status === "waiting_external" || hasUnresolvedAwait(events);
   // hasReply：该 run 的终答已作为消息渲染（防终答双渲染）；中间轮文本
   // 已落库（如 verify 重试产生多条消息）同样要去重
   const hasReply = repliedTexts.length > 0;
   const lastIdx = rounds.length - 1;
   const anything =
     !!resultCard ||
+    !!missing ||
+    awaiting ||
     rounds.some(
       (r, i) =>
         r.traceEvents.length > 0 ||
@@ -856,6 +888,17 @@ function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: s
   if (!anything) return null;
   return (
     <>
+      <div style={{ marginBottom: 4 }}>
+        <CopyRefButton text={runReference(run)} withText />
+      </div>
+      {awaiting && <AwaitPanel runId={runId} />}
+      {missing && (
+        <MissingInputsCard
+          payload={missing}
+          text={runInputText(run)}
+          onSubmit={onResubmit}
+        />
+      )}
       {rounds.map((r, i) => (
         <Fragment key={i}>
           {r.traceEvents.length > 0 && r.text && !repliedHit(r.text, repliedTexts) && (
@@ -875,7 +918,15 @@ function RunTraceBlock({ runId, repliedTexts }: { runId: string; repliedTexts: s
   );
 }
 
-function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[] }) {
+function LiveRun({
+  runId,
+  repliedTexts,
+  onResubmit,
+}: {
+  runId: string;
+  repliedTexts: string[];
+  onResubmit: ResubmitHandler;
+}) {
   // replied：历史消息已含本 run 的 assistant 回复（终态后 messages 刷新到达）。
   // 此时隐藏流式气泡交给 MessageItem，避免同一回复双渲染；中间轮文本
   // 已落库（verify 重试等多终答场景）同样去重。
@@ -923,11 +974,19 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
       e.event_type === "await_expired",
   );
 
+  // P0-4：平台代为持有的外部等待——run 停在 waiting_external，或事件里还有未落定的
+  // await_started 时，把「等谁 / 最晚等到什么时候 / 撤销等待」摆到消息流里
+  const awaiting = run?.status === "waiting_external" || hasUnresolvedAwait(events);
+
   // 提交后空窗期反馈（Kimi 式）：不能只看 events.length —— 后端首发事件往往是
   // run_status(running)（不在收纳类型里），到达后“无事件”条件即失效，而首个
   // thought 要等 LLM 首轮返回（可能几十秒）才出现，主区会完全空窗。
   // 改为看「无实质反馈」：任何轮次内容/计划一个都没有时保持“正在思考”。
-  const waiting = running && !replied && rounds.length === 0 && !planEvent;
+  // 外部等待期间不算思考（等的是别人，不是模型）。
+  const waiting = running && !replied && !awaiting && rounds.length === 0 && !planEvent;
+
+  // P1-4：输入契约拦截的失败就地转成补输入表单（后端明确补齐后可原样重发）
+  const originalText = runInputText(run);
 
   return (
     <div style={{ marginBottom: 12 }}>
@@ -966,6 +1025,12 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
         </div>
       )}
 
+      {/* 外部等待：等外部流程回传期间的显式状态 + 「撤销等待」逃生口 */}
+      {awaiting && <AwaitPanel runId={runId} />}
+
+      {/* 引用该任务：一键复制引用串（发给同事 / 贴回工单 / 排障定位） */}
+      {run && <CopyRefButton text={runReference(run)} withText />}
+
       {/* 每轮分段：过程说明（弱化，已落库的跳过）+ 本轮执行过程收纳（调用/结果已合并） */}
       {rounds.map((r, i) => (
         <Fragment key={i}>
@@ -985,16 +1050,30 @@ function LiveRun({ runId, repliedTexts }: { runId: string; repliedTexts: string[
           `progress` 事件为准（平台侧推送，含等待外部回调期间的快照） */}
       {planPayload && <PlanCard payload={planPayload} />}
 
-      {/* 错误与待确认：醒目展示，不收纳；已被用户处理的确认翻转为已确认 */}
-      {notableEvents.map((e) => (
-        <EventItem
-          key={e.seq}
-          event={e}
-          resolved={
-            e.event_type === "confirmation_request" && isConfirmationResolved(events, e.seq)
-          }
-        />
-      ))}
+      {/* 错误与待确认：醒目展示，不收纳；已被用户处理的确认翻转为已确认。
+          P1-4：输入契约拦截（missing_inputs）改为渲染补输入表单，不只是一行失败文案 */}
+      {notableEvents.map((e) => {
+        const missing = e.event_type === "error" ? parseMissingInputs(e.payload) : null;
+        if (missing) {
+          return (
+            <MissingInputsCard
+              key={e.seq}
+              payload={missing}
+              text={originalText}
+              onSubmit={onResubmit}
+            />
+          );
+        }
+        return (
+          <EventItem
+            key={e.seq}
+            event={e}
+            resolved={
+              e.event_type === "confirmation_request" && isConfirmationResolved(events, e.seq)
+            }
+          />
+        );
+      })}
 
       {/* 流式 Agent 回复（仅终答轮文本，中间轮已随执行过程分段展示）：
           历史消息未接管时才渲染（终态交接，防双渲染）。assistant 全宽文档式 */}
@@ -1012,11 +1091,14 @@ export default function MessageStream({
   convId,
   activeRun,
   optimistic,
+  onResubmit,
 }: {
   convId: string;
   activeRun: ActiveRun | null;
   /** 乐观用户消息（发送即上屏）：真实消息落库后自动接管，避免双渲染 */
   optimistic?: { text: string; key: string } | null;
+  /** P1-4：补输入后重发（由页面层走会话发送链路） */
+  onResubmit: ResubmitHandler;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -1118,10 +1200,11 @@ export default function MessageStream({
             {historyRuns.map((r) => (
               <RunTraceBlock
                 key={r.id}
-                runId={r.id}
+                run={r}
                 repliedTexts={all
                   .filter((m) => m.role === "assistant" && m.run_id === r.id)
                   .map(messageText)}
+                onResubmit={onResubmit}
               />
             ))}
           </Fragment>
@@ -1163,6 +1246,7 @@ export default function MessageStream({
           repliedTexts={all
             .filter((m) => m.role === "assistant" && m.run_id === activeRun.runId)
             .map(messageText)}
+          onResubmit={onResubmit}
         />
       )}
 

@@ -1,7 +1,7 @@
 /**
  * 任务页（前端设计 §3.2）。
  * 三视图：列表 / 看板 / 时间线。
- * 待确认任务醒目入口 + 行内快捷操作。
+ * 待确认任务醒目入口 + 外部等待醒目入口 + 行内快捷操作。
  */
 import { useState } from "react";
 import { Tabs, Alert, Button, Space } from "antd";
@@ -10,9 +10,11 @@ import {
   AppstoreOutlined,
   NodeIndexOutlined,
   ExclamationCircleOutlined,
+  ClockCircleOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
+import { awaitsApi } from "@/api/awaits";
 import RunsList from "./RunsList";
 import RunsBoard from "./RunsBoard";
 import RunTimeline from "./RunTimeline";
@@ -28,7 +30,15 @@ export default function RunsPage() {
     refetchInterval: 10_000,
   });
 
+  // P0-4：平台代为持有的外部等待（GET /awaits?status=waiting）
+  const { data: waitingAwaits } = useQuery({
+    queryKey: ["awaits", "waiting", "all"],
+    queryFn: () => awaitsApi.list({ status: "waiting", limit: 100 }),
+    refetchInterval: 10_000,
+  });
+
   const pendingCount = pendingRuns.length;
+  const waitingCount = waitingAwaits?.items.length ?? 0;
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -48,6 +58,27 @@ export default function RunsPage() {
               }}
             >
               去处理
+            </Button>
+          }
+          style={{ marginBottom: 8 }}
+        />
+      )}
+      {waitingCount > 0 && (
+        <Alert
+          type="info"
+          banner
+          icon={<ClockCircleOutlined />}
+          showIcon
+          message={`${waitingCount} 个任务正在等待外部回调（可在时间线里查看或撤销等待）`}
+          action={
+            <Button
+              size="small"
+              onClick={() => {
+                setSelectedRunId(waitingAwaits?.items[0].run_id ?? null);
+                setActiveTab("timeline");
+              }}
+            >
+              去查看
             </Button>
           }
           style={{ marginBottom: 8 }}

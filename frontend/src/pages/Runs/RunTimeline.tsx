@@ -33,6 +33,9 @@ import { runsApi } from "@/api/runs";
 import { useSSEStore } from "@/store/sse";
 import { EVENT_TYPES } from "@/api/eventTypes";
 import { describeError } from "@/api/errors";
+import AwaitPanel, { hasUnresolvedAwait } from "@/components/AwaitPanel";
+import CopyRefButton from "@/components/CopyRefButton";
+import { runReference } from "@/utils/clipboard";
 import type { RunEventOut } from "@/api/types";
 
 // 事件类型 → 图标/颜色映射
@@ -270,6 +273,18 @@ export default function RunTimeline({
     queryFn: () => runsApi.list({ limit: 20 }),
   });
 
+  // 选中 run 详情：等待面板要判状态、「复制引用」要有完整引用串
+  // （最近列表只有 20 条，选中的 run 可能不在其中）
+  const { data: selectedRun } = useQuery({
+    queryKey: ["run", runId],
+    queryFn: () => (runId ? runsApi.get(runId) : Promise.resolve(undefined)),
+    enabled: !!runId,
+    refetchInterval: 5000,
+  });
+
+  // P0-4：平台代为持有的外部等待（run 停在等待态，或事件里还有未落定的等待）
+  const awaiting = selectedRun?.status === "waiting_external" || hasUnresolvedAwait(allEvents);
+
   if (!runId) {
     return (
       <div style={{ display: "flex", gap: 12, height: "100%" }}>
@@ -391,10 +406,12 @@ export default function RunTimeline({
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {visibleCount}/{allEvents.length} 事件
           </Typography.Text>
+          {selectedRun && <CopyRefButton text={runReference(selectedRun)} withText />}
         </div>
 
         {/* 事件列表 */}
         <div style={{ flex: 1, overflow: "auto", padding: "8px 16px" }}>
+          {awaiting && <AwaitPanel runId={runId} />}
           {isLoading ? (
             <div style={{ textAlign: "center", padding: 24 }}>
               <Typography.Text type="secondary">加载中…</Typography.Text>

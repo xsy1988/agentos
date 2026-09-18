@@ -14,6 +14,9 @@ import { useUIStore } from "@/store/ui";
 import { runsApi } from "@/api/runs";
 import { describeError } from "@/api/errors";
 import PluginHost from "@/components/PluginHost";
+import AwaitPanel, { hasUnresolvedAwait } from "@/components/AwaitPanel";
+import CopyRefButton from "@/components/CopyRefButton";
+import { runReference } from "@/utils/clipboard";
 import { EventItem, isConfirmationResolved, mergeToolEvents } from "@/pages/Chat/MessageStream";
 import type { RunOut, RunEventOut } from "@/api/types";
 
@@ -84,6 +87,8 @@ function RunDetail({ runId }: { runId: string }) {
   );
 
   const meta: CSSProperties = { fontSize: 11, color: "var(--ant-color-text-secondary)" };
+  // P0-4：run 停在外部等待，或事件里还有未落定的等待
+  const awaiting = run?.status === "waiting_external" || hasUnresolvedAwait(events);
 
   const inputText = (run?.input?.text as string) ?? "";
   const budgetUsed = (run?.budget_used ?? {}) as Record<string, unknown>;
@@ -108,7 +113,11 @@ function RunDetail({ runId }: { runId: string }) {
         {statusTag(run.status)}
         <Typography.Text style={meta}>触发：{run.trigger}</Typography.Text>
         {duration !== null && <Typography.Text style={meta}>耗时 {fmtDuration(duration)}</Typography.Text>}
+        <CopyRefButton text={runReference(run)} />
       </div>
+
+      {/* P0-4：外部等待——等谁、最晚多久、可撤销（撤销后 run 以结构化失败收尾） */}
+      {awaiting && <AwaitPanel runId={runId} />}
 
       {/* 任务输入 */}
       {inputText && (

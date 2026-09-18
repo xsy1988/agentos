@@ -1,13 +1,18 @@
 /**
  * 任务列表视图（前端设计 §3.2）。
- * 按状态/触发方式筛选，行内操作：恢复/终止/查看回放。
+ * 按状态/触发方式筛选，行内操作：恢复/终止/查看回放/复制引用/撤销等待。
  */
 import { useState } from "react";
-import { Table, Tag, Select, Button, Space, Tooltip, Typography } from "antd";
-import { StopOutlined, NodeIndexOutlined } from "@ant-design/icons";
+import { Table, Tag, Select, Button, Space, Tooltip, Typography, message as antdMessage } from "antd";
+import { StopOutlined, NodeIndexOutlined, DisconnectOutlined } from "@ant-design/icons";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
+import { awaitsApi } from "@/api/awaits";
+import CopyRefButton from "@/components/CopyRefButton";
+import { runReference } from "@/utils/clipboard";
 import type { RunOut } from "@/api/types";
+
+const TERMINAL_STATUSES = ["done", "failed", "cancelled", "aborted", "timeout"];
 
 const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   pending: { color: "default", label: "等待" },
@@ -45,6 +50,23 @@ export default function RunsList({
   const abortMutation = useMutation({
     mutationFn: (runId: string) => runsApi.abort(runId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["runs"] }),
+  });
+
+  // 「撤销等待」（P0-4）：撤销该 run 正等待的外部回调，run 立即以结构化失败收尾；
+  // 已落定（超时/回传）的等待不需要撤销，属提示而非错误
+  const cancelAwaitMutation = useMutation({
+    mutationFn: (runId: string) => awaitsApi.cancelWaitingForRun(runId),
+    onSuccess: (outs) => {
+      if (outs.length === 0) {
+        antdMessage.info("该任务当前没有等待中的外部回调");
+        return;
+      }
+      if (outs.some((o) => o.cancelled)) antdMessage.success("已撤销等待，任务将以失败收尾");
+      else antdMessage.info(`等待已落定（${outs[0].status}），无需撤销`);
+      queryClient.invalidateQueries({ queryKey: ["awaits"] });
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
+    onError: (err: Error) => antdMessage.error(`撤销等待失败：${err.message}`),
   });
 
   const columns = [
@@ -95,7 +117,7 @@ export default function RunsList({
     },
     {
       title: "操作",
-      width: 120,
+      width: 150,
       render: (_: unknown, record: RunOut) => (
         <Space size={4}>
           <Tooltip title="事件回放">
@@ -106,19 +128,34 @@ export default function RunsList({
               onClick={() => onSelectRun(record.id)}
             />
           </Tooltip>
-          {!["done", "failed", "cancelled", "aborted", "timeout"].includes(
-            record.status,
-          ) && (
-            <Tooltip title="终止">
+          <CopyRefButton text={runReference(record)} />
+          {record.status === "waiting_external" ? (
+            <Tooltip title="撤销等待（外部回调不再等待，任务以失败收尾）">
               <Button
                 type="text"
                 size="small"
                 danger
-                icon={<StopOutlined />}
-                loading={abortMutation.isPending}
-                onClick={() => abortMutation.mutate(record.id)}
+                icon={<DisconnectOutlined />}
+                loading={cancelAwaitMutation.isPending}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  cancelAwaitMutation.mutate(record.id);
+                }}
               />
             </Tooltip>
+          ) : (
+            !TERMINAL_STATUSES.includes(record.status) && (
+              <Tooltip title="终止">
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  loading={abortMutation.isPending}
+                  onClick={() => abortMutation.mutate(record.id)}
+                />
+              </Tooltip>
+            )
           )}
         </Space>
       ),

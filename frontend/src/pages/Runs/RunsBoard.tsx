@@ -1,10 +1,12 @@
 /**
  * 任务看板视图（前端设计 §3.2）。
- * 三列：进行中 / 待确认 / 今日完成。
+ * 四列：进行中 / 待确认 / 等待外部回调 / 今日完成。
  */
 import { Card, Tag, Typography, Empty, Spin } from "antd";
 import { useQuery } from "@tanstack/react-query";
 import { runsApi } from "@/api/runs";
+import CopyRefButton from "@/components/CopyRefButton";
+import { runReference } from "@/utils/clipboard";
 import type { RunOut } from "@/api/types";
 
 function isToday(dateStr: string): boolean {
@@ -33,7 +35,10 @@ function RunCard({ run, onClick }: { run: RunOut; onClick: () => void }) {
         <Typography.Text className="font-mono-tight" style={{ fontSize: 11 }} type="secondary">
           {run.id.slice(0, 8)}
         </Typography.Text>
-        <Tag style={{ fontSize: 10, margin: 0 }}>{triggerLabel}</Tag>
+        <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <CopyRefButton text={runReference(run)} />
+          <Tag style={{ fontSize: 10, margin: 0 }}>{triggerLabel}</Tag>
+        </span>
       </div>
       <Typography.Paragraph
         ellipsis={{ rows: 2 }}
@@ -61,6 +66,8 @@ export default function RunsBoard({
 
   const running = allRuns.filter((r) => ["pending", "running"].includes(r.status));
   const pending = allRuns.filter((r) => r.status === "paused_awaiting_confirm");
+  // P0-4：平台代为持有的外部等待独立成列——「谁在等外部回传」必须一眼可见可撤销
+  const waitingExternal = allRuns.filter((r) => r.status === "waiting_external");
   const doneToday = allRuns.filter(
     (r) =>
       ["done", "failed", "cancelled", "aborted", "timeout"].includes(r.status) &&
@@ -70,6 +77,7 @@ export default function RunsBoard({
   const columns = [
     { title: "进行中", items: running, color: "processing" },
     { title: "待确认", items: pending, color: "warning" },
+    { title: "等待外部回调", items: waitingExternal, color: "blue" },
     { title: "今日完成", items: doneToday, color: "success" },
   ];
 

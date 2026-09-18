@@ -90,6 +90,18 @@ export const STEP_CONVERGE_LABELS: Record<string, string> = {
   escalate: "转人工",
 };
 
+/**
+ * 确认卡在消息流里的一句话状态（P1-4 收尾）：`confirmation_request` 的 `reason` → 文案。
+ * 五类暂停点各有各的说法，说错比不说更坏（把补输入写成"计划待确认"会让人找不到要填什么）。
+ */
+export const CONFIRM_LABELS: Record<string, { pending: string; done: string }> = {
+  plan_review: { pending: "计划待确认", done: "计划已确认" },
+  high_risk_tool: { pending: "高危操作待确认", done: "高危操作已确认" },
+  subtask_clarification: { pending: "支线提问待答复", done: "支线提问已答复" },
+  interactive_decision: { pending: "待你决策", done: "决策已提交" },
+  input_required: { pending: "子任务待补输入", done: "子任务输入已补齐" },
+};
+
 export function stepKindLabel(kind: string): string {
   return kind === "branch" ? "支线" : "主线";
 }
