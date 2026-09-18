@@ -1,4 +1,4 @@
-.PHONY: db-up db-down db-logs dev migrate upgrade test lint fmt hooks clean web dev-web \
+.PHONY: db-up db-down db-logs dev migrate upgrade test accept lint lint-web fmt hooks clean web dev-web \
         search-up search-eval search-model
 
 db-up:            ## 启动 PostgreSQL（pgvector）
@@ -22,8 +22,14 @@ upgrade:          ## 应用迁移到最新
 test:             ## 运行测试
 	cd backend && uv run pytest
 
-lint:             ## ruff + mypy 检查
-	cd backend && uv run ruff check . && uv run mypy app
+accept:           ## 真库端到端验收（需 db-up；V1–V11 + P1/P2 判据）
+	cd backend && uv run python -m scripts.accept_v16
+
+lint:             ## ruff 检查 + 格式检查 + mypy（与 CI 的 lint / 类型门一致）
+	cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy app
+
+lint-web:         ## 前端 eslint（与 CI 的前端 lint 门一致）
+	cd frontend && npm run lint
 
 fmt:              ## 格式化并自动修复
 	cd backend && uv run ruff format . && uv run ruff check --fix .
