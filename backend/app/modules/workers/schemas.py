@@ -139,12 +139,26 @@ class WorkerFileCreateIn(BaseModel):
     content: str = Field(default="", max_length=200_000)
 
 
+class VersionBuildIn(BaseModel):
+    """POST /workers/{name}/versions 请求体。
+
+    可选（不带请求体 = 与从前行为逐字相同）——`target_agents` 是 P0-2 的"更早预警"增量：
+    填了就比对这些 Agent 的 `tool_budget`，把"装不下"作为 warnings 提前报出来（非阻断）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_agents: list[str] = Field(default_factory=list, max_length=32)
+
+
 class VersionBuildOut(BaseModel):
     version: str
     copied_from: str
     # 展开后的工具数（P0-2）：配置者拿它跟 Agent 的 tool_budget 比对，
     # 避免出现"能发布但装不下"的能力组合
     tool_count: int = 0
+    # 按 target_agents 比出来的容量提示（非阻断）：空列表 = 没填或都装得下
+    warnings: list[str] = Field(default_factory=list)
 
 
 # ---------- 工具引用清单校验 ----------

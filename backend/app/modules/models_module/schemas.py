@@ -60,6 +60,7 @@ class ModelProviderUpdateIn(BaseModel):
     @classmethod
     def _check_limits(cls, value: dict | None) -> dict | None:
         return _validate_limits(value) if value is not None else None
+
     status: str | None = Field(default=None, pattern=r"^(enabled|disabled)$")
 
 

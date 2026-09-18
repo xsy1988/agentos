@@ -75,8 +75,10 @@ def test_run_search_more_tools_returns_increment_only(
     """返回的是增量 `{"new_tools": [...]}`，且已存在的工具不再重复返回。"""
     _patch_retriever(
         monkeypatch,
-        {"q1": [{"name": "a", "type": "tool"}], "q2": [{"name": "a", "type": "tool"},
-                                                      {"name": "b", "type": "tool"}]},
+        {
+            "q1": [{"name": "a", "type": "tool"}],
+            "q2": [{"name": "a", "type": "tool"}, {"name": "b", "type": "tool"}],
+        },
     )
     cache: dict[str, Any] = {"tools": [_item("seed")]}
 

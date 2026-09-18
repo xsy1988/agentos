@@ -1,11 +1,23 @@
 """security 纯逻辑单测：密码哈希 + JWT 往返。"""
 
+import pytest
+
+from app.core.config import settings
 from app.core.security import (
     create_access_token,
     decode_access_token,
     hash_password,
     verify_password,
 )
+
+# PyJWT 对 <32 字节的 HMAC 密钥发 InsecureKeyLengthWarning；测试只用密钥做本地往返，
+# 因此换成够长的测试密钥，生产缺省（settings.secret_key）保持不变
+_TEST_SECRET_KEY = "test-secret-key-32-bytes-minimum-0001"
+
+
+@pytest.fixture(autouse=True)
+def _strong_test_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "secret_key", _TEST_SECRET_KEY)
 
 
 def test_password_roundtrip() -> None:

@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_db
@@ -16,7 +16,8 @@ from app.modules.auth.deps import get_current_user
 from app.modules.conversations import service as conv_service
 from app.modules.conversations.models import Conversation
 from app.modules.runs import events as run_events
-from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run
+from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run, RunArtifact
+from app.modules.runs.schemas import ArtifactOut, TaskArtifactOut
 from app.modules.tasks import service
 from app.modules.tasks.models import Task, TaskStep
 from app.modules.tasks.schemas import (
@@ -303,7 +304,7 @@ async def create_task(body: TaskCreateIn, db: AsyncSession = Depends(get_db)) ->
     try:
         provided_inputs = sanitize_provided_inputs(body.inputs)
     except InputContractError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
 
     # 幂等（P1-9）：判重必须发生在建会话/任务之前——重复提交若走到 create_user_run
@@ -398,6 +399,45 @@ async def list_task_steps(task_id: UUID, db: AsyncSession = Depends(get_db)) -> 
         select(TaskStep).where(TaskStep.task_id == task_id).order_by(TaskStep.seq)
     )
     return [TaskStepOut.model_validate(s) for s in rows.all()]
+
+
+@router.get("/{task_id}/artifacts", response_model=list[TaskArtifactOut])
+async def list_task_artifacts(
+    task_id: UUID,
+    limit: int = Query(200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+) -> list[TaskArtifactOut]:
+    """任务级产物视图（P0-5 收尾）：跨本任务的 run 归集产物，正文按需取 `/artifacts/{id}`。
+
+    归集口径两条腿并用：产物自身的 `task_id`（新写入路径）+ 子任务绑定的 run（`task_steps.run_id`，
+    覆盖本次归属列之前的存量行）。只看 `task_id` 会让老数据集体消失，只看 run 则丢掉"任务内
+    新增/人工挂载"的归属。排序按时间倒序（最新成果在最上），`limit` 挡住超大任务的一次性拉取。
+    """
+    task = await db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
+    steps = list((await db.scalars(select(TaskStep).where(TaskStep.task_id == task_id))).all())
+    run_ids = [s.run_id for s in steps if s.run_id is not None]
+    conditions = [RunArtifact.task_id == task_id]
+    if run_ids:
+        conditions.append(RunArtifact.run_id.in_(run_ids))
+    stmt = (
+        select(RunArtifact)
+        .where(or_(*conditions))
+        .order_by(RunArtifact.created_at.desc())
+        .limit(limit)
+    )
+    rows = list((await db.scalars(stmt)).all())
+    step_names = {s.id: s.name for s in steps}
+    return [
+        TaskArtifactOut(
+            **ArtifactOut.model_validate(a).model_dump(),
+            task_id=a.task_id or task_id,
+            step_id=a.step_id,
+            step_name=step_names.get(a.step_id) if a.step_id else None,
+        )
+        for a in rows
+    ]
 
 
 @router.post("/{task_id}/steps", response_model=TaskDetailOut, status_code=status.HTTP_201_CREATED)

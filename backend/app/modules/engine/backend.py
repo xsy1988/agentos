@@ -148,10 +148,14 @@ class EngineBackend(Protocol):
         storage: str,
         payload: Any,
         idempotency_key: str | None = None,
+        task_id: str | None = None,
+        step_id: str | None = None,
     ) -> dict[str, Any]:
         """落一条 run 产物，返回 `{id, kind, name, mime, size, storage}`（供拼引用行）。
 
         `idempotency_key` 非空且已存在时返回已有行（重放/重试不重复落库）。
+        `task_id` / `step_id` 为可选归属（P0-5 收尾）：任务级产物视图据此跨 run 归集，
+        缺省留 NULL —— 归属是元数据，不能因它让产物写入失败。
         """
         ...
 

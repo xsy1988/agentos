@@ -165,9 +165,7 @@ def http_failure(
 ) -> ToolError:
     """HTTP 状态码 → 失败码：5xx/429 视为对端暂时不可用，其余 4xx 视为业务拒绝。"""
     code = (
-        "external_unavailable"
-        if status_code >= 500 or status_code == 429
-        else "external_rejected"
+        "external_unavailable" if status_code >= 500 or status_code == 429 else "external_rejected"
     )
     return ToolError(code, detail, source=source, tool=tool)
 

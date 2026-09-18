@@ -24,37 +24,17 @@ from app.main import app
 from app.modules.auth.deps import get_current_user
 from app.modules.engine import runtime as runtime_mod
 from app.modules.engine.runtime import EngineRuntime
+from tests.support.fake_db import RecordingSession
 
 # ---------- 假 DB（run 行 + inbox 行） ----------
 
 
-class _FakeSession:
-    def __init__(self, statements: list[tuple[str, dict[str, Any]]], run: Any) -> None:
-        self._statements = statements
-        self._run = run
-
-    async def get(self, model: Any, pk: Any) -> Any:
-        return self._run
-
-    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> None:
-        self._statements.append((str(statement), params or {}))
-
-    async def commit(self) -> None: ...
-
-    async def __aenter__(self) -> "_FakeSession":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None: ...
-
-
 @pytest.fixture
 def fake_db(monkeypatch: pytest.MonkeyPatch) -> tuple[list[tuple[str, dict[str, Any]]], Any]:
-    statements: list[tuple[str, dict[str, Any]]] = []
     run = SimpleNamespace(status="pending", input={"conversation_id": str(uuid4())})
-    monkeypatch.setattr(
-        runtime_mod, "session_factory", lambda: _FakeSession(statements, run)
-    )
-    return statements, run
+    db = RecordingSession(get_row=run)
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: db)
+    return db.statements, run
 
 
 @pytest.fixture

@@ -21,6 +21,9 @@ class ConfirmIn(BaseModel):
     data: Any | None = None
     # 已落库的写入类 mcp 结果：[{capability, result}]
     applied: list[dict[str, Any]] | None = None
+    # 补输入卡提交（P1-4 收尾）：{输入名: 文本值}，落进 run.input["inputs"] 后由图内
+    # 子任务输入门重判。仅提交输入、不填 answer 也是合法恢复。
+    inputs: dict[str, str | int | float | bool | None] | None = None
 
 
 class RunError(BaseModel):
@@ -101,3 +104,15 @@ class ArtifactDetailOut(ArtifactOut):
     """单条产物详情：带正文（`payload`），供 `GET /artifacts/{id}` 直取。"""
 
     payload: Any | None = None
+
+
+class TaskArtifactOut(ArtifactOut):
+    """任务级产物条目（P0-5 收尾）：跨本任务的 run 归集，带子任务归属供按步分组。
+
+    `task_id` / `step_id` 是产物落库时的归属（老行可能为 NULL，路由按 `task_steps.run_id` 兜底）；
+    `step_name` 由路由用本任务子任务表补齐，前端不必再拉一次步骤清单。
+    """
+
+    task_id: UUID | None = None
+    step_id: UUID | None = None
+    step_name: str | None = None

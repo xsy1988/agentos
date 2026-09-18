@@ -1,30 +1,34 @@
 """完整图（M2-2c）—— 模块详细设计 §1.1.1。
 
 START → intent_router →(chitchat)→ agent → END（闲聊快速通道：跳过全部装配）
-                      →(task·simple)→ context_assembly → agent（简单任务直通：
+                      →(task·simple)→ context_assembly → input_gate → agent（简单任务直通：
                           跳过 planner/confirm_plan/verify——识别图片、问答等单步任务
                           不需要任务清单与验收，agent 自身可调工具补台）
-                      →(task·complex)→ context_assembly → planner → confirm_plan
+                      →(task·complex)→ context_assembly → input_gate → planner → confirm_plan
 confirm_plan →(approved)→ agent
              →(rejected)→ END
 agent ⇄ tools（ReAct 回环，钩子全程计量/审计/熔断；高危工具确认点仍生效）
 tools →(本批有派发类建单调用)→ await_gate ⇄（一次只挂一笔等待，剩余的自环）→ agent
 agent →(无 tool_calls)→ verify（仅 complex；闲聊/简单任务直达 END）→(achieved | 回环限 3 次)→ END
 
-暂停点四处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）
-+ 支线澄清（tools 内 `ask_user` 澄清型）+ 外部等待（await_gate，P0-4）；
-四处都经 runtime `_pause` 统一落库（结束执行段计时 + 记 paused_at + 落预算账本 + 置 run 状态）。
+暂停点五处（interrupt）：任务单提交前（confirm_plan，仅 complex）+ 高危工具调用前（tools）
++ 支线澄清（tools 内 `ask_user` 澄清型）+ 外部等待（await_gate，P0-4）
++ 子任务缺必需输入（input_gate，P1-4）；
+五处都经 runtime `_pause` 统一落库（结束执行段计时 + 记 paused_at + 落预算账本 + 置 run 状态）。
 节点是薄壳，逻辑经 runtime 依赖注入（backend/emit/hooks/run_ctx）。
 
 interrupt 重放纪律：恢复时节点从头重放——
 1. planner 生成计划与 confirm_plan 的 interrupt 拆成两个节点，重放不重复调 LLM；
 2. tools 节点先查全部调用风险、interrupt 一次，恢复后才逐个执行——
    副作用（工具执行/审计事件/循环计数）只发生在 interrupt 之后，恰好一次。
+3. input_gate 只读 configurable 里的预检结论（runtime 每次进入图时从 DB 重算），
+   重放不读 interrupt 返回值，故恢复后判定依据必然是落库的最新取值。
 """
 
 import asyncio
 import contextlib
 import json
+import logging
 import re
 import time
 from collections import OrderedDict
@@ -63,6 +67,9 @@ from app.modules.engine.tool_outcome import (
     normalize,
 )
 from app.modules.models_module.ratelimit import rate_limiter
+from app.modules.workers.preflight import strip_step_contract
+
+logger = logging.getLogger(__name__)
 
 # verify 回环上限（设计 §1.1.1：验证不达标带反馈回环，计数限 3 次）
 VERIFY_RETRY_LIMIT = 3
@@ -544,6 +551,42 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
             },
             "capability_cache": cache,
         }
+
+    async def input_gate(state: LoopState, config: RunnableConfig) -> dict:
+        """子任务级输入门（P1-4 收尾）：当前子任务缺必需输入时 interrupt 问用户。
+
+        与 run 级门（`preflight.resolve_run_inputs`）同一套取值链，差别只在**时机与处置**：
+        run 级在调用模型前硬失败（拦下整个 run），step 级在执行到该子任务时按需补——缺材料
+        是多轮会话里最正常的中间态，硬失败会连带丢掉已产出的进度。
+
+        取值由 `runtime._invoke_and_finalize` 每次进入图时从 DB 重算并随 `configurable`
+        下发，恢复后重放本节点即读到最新取值，故**不消费 interrupt 的返回值**（同 `await_gate`
+        纪律：唯一事实源是 DB，避免"返回值与落库不一致"时产生两套口径）。timer 触发无人
+        值守，缺输入不挂起（对齐 ADR-16 的 confirm_plan 策略），只留日志供运维发现。
+        """
+        conf = config["configurable"]
+        gate = conf.get("step_input_contract")
+        if not gate:
+            return {}
+        body = gate["payload"]
+        if conf.get("trigger") == "timer" and not gate["ok"]:
+            logger.warning(
+                "run %s 子任务「%s」缺必需输入 %s，但为 timer 触发（无人值守），不挂起等待",
+                conf.get("run_id"),
+                body["step_name"],
+                body["missing"],
+            )
+            return {}
+        if not gate["ok"]:
+            interrupt({"reason": "input_required", "payload": body})
+        # 契约段整体替换而非追加：本节点在恢复时会被重放，叠加会让同一段文本
+        # 随恢复次数增长（且旧取值会和新取值同时出现，互相矛盾）。
+        protected = dict(state.get("protected_context") or {})
+        base = strip_step_contract(str(protected.get("system_prompt") or ""))
+        text = str(gate.get("contract") or "")
+        if text:
+            protected["system_prompt"] = f"{base}\n\n{text}"
+        return {"protected_context": protected}
 
     async def planner(state: LoopState, config: RunnableConfig) -> dict:
         """生成计划写入 plans 表，State 只存 plan_ref（计划外置）。
@@ -1201,6 +1244,8 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
                     files_url=files_url,
                 )
                 call_args = dict(args)
+                # 历史 args 通道（DEPRECATED，退役条件见 tools_builtin._await_callback）：
+                # 凭据首选经 actx（ToolContext）下发，这里只为兼容既有调用方保留
                 call_args["await_callback"] = {
                     "await_id": await_id,
                     "url": callback_url,
@@ -1430,6 +1475,7 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g = StateGraph(LoopState)
     g.add_node("intent_router", intent_router)
     g.add_node("context_assembly", context_assembly)
+    g.add_node("input_gate", input_gate)
     g.add_node("planner", planner)
     g.add_node("confirm_plan", confirm_plan)
     g.add_node("agent", agent)
@@ -1440,8 +1486,11 @@ def build_graph(runtime: Any) -> CompiledStateGraph:
     g.add_conditional_edges(
         "intent_router", route_intent, {"chitchat": "agent", "task": "context_assembly"}
     )
+    # 子任务输入门排在装配之后、真正干活之前：装配是纯读（无副作用）且必须在
+    # planner/agent 之前完成，门放在这里既不重复装配工作、又能拦住"拿不到材料就硬干"
+    g.add_edge("context_assembly", "input_gate")
     g.add_conditional_edges(
-        "context_assembly",
+        "input_gate",
         route_after_assembly,
         {"planner": "planner", "agent": "agent"},
     )

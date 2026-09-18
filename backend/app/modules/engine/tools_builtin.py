@@ -219,7 +219,8 @@ async def _procurement_trigger(args: dict[str, Any], ctx: ToolContext | None = N
 
     P0-4/P1-10：平台进入等待模式（`await_external_enabled`）时，回传地址经两条通道下发——
     执行上下文（`ctx.await_id` / `callback_url` / `callback_token`，P1-10 首选）与
-    args 里的 `await_callback`（早于上下文协议的历史通道，保留兼容）。外部服务完成后
+    args 里的 `await_callback`（早于上下文协议的历史通道，已标 DEPRECATED、
+    退役条件见 `_await_callback`，保留兼容）。外部服务完成后
     POST 结果到该地址，平台据此唤醒 run（模型零轮询）。
     """
     text = str(args.get("text") or "").strip()
@@ -240,6 +241,12 @@ def _await_callback(args: dict[str, Any], ctx: ToolContext | None) -> dict[str, 
 
     `files_url`（取件通道模板）是**加法**字段：拿不到就不下发这个键，老的第三方解析器
     看不到任何变化。
+
+    DEPRECATED：`args["await_callback"]` 是 P1-10 工具执行上下文之前的历史输入通道，
+    仅作兼容兜底保留；替代者是 `ToolContext`（`await_id` / `callback_url` /
+    `callback_token`，MCP 通道经协议 `_meta` 下发）。退役条件：调用方不再在 args 里
+    自带凭据后，删除下面的 legacy 分支与 `graph.py` 派发点的 args 注入——保留期内
+    不得改动其线格式（已冻结的外发契约）。
     """
     if ctx is not None and ctx.callback_url and ctx.await_id:
         payload = {
@@ -251,7 +258,7 @@ def _await_callback(args: dict[str, Any], ctx: ToolContext | None) -> dict[str, 
         if ctx.files_url:
             payload["files_url"] = ctx.files_url
         return payload
-    legacy = args.get("await_callback")
+    legacy = args.get("await_callback")  # DEPRECATED：历史通道，退役条件见 docstring
     if isinstance(legacy, dict) and legacy.get("url"):
         payload = {
             "await_id": legacy.get("await_id"),

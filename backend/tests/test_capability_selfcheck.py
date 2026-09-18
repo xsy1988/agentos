@@ -23,30 +23,15 @@ from fastapi import HTTPException
 from app.modules.capabilities import service as cap_service
 from app.modules.capabilities.schemas import CapabilityUpdateIn
 from app.modules.capabilities.smoke import run_smoke_test
+from tests.support.fake_db import RecordingSession
 
 FRONTEND_IFRAME = {"frontend": {"mode": "iframe", "url": "https://example.com/panel"}}
 FRONTEND_NATIVE = {"frontend": {"mode": "server_driven", "schema": {"type": "page"}}}
 HTTP_MCP = {"transport": "http", "url": "https://mcp.example.com/mcp"}
 
 
-class _FakeDB:
-    """只实现 update_capability / smoke 用到的那几件事。"""
-
-    def __init__(self) -> None:
-        self.commits = 0
-        self.flushes = 0
-
-    async def flush(self) -> None:
-        self.flushes += 1
-
-    async def commit(self) -> None:
-        self.commits += 1
-
-    async def refresh(self, _obj: Any) -> None:
-        return None
-
-    async def scalars(self, _stmt: Any) -> list[Any]:
-        return []
+class _FakeDB(RecordingSession):
+    """注册自检只读 + 更新既有行，不该落新行：`add` 直接失败当护栏。"""
 
     def add(self, _obj: Any) -> None:  # pragma: no cover - 本文件不落新工具
         raise AssertionError("本用例不应写入新行")

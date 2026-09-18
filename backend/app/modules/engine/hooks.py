@@ -30,6 +30,11 @@ class RunContext:
         # 本轮 prompt 的 token 估算（P1-2 增量）：agent 节点在 on_turn_start 之前写入，
         # 预算钩子据此在**发起模型调用前**判断是否会超限。0 = 未估算（钩子跳过前置闸）。
         self.prompt_tokens_est: int = 0
+        # 产物归属（P0-5 收尾）：本 run 所属任务与当前子任务。运行时在加载 run/解析子任务
+        # 输入契约时写入，`_externalize` 落产物时读取——归属是元数据，读不到就留 NULL，
+        # 不为它额外加一次查询（写产物本身已经够重）。
+        self.task_id: str | None = None
+        self.step_id: str | None = None
 
 
 class HookError(Exception):

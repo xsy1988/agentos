@@ -48,7 +48,8 @@ from app.modules.engine.state import BudgetState
 from app.modules.runs import events as run_events
 from app.modules.runs.models import Run
 from app.modules.workers import preflight
-from app.modules.workers.preflight import RunInputResolution
+from app.modules.workers.inputs import sanitize_provided_inputs
+from app.modules.workers.preflight import RunInputResolution, StepInputResolution
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,17 @@ def _result_ref(envelope: dict[str, Any]) -> dict[str, Any]:
         "text_chars": len(str(envelope.get("text") or "")),
         "artifact_ids": [a.get("id") for a in envelope.get("artifacts") or []],
     }
+
+
+def _step_gate_payload(resolution: StepInputResolution | None) -> dict[str, Any] | None:
+    """子任务级门的 configurable 载荷：预检结论 + 可直接注入的契约文本。
+
+    与 `input_contract`（run 级，只带文本）不同，这里要把"缺不缺"一并交给图内节点决定
+    挂起还是放行——硬失败的责任在 runtime，挂起的责任在 `input_gate`，两者共用同一份预检。
+    """
+    if resolution is None:
+        return None
+    return {"ok": resolution.ok, "contract": resolution.contract, "payload": resolution.payload()}
 
 
 @dataclass
@@ -329,11 +341,16 @@ class EngineRuntime:
             # 供 request_decision 消费；否则沿用字符串答复（approved/rejected/支线文本，ADR-24）
             data = payload.get("data")
             applied = payload.get("applied")
-            if run_id and (answer or data is not None):
+            # 补输入卡（P1-4 收尾）：用户只提交输入、不带 answer 时同样要唤醒 run，
+            # 否则补完的表单会被静默丢掉（取值先落库，再由 input_gate 重判）。
+            inputs = payload.get("inputs")
+            if run_id and (answer or data is not None or inputs):
                 resume_value: Any = answer
                 if data is not None or applied is not None:
                     resume_value = {"answer": answer, "data": data, "applied": applied}
-                self._spawn_run_task(str(run_id), self._resume_run(str(run_id), resume_value))
+                self._spawn_run_task(
+                    str(run_id), self._resume_run(str(run_id), resume_value, inputs=inputs)
+                )
         elif et == "abort":
             run_id = event.get("target_run_id")
             if run_id:
@@ -709,19 +726,48 @@ class EngineRuntime:
                 error=error,
             )
 
-    async def _resume_run(self, run_id: str, answer: Any) -> None:
+    async def _persist_resume_inputs(self, run_id: str, provided: Any) -> None:
+        """把补输入卡提交的取值合并进 `run.input["inputs"]`（同名字段后写覆盖）。
+
+        必须落库再恢复：`_invoke_and_finalize` 每次进入图都从 DB 重算预检结论，若只在内存
+        传递，重放 `input_gate` 时会再次判为缺失 → 用户补了也永远过不去（挂起死循环）。
+        取值非法直接抛（router 已在 API 入口做过一次，能到这里说明是内部错误，不静默吞）。
+        """
+        merged = sanitize_provided_inputs(provided)
+        if not merged:
+            return
+        async with session_factory() as db:
+            run = await db.get(Run, UUID(run_id))
+            if run is None:
+                return
+            payload = dict(run.input or {})
+            current = payload.get("inputs")
+            base = {str(k): str(v) for k, v in current.items()} if isinstance(current, dict) else {}
+            payload["inputs"] = {**base, **merged}
+            run.input = payload
+            await db.commit()
+        logger.info("run %s 补输入已落库：%s", run_id, sorted(merged))
+
+    async def _resume_run(self, run_id: str, answer: Any, *, inputs: Any = None) -> None:
         """恢复入口：从 interrupt 检查点恢复（Command(resume=answer)）。
 
         answer 可为字符串（approved/rejected/支线文本答复）、dict（侧边栏结构化
         回传 {answer, data, applied}，§3.5），或外部等待落定后的恢复包
         （{kind: "await", ...}，P0-4）——原样注入 Command(resume=...)，由对应 interrupt 消费。
         等待恢复不读 interrupt 的返回值，`await_gate` 一律以 DB 行为准。
+
+        `inputs`（P1-4 收尾）是补输入卡提交的取值：与 answer 不同，它**不进 interrupt 返回值**
+        （会污染 request_decision 等既有消费者的载荷形状），而是先落进 `run.input`，
+        再由 `input_gate` 从 DB 重判——门与恢复因此永远看同一份事实。
         """
         try:
             run = await self._load_run(run_id)
             # 等待态（waiting_external）同样可恢复：外部流程落定后唤醒
             if run is None or run.status not in ("paused_awaiting_confirm", "waiting_external"):
                 return
+            if inputs:
+                # 先落库再由图重判：`run` 实例的取值字段在此之后不再被读（图走 DB）
+                await self._persist_resume_inputs(run_id, inputs)
             thread_id = str(run.conversation_id) if run.conversation_id else run_id
             # 重启后内存 ctx 丢失：重建（含预算续跑账本）；
             # 同进程恢复时沿用现有 ctx，避免覆盖掉内存中已累计的账本
@@ -858,6 +904,18 @@ class EngineRuntime:
                 run_id, resolution, phase="pre_invoke", thread_id=thread_id
             )
             return
+        # 子任务级门（P1-4 收尾）：当前子任务的必需输入缺不缺，交给图内 `input_gate` 决定
+        # 挂起等待还是放行。此处只算不拦——run 已产出进度，后一步缺材料不该把已做的丢掉。
+        step_resolution = await preflight.resolve_step_inputs(run) if run is not None else None
+        # 产物归属（P0-5 收尾）：任务与当前子任务落进运行上下文，供 `_externalize` 标注产物。
+        # 子任务归属与"这个子任务缺不缺输入"无关，故预检没结果时按同一取步口径兜底查一次。
+        ctx = self._run_ctx.get(run_id)
+        if ctx is not None:
+            ctx.task_id = str(task_id) if task_id else None
+            if step_resolution is not None:
+                ctx.step_id = str(step_resolution.step_id)
+            elif run is not None and task_id:
+                ctx.step_id = await preflight.current_step_id(run)
         config: RunnableConfig = {
             "configurable": {
                 "thread_id": thread_id,
@@ -870,6 +928,8 @@ class EngineRuntime:
                 "model_provider_id": (run.input or {}).get("model_provider_id") if run else None,
                 # 输入契约（P1-4）：由 context_assembly 注入固定区（protected_context）
                 "input_contract": resolution.contract if resolution else None,
+                # 子任务输入契约（P1-4 收尾）：由 input_gate 决定挂起/注入
+                "step_input_contract": _step_gate_payload(step_resolution),
             }
         }
         deadline_at = self._deadline_for(run, run_id)
@@ -1023,6 +1083,7 @@ class EngineRuntime:
         if planned is None:
             return None
         body, spec = planned
+        ctx = self._run_ctx.get(run_id)
         row = await self.backend.save_artifact(
             run_id,
             kind=spec["kind"],
@@ -1032,6 +1093,9 @@ class EngineRuntime:
             storage=spec["storage"],
             payload=spec["payload"],
             idempotency_key=f"{run_id}:{hashlib.sha256(text.encode()).hexdigest()[:32]}",
+            # 归属（P0-5 收尾）：任务级产物视图与 step 归组靠它，取不到就留 NULL
+            task_id=ctx.task_id if ctx else None,
+            step_id=ctx.step_id if ctx else None,
         )
         return artifacts.with_ref(artifacts.ref_line(row), body), row
 

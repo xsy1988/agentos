@@ -17,6 +17,7 @@ import pytest
 from app.modules.engine import hooks_impl as hooks_mod
 from app.modules.engine.hooks import RunContext
 from app.modules.engine.hooks_impl import MeteringHook
+from tests.support.fake_db import RecordingSession
 
 RUN_STATUSES = (
     "done",
@@ -27,37 +28,20 @@ RUN_STATUSES = (
 )
 
 
-class _FakeSession:
-    """只实现 `execute` / `commit` 的假 DB 会话。"""
-
-    def __init__(self, sink: list[tuple[str, dict[str, Any]]]) -> None:
-        self._sink = sink
-
-    async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> None:
-        self._sink.append((str(statement), params or {}))
-
-    async def commit(self) -> None: ...
-
-    async def __aenter__(self) -> "_FakeSession":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None: ...
-
-
 PROVIDER_ID = "11111111-1111-1111-1111-111111111111"
 
 
 @pytest.fixture
 def recorded(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
     """假 DB + 假归属解析（真实 `_provider_id` 会打 DB，本地禁连）。"""
-    sink: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(hooks_mod, "session_factory", lambda: _FakeSession(sink))
+    db = RecordingSession()
+    monkeypatch.setattr(hooks_mod, "session_factory", lambda: db)
 
     async def _provider_id(_self: MeteringHook, ctx: RunContext) -> str | None:
         return PROVIDER_ID if ctx.agent_id else None
 
     monkeypatch.setattr(MeteringHook, "_provider_id", _provider_id)
-    return sink
+    return db.statements
 
 
 @pytest.mark.parametrize("status", RUN_STATUSES)
@@ -78,7 +62,7 @@ def test_run_counted_for_every_terminal_status(
 
 
 def test_failed_run_with_tokens_still_yields_a_run_row(
-    recorded: list[tuple[str, dict[str, Any]]]
+    recorded: list[tuple[str, dict[str, Any]]],
 ) -> None:
     """回归验收①：失败 run 有 token → 同一行 run_count 也必须 >0。"""
     hook = MeteringHook()
@@ -97,7 +81,7 @@ def test_failed_run_with_tokens_still_yields_a_run_row(
 
 
 def test_run_count_skipped_when_provider_unknown(
-    recorded: list[tuple[str, dict[str, Any]]]
+    recorded: list[tuple[str, dict[str, Any]]],
 ) -> None:
     """归属不可解析（ctx 未初始化）时跳过记账而非计入错账（既有行为保留）。"""
     hook = MeteringHook()

@@ -13,6 +13,16 @@ from app.modules.runs import events as run_events
 from app.modules.tasks.models import Task as TaskModel
 
 
+def _maybe_uuid(value: str | None) -> uuid.UUID | None:
+    """宽松解析（P0-5 收尾）：归属标识来自内存上下文，脏值只能让归属退化，不能让写入失败。"""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        return None
+
+
 class InProcessBackend:
     """直接操作 DB 会话；二期拆进程时替换为 RPC 实现，图与钩子零改动。"""
 
@@ -189,6 +199,7 @@ class InProcessBackend:
     # ---- M7a 增量扩展（ADR-23~28：任务架构）----
 
     async def ensure_task_id(self, conversation_id: str) -> str | None:
+        from app.modules.conversations.models import Conversation
         from app.modules.tasks import service as tasks_service
 
         try:
@@ -196,7 +207,10 @@ class InProcessBackend:
         except ValueError:
             return None
         async with session_factory() as db:
-            task = await tasks_service.ensure_task_for_conversation(db, conv_id)
+            conv = await db.get(Conversation, conv_id)
+            if conv is None:
+                return None
+            task = await tasks_service.ensure_task_for_conversation(db, conv)
             if task is None:
                 return None
             await db.commit()
@@ -345,6 +359,8 @@ class InProcessBackend:
         storage: str,
         payload: Any,
         idempotency_key: str | None = None,
+        task_id: str | None = None,
+        step_id: str | None = None,
     ) -> dict[str, Any]:
         from sqlalchemy import select
 
@@ -366,6 +382,8 @@ class InProcessBackend:
                 storage=storage,
                 payload=payload,
                 idempotency_key=idempotency_key,
+                task_id=_maybe_uuid(task_id),
+                step_id=_maybe_uuid(step_id),
             )
             db.add(artifact)
             await db.commit()

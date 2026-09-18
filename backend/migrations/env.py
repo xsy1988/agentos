@@ -24,6 +24,14 @@ config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 
 
+def include_name(name: str | None, type_: str, parent_names: dict) -> bool:  # noqa: ARG001
+    """Autogenerate 过滤：LangGraph checkpointer 的表由运行期自建，不归 ORM/alembic 管。
+
+    不过滤的话 autogenerate 会生成 DROP TABLE checkpoints，把会话检查点全删掉。
+    """
+    return not (type_ == "table" and name is not None and name.startswith("checkpoint"))
+
+
 def run_migrations_offline() -> None:
     """离线模式：仅生成 SQL，不连库。"""
     context.configure(
@@ -31,13 +39,16 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        include_name=include_name,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection, target_metadata=target_metadata, include_name=include_name
+    )
     with context.begin_transaction():
         context.run_migrations()
 

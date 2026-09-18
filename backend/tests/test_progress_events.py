@@ -28,38 +28,7 @@ from app.modules.engine.backend import EVENT_TYPES
 from app.modules.engine.runtime import EngineRuntime
 from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, RUN_STATUSES
 from app.modules.tasks import service as tasks_service
-
-# ---------- 最小替身 ----------
-
-
-class _Result:
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = list(rows)
-
-    def all(self) -> list[Any]:
-        return list(self._rows)
-
-
-class _FakeSession:
-    """按调用顺序回放 `execute` 结果，并保留语句供断言。"""
-
-    def __init__(self, execute_rows: list[list[Any]] | None = None) -> None:
-        self._execute = list(execute_rows or [])
-        self.statements: list[Any] = []
-        self.commits = 0
-
-    async def __aenter__(self) -> _FakeSession:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
-        self.statements.append(stmt)
-        return _Result(self._execute.pop(0) if self._execute else [])
-
-    async def commit(self) -> None:
-        self.commits += 1
+from tests.support.fake_db import FakeSession
 
 
 def _snapshot(
@@ -117,7 +86,7 @@ def _run_task_row(
 
 
 def test_snapshot_only_scans_non_terminal_runs() -> None:
-    db = _FakeSession(execute_rows=[[]])
+    db = FakeSession(execute_rows=[[]])
     asyncio.run(tasks_service.list_progress_snapshots(db))
 
     assert len(db.statements) == 1, "无行时不得再发第二次查询"
@@ -147,7 +116,7 @@ def test_snapshot_prefers_phase_label_over_active_step() -> None:
         ),
     ]
     steps = [(waiting_task, "等采购单"), (running_task, "写报告")]
-    db = _FakeSession(execute_rows=[rows, steps])
+    db = FakeSession(execute_rows=[rows, steps])
 
     snaps = asyncio.run(tasks_service.list_progress_snapshots(db))
 
@@ -164,7 +133,7 @@ def test_snapshot_prefers_phase_label_over_active_step() -> None:
 )
 def test_snapshot_phase_labels_are_explicit(run_status: str, label: str) -> None:
     task_id = uuid.uuid4()
-    db = _FakeSession(
+    db = FakeSession(
         execute_rows=[
             [
                 _run_task_row(
@@ -183,7 +152,7 @@ def test_snapshot_phase_labels_are_explicit(run_status: str, label: str) -> None
 def test_snapshot_label_blank_without_active_step() -> None:
     """没有活跃子任务时不编造文案（前端据此只显示数字）。"""
     task_id = uuid.uuid4()
-    db = _FakeSession(
+    db = FakeSession(
         execute_rows=[
             [
                 _run_task_row(
@@ -202,7 +171,7 @@ def test_snapshot_label_blank_without_active_step() -> None:
 def test_snapshot_active_step_picks_lowest_seq() -> None:
     """同一任务多条活跃步骤时取 seq 最小的（与任务卡"当前步骤"同口径）。"""
     task_id = uuid.uuid4()
-    db = _FakeSession(
+    db = FakeSession(
         execute_rows=[
             [
                 _run_task_row(
@@ -236,7 +205,7 @@ def _patch_snapshots(
         return batches[min(len(calls) - 1, len(batches) - 1)]
 
     monkeypatch.setattr(tasks_service, "list_progress_snapshots", _snap)
-    monkeypatch.setattr(runtime_mod, "session_factory", lambda: _FakeSession())
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: FakeSession())
     return calls
 
 

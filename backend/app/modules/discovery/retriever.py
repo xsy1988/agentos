@@ -265,7 +265,5 @@ async def _load_required(
                 )
             )
             domain = [cap_dict(c) for c in rows if str(c.id) not in seen]
-            out.extend(
-                _order_required(domain, hints=tuple((scope or {}).get("hints") or ()))
-            )
+            out.extend(_order_required(domain, hints=tuple((scope or {}).get("hints") or ())))
     return out

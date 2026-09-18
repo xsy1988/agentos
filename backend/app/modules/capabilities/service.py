@@ -417,7 +417,7 @@ async def create_capability(
 
     err = validate_payload(body.type, body.payload)
     if err:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, err)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, err)
     exists = await db.scalar(select(Capability).where(Capability.name == body.name))
     if exists:
         raise HTTPException(status.HTTP_409_CONFLICT, f"能力名已存在: {body.name}")
@@ -461,7 +461,7 @@ async def update_capability(
     if body.payload is not None:
         err = validate_payload(cap.type, body.payload)
         if err:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, err)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, err)
     # 先应用字段修改（冒烟必须用新 payload 跑，否则修配置永远过不了旧配置的坎）
     if body.description is not None:
         cap.description = body.description

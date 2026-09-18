@@ -36,58 +36,7 @@ from app.modules.tasks.models import (
     TaskStep,
 )
 from app.modules.tasks.schemas import StepConvergeIn, TaskDetailOut
-
-# ---------- 最小 session 替身 ----------
-
-
-class _Result:
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = list(rows)
-
-    def all(self) -> list[Any]:
-        return list(self._rows)
-
-
-class _FakeSession:
-    """按调用顺序回放预置结果：`get` / `scalars` 各一条队列。"""
-
-    def __init__(
-        self,
-        *,
-        get_rows: list[Any] | None = None,
-        scalars_rows: list[list[Any]] | None = None,
-        execute_rows: list[list[Any]] | None = None,
-    ) -> None:
-        self._get = list(get_rows or [])
-        self._scalars = list(scalars_rows or [])
-        self._execute = list(execute_rows or [])
-        self.commits = 0
-        self.rollbacks = 0
-        self.refreshed: list[Any] = []
-
-    async def __aenter__(self) -> _FakeSession:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def get(self, model: Any, pk: Any) -> Any:
-        return self._get.pop(0) if self._get else None
-
-    async def scalars(self, stmt: Any) -> _Result:
-        return _Result(self._scalars.pop(0) if self._scalars else [])
-
-    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
-        return _Result(self._execute.pop(0) if self._execute else [])
-
-    async def commit(self) -> None:
-        self.commits += 1
-
-    async def rollback(self) -> None:
-        self.rollbacks += 1
-
-    async def refresh(self, obj: Any) -> None:
-        self.refreshed.append(obj)
+from tests.support.fake_db import FakeSession
 
 
 def _step(**kw: Any) -> TaskStep:
@@ -142,7 +91,7 @@ def test_block_reason_mapping_targets_enum_only() -> None:
 
 
 def test_reconcile_rejects_unknown_reason() -> None:
-    db = _FakeSession()
+    db = FakeSession()
     with pytest.raises(ValueError, match="非法的受阻原因"):
         asyncio.run(
             tasks_service.reconcile_orphaned_awaits(
@@ -157,7 +106,7 @@ def test_reconcile_blocks_orphan_awaits_with_enum_reason(reason: str) -> None:
     task = _task()
     run_id = uuid.uuid4()
     step = _step(task_id=task.id, status="awaiting_user", run_id=run_id, resolution={"q": "选哪个"})
-    db = _FakeSession(
+    db = FakeSession(
         get_rows=[task],
         scalars_rows=[[step], [step]],
     )
@@ -185,7 +134,7 @@ def test_converge_close_skips_step_and_closes_task() -> None:
     task = _task()
     main = _step(task_id=task.id, kind="main", status="done", seq=1)
     branch = _step(task_id=task.id, kind="branch", status="blocked", seq=2)
-    db = _FakeSession(
+    db = FakeSession(
         get_rows=[branch, task],
         scalars_rows=[[main, branch]],
     )
@@ -217,7 +166,7 @@ def test_converge_requeue_does_not_autoclose_task() -> None:
         task_id=task.id, kind="branch", status="blocked", seq=2, resolution={"reason": "run_ended"}
     )
     branch.resolved_at = datetime.now(UTC)
-    db = _FakeSession(
+    db = FakeSession(
         get_rows=[branch, task],
         scalars_rows=[[main, branch]],
     )
@@ -236,7 +185,7 @@ def test_converge_escalate_keeps_blocked_and_marks_escalated() -> None:
     """转人工：仍受阻（进度不被算作完成），但标记已有人接手。"""
     task = _task()
     branch = _step(task_id=task.id, status="blocked")
-    db = _FakeSession(
+    db = FakeSession(
         get_rows=[branch, task],
         scalars_rows=[[branch]],
     )
@@ -252,14 +201,14 @@ def test_converge_escalate_keeps_blocked_and_marks_escalated() -> None:
 
 
 def test_converge_rejects_unknown_action() -> None:
-    db = _FakeSession(get_rows=[_step()])
+    db = FakeSession(get_rows=[_step()])
     with pytest.raises(ValueError, match="非法的收敛动作"):
         asyncio.run(tasks_service.converge_blocked_step(db, _task(), uuid.uuid4(), action="重启"))
 
 
 def test_converge_rejects_non_blocked_step() -> None:
     branch = _step(status="pending")
-    db = _FakeSession(get_rows=[branch])
+    db = FakeSession(get_rows=[branch])
     with pytest.raises(ValueError, match="仅受阻"):
         asyncio.run(
             tasks_service.converge_blocked_step(
@@ -273,7 +222,7 @@ def test_converge_returns_none_for_missing_or_foreign_step() -> None:
     assert (
         asyncio.run(
             tasks_service.converge_blocked_step(
-                _FakeSession(get_rows=[None]), _task(), uuid.uuid4(), action="close"
+                FakeSession(get_rows=[None]), _task(), uuid.uuid4(), action="close"
             )
         )
         is None
@@ -282,7 +231,7 @@ def test_converge_returns_none_for_missing_or_foreign_step() -> None:
     assert (
         asyncio.run(
             tasks_service.converge_blocked_step(
-                _FakeSession(get_rows=[foreign]), _task(), foreign.id, action="close"
+                FakeSession(get_rows=[foreign]), _task(), foreign.id, action="close"
             )
         )
         is None
@@ -293,7 +242,7 @@ def test_converge_without_detail_omits_field() -> None:
     """detail 只做人话补充：没填就不写空键（避免前端显示空行）。"""
     task = _task()
     branch = _step(task_id=task.id, status="blocked")
-    db = _FakeSession(get_rows=[branch, task], scalars_rows=[[branch]])
+    db = FakeSession(get_rows=[branch, task], scalars_rows=[[branch]])
     asyncio.run(tasks_service.converge_blocked_step(db, task, branch.id, action="escalate"))
     assert branch.resolution is not None and "detail" not in branch.resolution
 
@@ -331,7 +280,7 @@ async def _detail_stub(_db: Any, task: Task) -> TaskDetailOut:
 class _Client:
     """TestClient + 依赖覆盖 + `_task_detail` 桩（本测试只关心收敛语义）。"""
 
-    def __init__(self, db: _FakeSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(self, db: FakeSession, monkeypatch: pytest.MonkeyPatch) -> None:
         self.db = db
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=uuid.uuid4())
         app.dependency_overrides[get_db] = lambda: db
@@ -368,7 +317,7 @@ def test_converge_endpoint_emits_event_on_owning_run(
     run_id = uuid.uuid4()
     task = _task()
     branch = _step(task_id=task.id, status="blocked", run_id=run_id)
-    db = _FakeSession(get_rows=[task, branch, task], scalars_rows=[[branch]])
+    db = FakeSession(get_rows=[task, branch, task], scalars_rows=[[branch]])
     with _Client(db, monkeypatch) as client:
         resp = _converge(client, task.id, branch.id, {"action": action})
 
@@ -396,7 +345,7 @@ def test_converge_endpoint_skips_event_without_run(monkeypatch: pytest.MonkeyPat
 
     task = _task()
     orphan = _step(task_id=task.id, status="blocked", run_id=None)
-    db = _FakeSession(get_rows=[task, orphan, task], scalars_rows=[[orphan]])
+    db = FakeSession(get_rows=[task, orphan, task], scalars_rows=[[orphan]])
     with _Client(db, monkeypatch) as client:
         resp = _converge(client, task.id, orphan.id, {"action": "close"})
 
@@ -410,13 +359,13 @@ def test_converge_endpoint_status_codes(monkeypatch: pytest.MonkeyPatch) -> None
     task = _task()
     pending = _step(task_id=task.id, status="pending")
 
-    with _Client(_FakeSession(get_rows=[None]), monkeypatch) as client:
+    with _Client(FakeSession(get_rows=[None]), monkeypatch) as client:
         assert _converge(client, uuid.uuid4(), uuid.uuid4(), {"action": "close"}).status_code == 404
 
-    with _Client(_FakeSession(get_rows=[task, None]), monkeypatch) as client:
+    with _Client(FakeSession(get_rows=[task, None]), monkeypatch) as client:
         assert _converge(client, task.id, uuid.uuid4(), {"action": "close"}).status_code == 404
 
-    db = _FakeSession(get_rows=[task, pending])
+    db = FakeSession(get_rows=[task, pending])
     with _Client(db, monkeypatch) as client:
         resp = _converge(client, task.id, pending.id, {"action": "close"})
     assert resp.status_code == 409
@@ -427,7 +376,7 @@ def test_converge_request_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """动作枚举与未知字段都挡在入口（422），避免脏动作进状态机。"""
     task = _task()
     step = _step(task_id=task.id)
-    with _Client(_FakeSession(get_rows=[task, step]), monkeypatch) as client:
+    with _Client(FakeSession(get_rows=[task, step]), monkeypatch) as client:
         assert _converge(client, task.id, step.id, {"action": "reopen"}).status_code == 422
         assert (
             _converge(client, task.id, step.id, {"action": "close", "reason": "x"}).status_code
@@ -474,7 +423,7 @@ def _runtime_with_run(
     runtime = EngineRuntime()
     monkeypatch.setattr(
         "app.modules.engine.runtime.session_factory",
-        lambda: _FakeSession(get_rows=[run, task]),
+        lambda: FakeSession(get_rows=[run, task]),
     )
     return runtime, emitted
 

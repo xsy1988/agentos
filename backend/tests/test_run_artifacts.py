@@ -22,6 +22,7 @@ from app.modules.engine import artifacts as artifacts_mod
 from app.modules.engine import runtime as runtime_mod
 from app.modules.engine.runtime import EngineRuntime
 from app.modules.runs.models import Run
+from tests.support.fake_db import RecordingSession
 
 ENVELOPE_KEYS = {"schema", "outcome", "text", "cards", "artifacts", "metrics"}
 METRIC_KEYS = {
@@ -35,28 +36,6 @@ METRIC_KEYS = {
 
 
 # ---------- 测试替身 ----------
-
-
-class _FakeDB:
-    def __init__(self, run: Run) -> None:
-        self.run = run
-        self.added: list[object] = []
-        self.commits = 0
-
-    async def __aenter__(self) -> "_FakeDB":
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def get(self, model: object, pk: object) -> Run:
-        return self.run
-
-    async def commit(self) -> None:
-        self.commits += 1
-
-    def add(self, obj: object) -> None:
-        self.added.append(obj)
 
 
 class _FakeBackend:
@@ -77,6 +56,8 @@ class _FakeBackend:
         storage: str,
         payload: object,
         idempotency_key: str | None = None,
+        task_id: str | None = None,
+        step_id: str | None = None,
     ) -> dict:
         if self.fail:
             raise RuntimeError("artifact store down")
@@ -92,6 +73,8 @@ class _FakeBackend:
             "size": size,
             "storage": storage,
             "payload": payload,
+            "task_id": task_id,
+            "step_id": step_id,
         }
         self.rows[key] = row
         return row
@@ -109,7 +92,7 @@ class _Hooks:
 
 
 class _Rig:
-    def __init__(self, run: Run, rt: EngineRuntime, db: _FakeDB, events: list) -> None:
+    def __init__(self, run: Run, rt: EngineRuntime, db: RecordingSession, events: list) -> None:
         self.run = run
         self.rt = rt
         self.db = db
@@ -136,7 +119,7 @@ def _rig(monkeypatch: pytest.MonkeyPatch, *, input_payload: dict | None = None) 
         started_at=datetime.now(UTC),
         deadline_at=None,
     )
-    db = _FakeDB(run)
+    db = RecordingSession(run)
     monkeypatch.setattr(runtime_mod, "session_factory", lambda: db)
     rt.backend = _FakeBackend()  # type: ignore[assignment]
     rt.hooks = _Hooks()
@@ -290,6 +273,36 @@ def test_externalize_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(asyncio.run(rig.rt.backend.list_artifacts(str(rig.run.id)))) == 1
 
 
+def test_externalize_records_task_and_step_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """产物归属（P0-5 收尾）：上下文里的任务/子任务随外置写进 run_artifacts。
+
+    归属是任务级产物视图与 step 归组的唯一依据，必须由运行上下文写入而非调用方手工传参。
+    """
+    monkeypatch.setattr(settings, "artifact_inline_max_chars", 10)
+    rig = _rig(monkeypatch)
+    ctx = rig.rt.get_run_ctx(str(rig.run.id))
+    ctx.task_id = "11111111-1111-4111-8111-111111111111"
+    ctx.step_id = "22222222-2222-4222-8222-222222222222"
+
+    asyncio.run(rig.rt._externalize(str(rig.run.id), "很长的结果" * 5, name="报告"))
+
+    row = asyncio.run(rig.rt.backend.list_artifacts(str(rig.run.id)))[0]
+    assert row["task_id"] == ctx.task_id
+    assert row["step_id"] == ctx.step_id
+
+
+def test_externalize_without_scope_leaves_it_null(monkeypatch: pytest.MonkeyPatch) -> None:
+    """无归属（定时任务/未挂任务的 run）：留 NULL，且不影响产物本身落地。"""
+    monkeypatch.setattr(settings, "artifact_inline_max_chars", 10)
+    rig = _rig(monkeypatch)
+
+    asyncio.run(rig.rt._externalize(str(rig.run.id), "很长的结果" * 5, name="报告"))
+
+    row = asyncio.run(rig.rt.backend.list_artifacts(str(rig.run.id)))[0]
+    assert row["task_id"] is None and row["step_id"] is None
+    assert row["kind"] == "text"
+
+
 def test_externalize_failure_degrades_to_inline(monkeypatch: pytest.MonkeyPatch) -> None:
     """产物存储不可用：结果降级为内联，绝不因外置失败而丢结果。"""
     monkeypatch.setattr(settings, "artifact_inline_max_chars", 10)
@@ -364,10 +377,7 @@ def test_compact_l1_preserves_refs_in_tool_message(monkeypatch: pytest.MonkeyPat
             tool_call_id="c0",
             id="m0",
         ),
-        *[
-            ToolMessage(content="x" * 3000, tool_call_id=f"c{i}", id=f"m{i}")
-            for i in range(1, 5)
-        ],
+        *[ToolMessage(content="x" * 3000, tool_call_id=f"c{i}", id=f"m{i}") for i in range(1, 5)],
     ]
     emitted: list[tuple[str, dict]] = []
 

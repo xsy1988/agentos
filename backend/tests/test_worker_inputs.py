@@ -34,6 +34,7 @@ from app.modules.workers.inputs import (
 )
 from app.modules.workers.preflight import RunInputResolution, resolve_run_inputs
 from app.modules.workers.registry import WorkerError
+from tests.support.fake_db import RecordingSession, RoutingSession
 
 SPECS_RAW = [
     {
@@ -132,6 +133,66 @@ def test_resolve_inputs_precedence_and_missing() -> None:
     # 空串不算提供；可选缺失不进缺失清单
     values, missing = resolve_inputs(specs, {"quote_file": "   "}, [])
     assert values == {} and [s.name for s in missing] == ["quote_file"]
+
+
+def _file_specs(*names: str) -> list[InputSpec]:
+    return parse_input_specs(
+        [{"name": n, "type": "file", "required": True} for n in names], scope="W"
+    )
+
+
+def test_resolve_inputs_multi_file_shares_attachment() -> None:
+    specs = _file_specs("quote_file", "contract_file", "budget_sheet")
+
+    # 附件充足：按声明顺序一对一顶替，不共享
+    values, missing = resolve_inputs(specs, {}, ["a.pdf", "b.pdf", "c.xlsx"])
+    assert values == {"quote_file": "a.pdf", "contract_file": "b.pdf", "budget_sheet": "c.xlsx"}
+    assert missing == []
+
+    # 附件不足：剩余的 file 输入共享第一个附件（用户只附了一件材料）
+    values, missing = resolve_inputs(specs, {}, ["a.pdf"])
+    assert values == {
+        "quote_file": "a.pdf",
+        "contract_file": "a.pdf",
+        "budget_sheet": "a.pdf",
+    }
+    assert missing == []
+
+    # 部分充足：先一对一分发，用尽后共享第一个附件
+    values, missing = resolve_inputs(specs, {}, ["a.pdf", "b.pdf"])
+    assert values == {
+        "quote_file": "a.pdf",
+        "contract_file": "b.pdf",
+        "budget_sheet": "a.pdf",
+    }
+    assert missing == []
+
+    # 显式取值不消费附件，附件留给其余 file 输入
+    values, missing = resolve_inputs(specs, {"quote_file": "显式.pdf"}, ["a.pdf"])
+    assert values == {"quote_file": "显式.pdf", "contract_file": "a.pdf", "budget_sheet": "a.pdf"}
+    assert missing == []
+
+    # 一件附件都没有：仍报缺失（共享不凭证空附件兜底）
+    values, missing = resolve_inputs(specs, {}, [])
+    assert values == {} and [s.name for s in missing] == [
+        "quote_file",
+        "contract_file",
+        "budget_sheet",
+    ]
+
+
+def test_render_contract_marks_shared_attachment() -> None:
+    specs = _file_specs("quote_file", "contract_file")
+    # 各自独立附件：不标注
+    text = render_input_contract(specs, {"quote_file": "a.pdf", "contract_file": "b.pdf"})
+    assert "共用同一附件" not in text
+
+    text = render_input_contract(specs, {"quote_file": "a.pdf", "contract_file": "a.pdf"})
+    assert "  已提供：a.pdf（与 contract_file 共用同一附件）" in text
+    assert "  已提供：a.pdf（与 quote_file 共用同一附件）" in text
+
+    text = render_input_contract(specs, resolve_inputs(specs, {}, ["a.pdf"])[0])
+    assert text.count("共用同一附件") == 2
 
 
 def test_render_contract_and_missing_text() -> None:
@@ -243,30 +304,15 @@ def test_ensure_worker_rejects_bad_sub_inputs(root: Path) -> None:
 # ---------- 3. 预检层 ----------
 
 
-class _FakeResult:
-    def __init__(self, rows: list[object]) -> None:
-        self._rows = rows
+def _db(snapshots: list[dict], files: dict[object, str] | None = None) -> RoutingSession:
+    """只读替身：`files` 查询给 (附件 id, 文件名)，其余语句（runs 快照）给 `snapshots`。"""
+    files = files or {}
+    pairs = [(fid, name) for fid, name in files.items()]
 
-    def scalars(self) -> "_FakeResult":
-        return self
+    def route(stmt: object) -> list[object] | None:
+        return pairs if "files" in str(stmt) else None
 
-    def all(self) -> list[object]:
-        return list(self._rows)
-
-
-class _FakeDB:
-    """按 SQL 文本路由：runs 快照 / files 文件名。"""
-
-    def __init__(self, snapshots: list[dict], files: dict[object, str] | None = None) -> None:
-        self._snapshots = snapshots
-        self._files = files or {}
-        self.queries = 0
-
-    async def execute(self, stmt: object) -> _FakeResult:
-        self.queries += 1
-        if "files" in str(stmt):
-            return _FakeResult([(fid, name) for fid, name in self._files.items()])
-        return _FakeResult(self._snapshots)
+    return RoutingSession(router=route, execute_rows=list(snapshots))
 
 
 def _run(*, payload: dict, conversation_id: object = None, created_at: object = None) -> Run:
@@ -286,17 +332,17 @@ def _run(*, payload: dict, conversation_id: object = None, created_at: object = 
 def test_resolve_run_inputs_skips_when_no_contract(root: Path) -> None:
     _mk_worker()
     # 无 worker_name（通用任务）
-    assert asyncio.run(resolve_run_inputs(_run(payload={}), db=_FakeDB([]))) is None
+    assert asyncio.run(resolve_run_inputs(_run(payload={}), db=_db([]))) is None
     # 未声明 inputs 的 Worker
     registry.create_worker("通用")
     run = _run(payload={"worker_name": "通用", "worker_version": "v1"})
-    assert asyncio.run(resolve_run_inputs(run, db=_FakeDB([]))) is None
+    assert asyncio.run(resolve_run_inputs(run, db=_db([]))) is None
 
 
 def test_resolve_run_inputs_blocks_and_reports_missing(root: Path) -> None:
     _mk_worker()
     run = _run(payload={"worker_name": "报价对比", "worker_version": "v1"})
-    res = asyncio.run(resolve_run_inputs(run, db=_FakeDB([])))
+    res = asyncio.run(resolve_run_inputs(run, db=_db([])))
     assert res is not None and res.ok is False
     assert res.missing_names == ["quote_file"]
     assert res.worker_name == "报价对比"
@@ -317,7 +363,7 @@ def test_resolve_run_inputs_uses_explicit_values_and_attachments(root: Path) -> 
             "attachment_ids": [str(fid)],
         }
     )
-    res = asyncio.run(resolve_run_inputs(run, db=_FakeDB([run.input], {fid: "报价单.xlsx"})))
+    res = asyncio.run(resolve_run_inputs(run, db=_db([run.input], {fid: "报价单.xlsx"})))
     assert res is not None and res.ok is True
     assert res.values == {"quote_file": "报价单.xlsx", "budget": "500"}
     assert "已提供：报价单.xlsx" in res.contract
@@ -336,7 +382,7 @@ def test_resolve_run_inputs_accumulates_across_session(root: Path) -> None:
         conversation_id=uuid4(),
         created_at=base + timedelta(minutes=5),
     )
-    res = asyncio.run(resolve_run_inputs(run, db=_FakeDB(history)))
+    res = asyncio.run(resolve_run_inputs(run, db=_db(history)))
     assert res is not None and res.ok is True
     assert res.values == {"quote_file": "第一轮.xlsx", "budget": "800"}
 
@@ -353,7 +399,7 @@ def test_resolve_run_inputs_survives_unflushed_run(root: Path) -> None:
         conversation_id=uuid4(),
         created_at=datetime.now(UTC),
     )
-    res = asyncio.run(resolve_run_inputs(run, db=_FakeDB([])))
+    res = asyncio.run(resolve_run_inputs(run, db=_db([])))
     assert res is not None and res.ok is True and res.values["quote_file"] == "本次.xlsx"
 
 
@@ -367,7 +413,7 @@ def test_resolve_run_inputs_tolerates_missing_attachment(root: Path) -> None:
             "attachment_ids": [str(uuid4())],
         }
     )
-    res = asyncio.run(resolve_run_inputs(run, db=_FakeDB([run.input], {})))
+    res = asyncio.run(resolve_run_inputs(run, db=_db([run.input], {})))
     assert res is not None and res.ok is False and res.missing_names == ["quote_file"]
 
 
@@ -398,23 +444,11 @@ class _RecordingGraph:
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, rt: EngineRuntime, run: Run) -> None:
-    class _Db:
-        async def __aenter__(self) -> "_Db":
-            return self
-
-        async def __aexit__(self, *exc: object) -> bool:
-            return False
-
-        async def get(self, model: object, pk: object) -> Run:
-            return run
-
-        async def commit(self) -> None: ...
-
     async def _load(run_id: str) -> Run:
         return run
 
     monkeypatch.setattr(rt, "_load_run", _load)
-    monkeypatch.setattr(runtime_mod, "session_factory", lambda: _Db())
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: RecordingSession(get_row=run))
 
 
 def _resolution(*, ok: bool) -> RunInputResolution:

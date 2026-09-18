@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.awaits.models import AwaitBroker
+from app.modules.conversations.models import Conversation
 from app.modules.runs.models import NON_TERMINAL_RUN_STATUSES, Run
 from app.modules.tasks.models import (
     STEP_BLOCK_REASONS,
@@ -136,7 +137,7 @@ async def get_task_by_conversation(db: AsyncSession, conversation_id: uuid.UUID)
     return await db.scalar(select(Task).where(Task.conversation_id == conversation_id))
 
 
-async def ensure_task_for_conversation(db: AsyncSession, conversation: Any) -> Task:
+async def ensure_task_for_conversation(db: AsyncSession, conversation: Conversation) -> Task:
     """会话 → 主任务实例；旧会话（迁移遗漏/并发新建）惰性补建为「通用任务」。"""
     task = await get_task_by_conversation(db, conversation.id)
     if task is not None:

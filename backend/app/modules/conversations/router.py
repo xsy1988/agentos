@@ -163,7 +163,7 @@ async def send_message(
     try:
         provided_inputs = sanitize_provided_inputs(body.inputs)
     except InputContractError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
 
     model_override = await conv_service.resolve_model_override(db, body.model_provider_id)
     attachments, has_image = await conv_service.collect_attachments(db, body.attachment_ids)

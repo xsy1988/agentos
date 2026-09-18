@@ -26,6 +26,7 @@ from app.modules.engine.tool_context import ToolContext
 from app.modules.files.models import File
 from app.modules.open_api import files as open_files
 from app.modules.runs.models import Run, RunArtifact
+from tests.support.fake_db import RoutingSession
 
 client = TestClient(app)
 TOKEN = "open-api-secret"
@@ -43,59 +44,32 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # ---------- 测试替身 ----------
 
 
-class _Rows:
-    """`ScalarResult` 的最小替身：可迭代 + `all()`（`run_artifacts` 是流式消费的）。"""
+def _db(
+    *,
+    await_row: AwaitBroker | None = None,
+    run: Run | None = None,
+    artifacts: list[RunArtifact] | None = None,
+    files: list[File] | None = None,
+) -> RoutingSession:
+    """只读替身：`get` 按实体 id 命中（等待行 / run / 输入附件），`scalars` 按表名给行。"""
+    artifacts = artifacts or []
+    files = files or []
 
-    def __init__(self, rows: list) -> None:
-        self._rows = rows
-
-    def __iter__(self):  # type: ignore[no-untyped-def]
-        return iter(self._rows)
-
-    def all(self) -> list:
-        return list(self._rows)
-
-
-class _FakeDB:
-    """按表名路由的最小替身：只实现取件通道用到的三个读操作。"""
-
-    def __init__(
-        self,
-        *,
-        await_row: AwaitBroker | None = None,
-        run: Run | None = None,
-        artifacts: list[RunArtifact] | None = None,
-        files: list[File] | None = None,
-    ) -> None:
-        self.await_row = await_row
-        self.run = run
-        self.artifacts = artifacts or []
-        self.files = files or []
-
-    async def get(self, model: type, pk: object) -> object | None:
-        if model is AwaitBroker:
-            if self.await_row is None or self.await_row.id != pk:
-                return None
-            return self.await_row
-        if model is Run:
-            return self.run if self.run is not None and self.run.id == pk else None
-        if model is File:
-            for f in self.files:
-                if f.id == pk:
-                    return f
-            return None
-        return None
-
-    async def scalars(self, stmt: object) -> _Rows:
+    def route(stmt: object) -> list[object]:
         text = str(stmt)
         if "run_artifacts" in text:
-            return _Rows(self.artifacts)
+            return list(artifacts)
         if "files" in text:
-            return _Rows(self.files)
-        return _Rows([])
+            return list(files)
+        return []
+
+    return RoutingSession(
+        entities=[row for row in (await_row, run, *files) if row is not None],
+        router=route,
+    )
 
 
-def _use_db(fake: _FakeDB) -> None:
+def _use_db(fake: RoutingSession) -> None:
     async def _override():  # type: ignore[no-untyped-def]
         yield fake
 
@@ -137,7 +111,7 @@ def _artifact(run_id: UUID, file_id: UUID, name: str = "比价结果") -> RunArt
 
 def test_files_channel_requires_api_key(root: Path) -> None:
     await_id = uuid4()
-    _use_db(_FakeDB())
+    _use_db(_db())
     assert client.get(f"/api/v1/open/awaits/{await_id}/files").status_code == 401
     assert (
         client.get(f"/api/v1/open/files/{uuid4()}/content?await_id={await_id}").status_code == 401
@@ -156,7 +130,7 @@ def test_files_channel_disabled_without_platform_token(
 def test_files_channel_requires_await_credential(root: Path, token: str | None) -> None:
     """平台级 X-API-Key 不够：还必须有这笔等待的 callback_token（403 在查库前拦）。"""
     await_id = uuid4()
-    _use_db(_FakeDB(await_row=_await_row()))
+    _use_db(_db(await_row=_await_row()))
     headers = {"X-API-Key": TOKEN}
     if token is not None:
         headers["X-Callback-Token"] = token
@@ -166,7 +140,7 @@ def test_files_channel_requires_await_credential(root: Path, token: str | None) 
 
 def test_files_channel_unknown_await_is_404(root: Path) -> None:
     await_id = uuid4()
-    _use_db(_FakeDB(await_row=None))
+    _use_db(_db(await_row=None))
     resp = client.get(
         f"/api/v1/open/awaits/{await_id}/files",
         headers={"X-API-Key": TOKEN, "X-Callback-Token": make_callback_token(str(await_id))},
@@ -179,7 +153,7 @@ def test_files_channel_unknown_await_is_404(root: Path) -> None:
 
 def test_list_run_files_empty_when_nothing_registered(root: Path) -> None:
     run = Run(id=uuid4(), agent_id=uuid4(), trigger="manual", input={})
-    assert asyncio.run(open_files.list_run_files(_FakeDB(run=run), run.id)) == []  # type: ignore[arg-type]
+    assert asyncio.run(open_files.list_run_files(_db(run=run), run.id)) == []  # type: ignore[arg-type]
 
 
 def test_list_run_files_includes_input_attachments(root: Path) -> None:
@@ -191,7 +165,7 @@ def test_list_run_files_includes_input_attachments(root: Path) -> None:
         input={"attachment_ids": [str(att.id), ""]},
     )
     items = asyncio.run(
-        open_files.list_run_files(_FakeDB(run=run, files=[att]), run.id)  # type: ignore[arg-type]
+        open_files.list_run_files(_db(run=run, files=[att]), run.id)  # type: ignore[arg-type]
     )
     assert [(i["file_id"], i["source"]) for i in items] == [(str(att.id), "input")]
 
@@ -199,14 +173,14 @@ def test_list_run_files_includes_input_attachments(root: Path) -> None:
 def test_list_run_files_ignores_non_list_attachment_ids(root: Path) -> None:
     """`attachment_ids` 被污染成非列表时不炸、也不放行任何文件。"""
     run = Run(id=uuid4(), agent_id=uuid4(), trigger="manual", input={"attachment_ids": "abc"})
-    assert asyncio.run(open_files.list_run_files(_FakeDB(run=run), run.id)) == []  # type: ignore[arg-type]
+    assert asyncio.run(open_files.list_run_files(_db(run=run), run.id)) == []  # type: ignore[arg-type]
 
 
 def test_get_run_file_rejects_foreign_file(root: Path) -> None:
     run = Run(id=uuid4(), agent_id=uuid4(), trigger="manual", input={})
     mine = _file(root, "mine.csv")
     theirs = _file(root, "theirs.csv")
-    db = _FakeDB(run=run, artifacts=[_artifact(run.id, mine.id)], files=[mine, theirs])
+    db = _db(run=run, artifacts=[_artifact(run.id, mine.id)], files=[mine, theirs])
     assert asyncio.run(open_files.get_run_file(db, run.id, mine.id)) is mine  # type: ignore[arg-type]
     # 不归本 run 的文件 → None（调用方统一转 404，不给存在性预言）
     assert asyncio.run(open_files.get_run_file(db, run.id, theirs.id)) is None  # type: ignore[arg-type]
@@ -214,9 +188,9 @@ def test_get_run_file_rejects_foreign_file(root: Path) -> None:
 
 def test_await_run_id_resolves_scope(root: Path) -> None:
     row = _await_row()
-    db = _FakeDB(await_row=row)
+    db = _db(await_row=row)
     assert asyncio.run(open_files.await_run_id(db, row.id)) == row.run_id  # type: ignore[arg-type]
-    assert asyncio.run(open_files.await_run_id(_FakeDB(), row.id)) is None  # type: ignore[arg-type]
+    assert asyncio.run(open_files.await_run_id(_db(), row.id)) is None  # type: ignore[arg-type]
 
 
 # ---------- 3. 通道层（HTTP） ----------
@@ -237,7 +211,7 @@ def test_list_await_files_returns_artifact_and_input(root: Path) -> None:
         id=row.run_id, agent_id=uuid4(), trigger="manual", input={"attachment_ids": [str(att.id)]}
     )
     _use_db(
-        _FakeDB(
+        _db(
             await_row=row,
             run=run,
             artifacts=[_artifact(row.run_id, artifact_file.id)],
@@ -257,7 +231,7 @@ def test_download_own_artifact(root: Path) -> None:
     row = _await_row()
     f = _file(root, "result.csv", b"a,b\n1,2\n")
     run = Run(id=row.run_id, agent_id=uuid4(), trigger="manual", input={})
-    _use_db(_FakeDB(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
+    _use_db(_db(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
     resp = client.get(
         f"/api/v1/open/files/{f.id}/content?await_id={row.id}", headers=_headers(row.id)
     )
@@ -274,7 +248,7 @@ def test_download_foreign_file_is_404(root: Path) -> None:
     row = _await_row()
     theirs = _file(root, "secret.csv")
     run = Run(id=row.run_id, agent_id=uuid4(), trigger="manual", input={})
-    _use_db(_FakeDB(await_row=row, run=run, files=[theirs]))
+    _use_db(_db(await_row=row, run=run, files=[theirs]))
     resp = client.get(
         f"/api/v1/open/files/{theirs.id}/content?await_id={row.id}", headers=_headers(row.id)
     )
@@ -293,7 +267,7 @@ def test_download_missing_content_is_404(root: Path) -> None:
         sha256="0" * 64,
     )
     run = Run(id=row.run_id, agent_id=uuid4(), trigger="manual", input={})
-    _use_db(_FakeDB(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
+    _use_db(_db(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
     resp = client.get(
         f"/api/v1/open/files/{f.id}/content?await_id={row.id}", headers=_headers(row.id)
     )
@@ -305,7 +279,7 @@ def test_download_over_limit_is_413(root: Path, monkeypatch: pytest.MonkeyPatch)
     row = _await_row()
     f = _file(root, "big.csv", b"1234567890")
     run = Run(id=row.run_id, agent_id=uuid4(), trigger="manual", input={})
-    _use_db(_FakeDB(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
+    _use_db(_db(await_row=row, run=run, artifacts=[_artifact(row.run_id, f.id)], files=[f]))
     resp = client.get(
         f"/api/v1/open/files/{f.id}/content?await_id={row.id}", headers=_headers(row.id)
     )
@@ -314,7 +288,7 @@ def test_download_over_limit_is_413(root: Path, monkeypatch: pytest.MonkeyPatch)
 
 def test_await_id_is_mandatory_for_download(root: Path) -> None:
     """不传 await_id 就没有归属依据 → 422（取件凭据与文件必须在同一个请求里）。"""
-    _use_db(_FakeDB())
+    _use_db(_db())
     resp = client.get(f"/api/v1/open/files/{uuid4()}/content", headers={"X-API-Key": TOKEN})
     assert resp.status_code == 422
 

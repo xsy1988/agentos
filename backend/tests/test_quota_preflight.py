@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from app.core.config import settings
 from app.modules.engine import timing
 from app.modules.engine.graph import _llm_invoke
 from app.modules.engine.hooks import BudgetExceededError, RunContext
@@ -212,6 +213,44 @@ def test_limiter_gives_up_on_excessive_wait() -> None:
     assert asyncio.run(limiter.acquire("p1")) == 0.0
     assert asyncio.run(limiter.acquire("p1")) == 0.0  # 需等 100s > 上限
     assert clock.slept == []
+
+
+def test_limiter_falls_back_to_global_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """provider 没配 → 走 settings 全局缺省（P1-2 不做厂商默认值表，这是唯一兜底）。"""
+    monkeypatch.setattr(settings, "model_default_rate_limit_rps", 2.0)
+    limiter, _ = _limiter()
+    limiter.remember({"id": "p1", "limits": {}})
+    assert asyncio.run(limiter.acquire("p1")) == 0.0  # 突发额度 2
+    assert asyncio.run(limiter.acquire("p1")) == 0.0  # 桶里还剩 1
+    assert asyncio.run(limiter.acquire("p1")) > 0  # 第三次要等
+
+
+def test_limiter_explicit_zero_overrides_global_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式 0 是逃生舱：覆盖全局缺省，表示该 provider 关掉限流。"""
+    monkeypatch.setattr(settings, "model_default_rate_limit_rps", 2.0)
+    limiter, _ = _limiter()
+    limiter.remember({"id": "p1", "limits": {"rate_limit_rps": 0}})
+    assert limiter.effective("p1")["rate_limit_rps"] == 0.0
+    for _ in range(5):
+        assert asyncio.run(limiter.acquire("p1")) == 0.0
+
+
+def test_limiter_none_value_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NULL/None 与"没配"同义（同解析链口径），不得覆盖全局缺省。"""
+    monkeypatch.setattr(settings, "model_default_rate_limit_rps", 3.0)
+    limiter, _ = _limiter()
+    limiter.remember({"id": "p1", "limits": {"rate_limit_rps": None}})
+    assert limiter.effective("p1")["rate_limit_rps"] == 3.0
+
+
+def test_limiter_effective_reports_in_force_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`effective` 是限流对账口径：未登记的 provider 按不限报（0）。"""
+    monkeypatch.setattr(settings, "model_default_rate_limit_rps", 0.0)
+    monkeypatch.setattr(settings, "model_default_rate_limit_tpm", 0)
+    limiter, _ = _limiter()
+    limiter.remember({"id": "p1", "limits": {"rate_limit_rps": 4, "rate_limit_tpm": 900}})
+    assert limiter.effective("p1") == {"rate_limit_rps": 4.0, "rate_limit_tpm": 900.0}
+    assert limiter.effective("unknown") == {"rate_limit_rps": 0.0, "rate_limit_tpm": 0.0}
 
 
 def test_get_chat_model_registers_limits() -> None:

@@ -189,8 +189,10 @@ def resolve_inputs(
 ) -> tuple[dict[str, str], list[InputSpec]]:
     """按声明判定取值与缺失：返回 (已提供取值, 缺失的必填项)。
 
-    `file` 类型可由会话附件顶替（附件是平台的确定性事实，不依赖模型转述）。
-    未声明的额外键忽略：契约外的输入不参与判定，也不注入上下文。
+    `file` 类型可由会话附件顶替（附件是平台的确定性事实，不依赖模型转述）；附件数量够时
+    按声明顺序一对一顶替，不够时**剩余 file 输入共享第一个附件**（用户只附了一件材料时，
+    按「一个附件只顶一个输入」会让其余必填项假缺失）。未声明的额外键忽略：契约外的输入
+    不参与判定，也不注入上下文。
     """
     provided = provided or {}
     values: dict[str, str] = {}
@@ -203,14 +205,33 @@ def resolve_inputs(
             values[spec.name] = text
 
     pending = [str(a) for a in attachment_names if str(a).strip()]
+    shared = pending[0] if pending else None
     for spec in specs:
         if spec.type != "file" or spec.name in values:
             continue
         if pending:
             values[spec.name] = pending.pop(0)
+        elif shared is not None:
+            values[spec.name] = shared
 
     missing = [s for s in specs if s.required and s.name not in values]
     return values, missing
+
+
+def _shared_file_notes(specs: Sequence[InputSpec], values: Mapping[str, str]) -> dict[str, str]:
+    """同一附件顶替了多个 `file` 输入时，给出「与谁共用」的说明。"""
+    owners: dict[str, list[str]] = {}
+    for spec in specs:
+        if spec.type == "file" and spec.name in values:
+            owners.setdefault(values[spec.name], []).append(spec.name)
+    notes: dict[str, str] = {}
+    for names in owners.values():
+        if len(names) < 2:
+            continue
+        for name in names:
+            others = [n for n in names if n != name]
+            notes[name] = f"（与 {'、'.join(others)} 共用同一附件）"
+    return notes
 
 
 def render_input_contract(specs: Sequence[InputSpec], values: Mapping[str, str] | None) -> str:
@@ -218,6 +239,7 @@ def render_input_contract(specs: Sequence[InputSpec], values: Mapping[str, str] 
     if not specs:
         return ""
     values = values or {}
+    notes = _shared_file_notes(specs, values)
     lines = [
         "# 输入契约（平台已按 Worker 声明完成预检）",
         "带「必填」的输入项缺失时平台会在调用模型前拦截；未提供的可选输入不要臆造，"
@@ -231,7 +253,7 @@ def render_input_contract(specs: Sequence[InputSpec], values: Mapping[str, str] 
             row += f"（示例：{spec.example}）"
         lines.append(row)
         if spec.name in values:
-            lines.append(f"  已提供：{values[spec.name]}")
+            lines.append(f"  已提供：{values[spec.name]}{notes.get(spec.name, '')}")
         else:
             lines.append("  未提供" if spec.required else "  未提供（可选）")
     return "\n".join(lines)

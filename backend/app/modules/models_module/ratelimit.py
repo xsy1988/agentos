@@ -5,6 +5,17 @@
 settings 的全局兜底同名同义：provider 显式配了以自己的为准，没配走全局缺省
 （缺省为 0 = 不限，保持升级前行为不变）。
 
+**生效优先级**：`provider.limits[键]` > `settings.model_default_rate_limit_{rps,tpm}` > 不限。
+显式写 `0` 是逃生舱：它覆盖全局缺省，表示为该 provider 关掉限流。
+
+**为什么没有"厂商/模型家族默认值表"**（P1-2 变更点 4 的结论，M10 复核后维持）：
+1. 开发库 9 个 provider 里 8 个的 `base_url` 是本地 LLM 网关（`params.via_gateway=true`），
+   按 provider 行推断"云厂商 RPM"在这个拓扑下不成立——真正会先被压垮的是本地网关；
+2. 唯一直连云端的 provider（阿里云百炼）用的是**按账号消费档位的动态限流**，
+   任何硬编码数值都是猜测（方案自己写明「不在本方案硬编码」）；
+3. 猜错的两个方向都有代价：给小了会掐死正常长任务，给大了等于没保护。
+若要引入家族默认值，落点是 `_config()`：在 provider 键缺失时查表，再回落 settings。
+
 实现是**双桶令牌桶**（请求桶 + token 桶），按 provider 维度独立：
 - 桶容量 = 速率（rps 个请求 / tpm 个 token），即"突发额度 ≤ 1 秒/1 分钟的配额"；
 - 额度不足则等待补足；单次等待超过 `settings.model_rate_limit_max_wait_seconds`
@@ -91,6 +102,7 @@ class ProviderRateLimiter:
         self._buckets.clear()
 
     def _config(self, provider_id: str) -> tuple[float, int]:
+        # 优先 provider.limits（显式 0 也算显式），缺失才回落 settings 全局缺省。
         limits = self._limits.get(provider_id) or {}
         rps = limits.get("rate_limit_rps", settings.model_default_rate_limit_rps)
         tpm = limits.get("rate_limit_tpm", settings.model_default_rate_limit_tpm)
@@ -103,6 +115,11 @@ class ProviderRateLimiter:
         except (TypeError, ValueError):
             tpm_v = 0
         return (max(rps_v, 0.0), max(tpm_v, 0))
+
+    def effective(self, provider_id: str) -> dict[str, float]:
+        """当前生效的限流值（对账/诊断用，不参与调用路径）。"""
+        rps, tpm = self._config(provider_id)
+        return {"rate_limit_rps": rps, "rate_limit_tpm": float(tpm)}
 
     def _buckets_for(
         self, provider_id: str, rps: float, tpm: int, now: float

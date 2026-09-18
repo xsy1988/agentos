@@ -32,7 +32,7 @@ async def get_awaits(
 ) -> AwaitListOut:
     if status_filter is not None and status_filter not in AWAIT_STATUSES:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"非法状态：{status_filter}（可选 {', '.join(AWAIT_STATUSES)}）",
         )
     rows = await list_awaits(db, run_id=run_id, status=status_filter, limit=limit)

@@ -18,6 +18,7 @@ from app.modules.engine import runtime as runtime_mod
 from app.modules.engine import timing
 from app.modules.engine.runtime import EngineRuntime
 from app.modules.runs.models import Run
+from tests.support.fake_db import RecordingSession
 
 T0 = datetime(2026, 9, 17, 3, 0, 0, tzinfo=UTC)
 
@@ -175,22 +176,6 @@ class _FakeGraph:
         return _Snapshot(self._messages)
 
 
-class _FakeDB:
-    def __init__(self, run: Run) -> None:
-        self.run = run
-
-    async def __aenter__(self) -> "_FakeDB":
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def get(self, model: object, pk: object) -> Run:
-        return self.run
-
-    async def commit(self) -> None: ...
-
-
 def _install(monkeypatch: pytest.MonkeyPatch, rt: EngineRuntime, run: Run) -> None:
     """替换运行时的两个外部依赖：run 读取与 DB 会话（单测不依赖真库）。"""
 
@@ -198,7 +183,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, rt: EngineRuntime, run: Run) -> No
         return run
 
     monkeypatch.setattr(rt, "_load_run", _load)
-    monkeypatch.setattr(runtime_mod, "session_factory", lambda: _FakeDB(run))
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: RecordingSession(run))
 
 
 def test_wait_for_uses_remaining_time_not_full_budget(

@@ -29,7 +29,8 @@ from app.modules.engine import runtime as runtime_mod
 from app.modules.engine.hooks import ToolCapacityExceededError
 from app.modules.engine.runtime import EngineRuntime
 from app.modules.runs.models import Run
-from tests.test_run_artifacts import _FakeBackend, _FakeDB, _Hooks
+from tests.support.fake_db import RecordingSession
+from tests.test_run_artifacts import _FakeBackend, _Hooks
 
 
 def _cap(name: str) -> dict[str, Any]:
@@ -105,9 +106,7 @@ def test_partition_fills_shared_with_remaining_quota_in_order() -> None:
     assert _assembled(plan) == [f"must_{i}" for i in range(3)] + ["cand_0", "cand_1", "cand_2"]
     assert plan["kept"] == ["cand_0", "cand_1", "cand_2"]
     assert plan["dropped"] == ["cand_3", "cand_4"]
-    assert plan["candidates"] == [f"must_{i}" for i in range(3)] + [
-        f"cand_{i}" for i in range(5)
-    ]
+    assert plan["candidates"] == [f"must_{i}" for i in range(3)] + [f"cand_{i}" for i in range(5)]
 
 
 def test_partition_hard_limit_only_counts_required() -> None:
@@ -238,7 +237,7 @@ def _rig(monkeypatch: pytest.MonkeyPatch) -> tuple[EngineRuntime, Run, list[tupl
         started_at=datetime.now(UTC),
         deadline_at=None,
     )
-    monkeypatch.setattr(runtime_mod, "session_factory", lambda: _FakeDB(run))
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: RecordingSession(run))
     rt.backend = _FakeBackend()  # type: ignore[assignment]
     rt.hooks = _Hooks()
     events: list[tuple[str, dict]] = []

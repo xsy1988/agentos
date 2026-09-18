@@ -84,6 +84,9 @@ class OpenWorkerRegisterIn(BaseModel):
     worker: OpenWorkerIn
     capabilities: list[CapabilityCreateIn] = Field(default_factory=list, max_length=64)
     if_exists: Literal["fail", "skip", "new_version"] = "fail"
+    # 可选：目标 Agent 名单。填了就比对这些 Agent 的 `tool_budget`，把"装不下"作为
+    # warnings 回报（非阻断）；缺省 = 零影响，注册结果与从前逐字相同。
+    target_agents: list[str] = Field(default_factory=list, max_length=32)
 
 
 class OpenCapabilityResultOut(BaseModel):

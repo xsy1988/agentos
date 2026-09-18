@@ -39,6 +39,7 @@ from app.modules.engine.tool_outcome import (
     success,
 )
 from app.modules.runs.models import Run
+from tests.support.fake_db import RecordingSession
 
 # ---------- 1. 契约层 ----------
 
@@ -482,22 +483,6 @@ def test_run_error_payload_has_fixed_keys() -> None:
     assert result["text"] == "部分输出"
 
 
-class _FakeDB:
-    def __init__(self, run: Run) -> None:
-        self.run = run
-
-    async def __aenter__(self) -> "_FakeDB":
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def get(self, model: object, pk: object) -> Run:
-        return self.run
-
-    async def commit(self) -> None: ...
-
-
 def _new_run() -> Run:
     return Run(
         id=uuid4(),
@@ -515,7 +500,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, rt: EngineRuntime, run: Run) -> No
         return run
 
     monkeypatch.setattr(rt, "_load_run", _load)
-    monkeypatch.setattr(runtime_mod, "session_factory", lambda: _FakeDB(run))
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: RecordingSession(run))
 
 
 def test_finalize_tool_failure_persists_failure_envelope(

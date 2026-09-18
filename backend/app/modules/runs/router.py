@@ -25,6 +25,7 @@ from app.core.db import get_db
 from app.modules.auth.deps import get_current_user
 from app.modules.runs.models import Run, RunArtifact
 from app.modules.runs.schemas import ArtifactDetailOut, ArtifactOut, ConfirmIn, RunEventOut, RunOut
+from app.modules.workers.inputs import InputContractError, sanitize_provided_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -111,11 +112,7 @@ async def list_run_artifacts(run_id: UUID, db: AsyncSession = Depends(get_db)) -
     run = await db.get(Run, run_id)
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
-    stmt = (
-        select(RunArtifact)
-        .where(RunArtifact.run_id == run_id)
-        .order_by(RunArtifact.created_at)
-    )
+    stmt = select(RunArtifact).where(RunArtifact.run_id == run_id).order_by(RunArtifact.created_at)
     return list((await db.scalars(stmt)).all())
 
 
@@ -159,6 +156,17 @@ async def confirm_run(run_id: UUID, body: ConfirmIn, db: AsyncSession = Depends(
         inbox_payload["data"] = body.data
     if body.applied is not None:
         inbox_payload["applied"] = body.applied
+    # 补输入卡（P1-4 收尾）：只提交输入、不填 answer 也要能恢复；取值在 API 入口先校验
+    # （非法 → 422，别让它进引擎变成一个失败的 run），同时兼容前端把表单塞在 data.inputs 的写法。
+    raw_inputs = body.inputs
+    if raw_inputs is None and isinstance(body.data, dict):
+        raw_inputs = body.data.get("inputs")
+    try:
+        provided_inputs = sanitize_provided_inputs(raw_inputs)
+    except InputContractError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
+    if provided_inputs:
+        inbox_payload["inputs"] = provided_inputs
     await db.execute(
         text(
             "INSERT INTO inbox_events (event_type, target_run_id, payload, status) "

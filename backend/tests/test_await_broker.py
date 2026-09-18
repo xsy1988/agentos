@@ -49,96 +49,9 @@ from app.modules.engine.hooks import RunContext, ToolResultInfo
 from app.modules.engine.runtime import EngineRuntime
 from app.modules.open_api.router import resolve_await
 from app.modules.runs.models import Run
+from tests.support.fake_db import FakeSession
 
 T0 = datetime(2026, 9, 17, 3, 0, 0, tzinfo=UTC)
-
-
-# ---------- 假件 ----------
-
-
-class _Result:
-    """假 `Result`：只需要 `.all()` 与可迭代。"""
-
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = list(rows)
-
-    def all(self) -> list[Any]:
-        return list(self._rows)
-
-    def __iter__(self) -> Any:
-        return iter(self._rows)
-
-
-class _FakeSession:
-    """最小 AsyncSession 替身：按调用顺序回放预置结果，并记录写入语句。"""
-
-    def __init__(
-        self,
-        *,
-        get_rows: list[Any] | None = None,
-        scalar_rows: list[Any] | None = None,
-        scalars_rows: list[list[Any]] | None = None,
-        execute_rows: list[list[Any]] | None = None,
-        commit_error: Exception | None = None,
-        fail_on: str | None = None,
-        on_refresh: Any = None,
-    ) -> None:
-        self._get = list(get_rows or [])
-        self._scalar = list(scalar_rows or [])
-        self._scalars = list(scalars_rows or [])
-        self._execute = list(execute_rows or [])
-        self.commit_error = commit_error
-        self.fail_on = fail_on
-        self.on_refresh = on_refresh
-        self.added: list[Any] = []
-        self.commits = 0
-        self.rollbacks = 0
-        self.refreshed: list[Any] = []
-        self.statements: list[Any] = []
-        self.executed: list[tuple[Any, dict[str, Any] | None]] = []
-        self.scalars_calls = 0
-
-    async def __aenter__(self) -> "_FakeSession":
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def get(self, model: Any, pk: Any) -> Any:
-        return self._get.pop(0) if self._get else None
-
-    async def scalar(self, stmt: Any) -> Any:
-        self.statements.append(stmt)
-        return self._scalar.pop(0) if self._scalar else None
-
-    async def scalars(self, stmt: Any) -> _Result:
-        self.statements.append(stmt)
-        self.scalars_calls += 1
-        if self.fail_on == "scalars":
-            self.fail_on = None
-            raise RuntimeError("巡检一次失败")
-        return _Result(self._scalars.pop(0) if self._scalars else [])
-
-    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
-        self.executed.append((stmt, params))
-        return _Result(self._execute.pop(0) if self._execute else [])
-
-    async def commit(self) -> None:
-        self.commits += 1
-        if self.commit_error is not None:
-            err, self.commit_error = self.commit_error, None
-            raise err
-
-    async def rollback(self) -> None:
-        self.rollbacks += 1
-
-    async def refresh(self, obj: Any) -> None:
-        self.refreshed.append(obj)
-        if self.on_refresh is not None:
-            self.on_refresh(obj)
-
-    def add(self, obj: Any) -> None:
-        self.added.append(obj)
 
 
 def _integrity_error() -> IntegrityError:
@@ -263,7 +176,7 @@ def test_expired_row_values_marks_timeout() -> None:
 
 def test_ensure_await_creates_waiting_row(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "await_default_timeout_seconds", 30)
-    db = _FakeSession(scalar_rows=[None])
+    db = FakeSession(scalar_rows=[None])
     run_id = uuid.uuid4()
     row, created = asyncio.run(
         ensure_await(
@@ -285,7 +198,7 @@ def test_ensure_await_creates_waiting_row(monkeypatch: pytest.MonkeyPatch) -> No
 def test_ensure_await_reuses_existing_row() -> None:
     """命中既有行直接复用：created=False，不新增行、不提交（防同参重放出网）。"""
     existing = _row()
-    db = _FakeSession(scalar_rows=[existing])
+    db = FakeSession(scalar_rows=[existing])
     row, created = asyncio.run(
         ensure_await(
             db,
@@ -301,7 +214,7 @@ def test_ensure_await_reuses_existing_row() -> None:
 def test_ensure_await_recovers_from_unique_violation() -> None:
     """并发竞态：复合唯一约束兜底，回滚后复用对方已登记的行。"""
     again = _row()
-    db = _FakeSession(scalar_rows=[None, again], commit_error=_integrity_error())
+    db = FakeSession(scalar_rows=[None, again], commit_error=_integrity_error())
     row, created = asyncio.run(
         ensure_await(
             db,
@@ -315,7 +228,7 @@ def test_ensure_await_recovers_from_unique_violation() -> None:
 
 
 def test_ensure_await_reraises_when_race_row_vanished() -> None:
-    db = _FakeSession(scalar_rows=[None, None], commit_error=_integrity_error())
+    db = FakeSession(scalar_rows=[None, None], commit_error=_integrity_error())
     with pytest.raises(IntegrityError):
         asyncio.run(
             ensure_await(
@@ -330,7 +243,7 @@ def test_ensure_await_reraises_when_race_row_vanished() -> None:
 
 def test_mark_notified_records_first_dispatch() -> None:
     row = _row()
-    db = _FakeSession()
+    db = FakeSession()
     asyncio.run(mark_notified(db, row, at=T0, response={"task_id": "P-1"}))
     assert row.notified_at == T0
     assert row.payload_in == {"dispatch_response": {"task_id": "P-1"}}
@@ -344,35 +257,35 @@ def test_mark_notified_records_first_dispatch() -> None:
 
 def test_resolve_rejects_non_terminal_status() -> None:
     with pytest.raises(ValueError):
-        asyncio.run(resolve(_FakeSession(), uuid.uuid4(), status="waiting"))
+        asyncio.run(resolve(FakeSession(), uuid.uuid4(), status="waiting"))
 
 
 def test_resolve_missing_row() -> None:
-    row, won = asyncio.run(resolve(_FakeSession(get_rows=[None]), uuid.uuid4()))
+    row, won = asyncio.run(resolve(FakeSession(get_rows=[None]), uuid.uuid4()))
     assert row is None and won is False
 
 
 def test_resolve_cas_win_and_loss() -> None:
     """CAS 落败（回调/超时先到）不得重复唤醒 run。"""
     row = _row()
-    db = _FakeSession(get_rows=[row], scalar_rows=[row.id])
+    db = FakeSession(get_rows=[row], scalar_rows=[row.id])
     resolved, won = asyncio.run(resolve(db, row.id, status="granted"))
     assert resolved is row and won is True and db.refreshed == [row]
 
     other = _row()
-    db2 = _FakeSession(get_rows=[other], scalar_rows=[None])
+    db2 = FakeSession(get_rows=[other], scalar_rows=[None])
     _, won2 = asyncio.run(resolve(db2, other.id, status="granted"))
     assert won2 is False
 
 
 def test_cancel_is_cas() -> None:
     row = _row()
-    assert asyncio.run(cancel(_FakeSession(scalar_rows=[row.id]), row)) is True
-    assert asyncio.run(cancel(_FakeSession(scalar_rows=[None]), _row())) is False
+    assert asyncio.run(cancel(FakeSession(scalar_rows=[row.id]), row)) is True
+    assert asyncio.run(cancel(FakeSession(scalar_rows=[None]), _row())) is False
 
 
 def test_cancel_run_awaits_counts_flipped_rows() -> None:
-    db = _FakeSession(execute_rows=[[(uuid.uuid4(),), (uuid.uuid4(),)]])
+    db = FakeSession(execute_rows=[[(uuid.uuid4(),), (uuid.uuid4(),)]])
     assert asyncio.run(cancel_run_awaits(db, uuid.uuid4())) == 2
     assert db.commits == 1
     stmt, params = db.executed[0]
@@ -381,7 +294,7 @@ def test_cancel_run_awaits_counts_flipped_rows() -> None:
 
 
 def test_expire_due_noop_when_nothing_due() -> None:
-    db = _FakeSession(scalars_rows=[[]])
+    db = FakeSession(scalars_rows=[[]])
     assert asyncio.run(expire_due(db)) == []
     # 只发一条 UPDATE：无到期行时不再查行
     assert db.scalars_calls == 1 and db.commits == 0
@@ -389,7 +302,7 @@ def test_expire_due_noop_when_nothing_due() -> None:
 
 def test_expire_due_returns_flipped_rows() -> None:
     row = _row(status="expired")
-    db = _FakeSession(scalars_rows=[[row.id], [row]])
+    db = FakeSession(scalars_rows=[[row.id], [row]])
     assert asyncio.run(expire_due(db)) == [row]
     stmt = str(db.statements[0])
     assert stmt.startswith("UPDATE await_broker") and "deadline_at <=" in stmt
@@ -402,7 +315,7 @@ def test_enqueue_resume_writes_inbox_event_and_notifies() -> None:
         resolved_at=T0 + timedelta(milliseconds=1500),
         payload_out={"score": 1},
     )
-    db = _FakeSession()
+    db = FakeSession()
     asyncio.run(enqueue_resume(db, row, status="granted"))
     assert len(db.executed) == 2
     insert, params = db.executed[0]
@@ -416,7 +329,7 @@ def test_enqueue_resume_writes_inbox_event_and_notifies() -> None:
 
 def test_list_awaits_passes_through_rows() -> None:
     row = _row()
-    db = _FakeSession(scalars_rows=[[row]])
+    db = FakeSession(scalars_rows=[[row]])
     assert asyncio.run(list_awaits(db, run_id=row.run_id, status="waiting")) == [row]
     stmt = str(db.statements[0])
     assert "await_broker.run_id = " in stmt and "await_broker.status = " in stmt
@@ -557,9 +470,7 @@ def _graph(monkeypatch: pytest.MonkeyPatch, *, builtins: dict[str, Any], awaits:
     def _get_run_ctx(run_id: str, *a: object, **kw: object) -> RunContext:
         return ctxs.setdefault(run_id, RunContext(run_id, None, "a1"))
 
-    async def _save_long_output(
-        run_id: str, content: Any, *, name: str | None = None
-    ) -> Any:
+    async def _save_long_output(run_id: str, content: Any, *, name: str | None = None) -> Any:
         return content
 
     rt = SimpleNamespace(
@@ -596,9 +507,7 @@ def _tool_state(run_id: str, *, name: str, args: dict[str, Any], risk: str) -> d
     return {
         "messages": [_ai_call(name, args)],
         "capability_cache": {
-            "tools": [
-                {"name": name, "kind": "builtin", "builtin": name, "risk_level": risk}
-            ]
+            "tools": [{"name": name, "kind": "builtin", "builtin": name, "risk_level": risk}]
         },
         "budget_state": {},
     }
@@ -675,9 +584,7 @@ def test_tools_node_does_not_defer_denied_call(monkeypatch: pytest.MonkeyPatch) 
 
     awaits = _FakeAwaits()
     builder, _hooks = _graph(monkeypatch, builtins={"procurement_trigger": _trigger}, awaits=awaits)
-    monkeypatch.setattr(
-        "app.modules.engine.graph.interrupt", _InterruptSteps(["rejected"])
-    )
+    monkeypatch.setattr("app.modules.engine.graph.interrupt", _InterruptSteps(["rejected"]))
 
     run_id = str(uuid.uuid4())
     state = _tool_state(run_id, name="procurement_trigger", args={"text": "A"}, risk="write")
@@ -882,16 +789,12 @@ def test_await_gate_maps_terminal_status_to_failure_code(
     async def _trigger(args: dict[str, Any]) -> dict:
         return {"status": "accepted"}
 
-    builder, hooks = _graph(
-        monkeypatch, builtins={"procurement_trigger": _trigger}, awaits=awaits
-    )
+    builder, hooks = _graph(monkeypatch, builtins={"procurement_trigger": _trigger}, awaits=awaits)
 
     def _settle(value: Any) -> None:
         awaits.rows[str(value["payload"]["await_id"])]["status"] = status
 
-    monkeypatch.setattr(
-        "app.modules.engine.graph.interrupt", _Interrupts(awaits, on_call=_settle)
-    )
+    monkeypatch.setattr("app.modules.engine.graph.interrupt", _Interrupts(awaits, on_call=_settle))
 
     run_id = str(uuid.uuid4())
     state = {
@@ -986,9 +889,7 @@ def test_expand_capability_hides_superseded_polling_tool(
 
 
 def _settle_snapshot(*interrupt_values: Any) -> Any:
-    tasks = [
-        SimpleNamespace(interrupts=[SimpleNamespace(value=v) for v in interrupt_values])
-    ]
+    tasks = [SimpleNamespace(interrupts=[SimpleNamespace(value=v) for v in interrupt_values])]
     return SimpleNamespace(tasks=tasks)
 
 
@@ -1000,10 +901,10 @@ def test_pause_dispatches_external_await_to_waiting_external(
 
     rt = EngineRuntime()
     run = _run(status="running", id=uuid.uuid4())
-    rows: list[_FakeSession] = []
+    rows: list[FakeSession] = []
 
-    def _factory() -> _FakeSession:
-        db = _FakeSession(get_rows=[run])
+    def _factory() -> FakeSession:
+        db = FakeSession(get_rows=[run])
         rows.append(db)
         return db
 
@@ -1050,9 +951,7 @@ def test_pause_keeps_confirmation_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     rt = EngineRuntime()
     run = _run(status="running")
-    monkeypatch.setattr(
-        runtime_mod, "session_factory", lambda: _FakeSession(get_rows=[run])
-    )
+    monkeypatch.setattr(runtime_mod, "session_factory", lambda: FakeSession(get_rows=[run]))
 
     async def _emit(run_id: str, event_type: str, payload: dict[str, Any]) -> int:
         return 1
@@ -1067,9 +966,7 @@ def test_pause_keeps_confirmation_path(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_interrupt_value_tolerates_unknown_shape() -> None:
     rt = EngineRuntime()
     assert rt._interrupt_value(_settle_snapshot()) == {"reason": "unknown", "payload": {}}
-    assert (
-        rt._interrupt_value(_settle_snapshot("plain-string"))["reason"] == "unknown"
-    )
+    assert rt._interrupt_value(_settle_snapshot("plain-string"))["reason"] == "unknown"
     assert rt._interrupt_value(_settle_snapshot({"reason": "x"}))["reason"] == "x"
 
 
@@ -1169,10 +1066,10 @@ def test_reconcile_orphans_never_kills_waiting_external(
     from app.modules.runs.models import RUN_STATUSES
     from app.modules.tasks.router import NON_TERMINAL_RUN_STATUSES
 
-    db = _FakeSession()
-    opened: list[_FakeSession] = []
+    db = FakeSession()
+    opened: list[FakeSession] = []
 
-    def _factory() -> _FakeSession:
+    def _factory() -> FakeSession:
         opened.append(db)
         return db
 
@@ -1197,11 +1094,11 @@ def test_await_sweeper_expires_due_waits_and_wakes_run(
 
     monkeypatch.setattr(settings, "await_sweep_interval_seconds", 0)
     row = _row(status="expired", resolved_at=T0 + timedelta(milliseconds=1500))
-    sessions: list[_FakeSession] = []
+    sessions: list[FakeSession] = []
 
-    def _factory() -> _FakeSession:
+    def _factory() -> FakeSession:
         first = not sessions
-        db = _FakeSession(scalars_rows=[[str(row.id)], [row]] if first else [[], []])
+        db = FakeSession(scalars_rows=[[str(row.id)], [row]] if first else [[], []])
         sessions.append(db)
         return db
 
@@ -1235,15 +1132,15 @@ def test_await_sweeper_survives_iteration_failure(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(settings, "await_sweep_interval_seconds", 0)
     row = _row(status="expired", resolved_at=T0)
-    sessions: list[_FakeSession] = []
+    sessions: list[FakeSession] = []
 
-    def _factory() -> _FakeSession:
+    def _factory() -> FakeSession:
         if not sessions:
-            sessions.append(_FakeSession(fail_on="scalars"))
+            sessions.append(FakeSession(fail_on="scalars"))
         elif len(sessions) == 1:
-            sessions.append(_FakeSession(scalars_rows=[[str(row.id)], [row]]))
+            sessions.append(FakeSession(scalars_rows=[[str(row.id)], [row]]))
         else:
-            sessions.append(_FakeSession(scalars_rows=[[], []]))
+            sessions.append(FakeSession(scalars_rows=[[], []]))
         return sessions[-1]
 
     monkeypatch.setattr(runtime_mod, "session_factory", _factory)
@@ -1276,7 +1173,7 @@ def test_resolve_endpoint_rejects_bad_token() -> None:
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
             resolve_await(
-                row.id, AwaitResolveIn(callback_token="forged"), _FakeSession(get_rows=[row])
+                row.id, AwaitResolveIn(callback_token="forged"), FakeSession(get_rows=[row])
             )
         )
     assert exc.value.status_code == 403
@@ -1288,7 +1185,7 @@ def test_resolve_endpoint_404_for_unknown_await() -> None:
             resolve_await(
                 uuid.uuid4(),
                 AwaitResolveIn(callback_token="x"),
-                _FakeSession(get_rows=[None]),
+                FakeSession(get_rows=[None]),
             )
         )
     assert exc.value.status_code == 404
@@ -1300,10 +1197,8 @@ def test_resolve_endpoint_rejects_idempotency_mismatch() -> None:
         asyncio.run(
             resolve_await(
                 row.id,
-                AwaitResolveIn(
-                    callback_token=row.callback_token, idempotency_key="another-key"
-                ),
-                _FakeSession(get_rows=[row]),
+                AwaitResolveIn(callback_token=row.callback_token, idempotency_key="another-key"),
+                FakeSession(get_rows=[row]),
             )
         )
     assert exc.value.status_code == 409
@@ -1311,7 +1206,7 @@ def test_resolve_endpoint_rejects_idempotency_mismatch() -> None:
 
 def test_resolve_endpoint_resolves_and_wakes_run() -> None:
     row = _row()
-    db = _FakeSession(
+    db = FakeSession(
         get_rows=[row, row],
         scalar_rows=[row.id],
         on_refresh=_granted,
@@ -1337,9 +1232,7 @@ def test_resolve_endpoint_resolves_and_wakes_run() -> None:
 def test_resolve_endpoint_is_idempotent_on_replay() -> None:
     """重复回调：CAS 落败即只回既有状态，不再投递第二次唤醒。"""
     row = _row()
-    db = _FakeSession(get_rows=[row, row], scalar_rows=[None])
-    out = asyncio.run(
-        resolve_await(row.id, AwaitResolveIn(callback_token=row.callback_token), db)
-    )
+    db = FakeSession(get_rows=[row, row], scalar_rows=[None])
+    out = asyncio.run(resolve_await(row.id, AwaitResolveIn(callback_token=row.callback_token), db))
     assert out.resumed is False
     assert db.executed == [] and db.commits == 1
